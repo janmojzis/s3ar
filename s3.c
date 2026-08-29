@@ -4,6 +4,7 @@
 #include "s3.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -59,6 +60,20 @@ struct object_get {
     const char *key;
     s3_object_properties_callback properties_callback;
     s3_object_data_callback data_callback;
+    void *callback_data;
+};
+
+struct bucket_probe {
+    S3Status status;
+};
+
+struct bucket_create {
+    struct s3_request request;
+};
+
+struct object_put {
+    struct s3_request request;
+    s3_object_data_read_callback data_callback;
     void *callback_data;
 };
 
@@ -208,6 +223,46 @@ static const S3GetObjectHandler get_handler = {
         .completeCallback = request_complete,
     },
     .getObjectDataCallback = get_data,
+};
+
+static void probe_complete(S3Status status, const S3ErrorDetails *details,
+                           void *callback_data) {
+    (void) details;
+    ((struct bucket_probe *) callback_data)->status = status;
+}
+
+static const S3ResponseHandler probe_handler = {
+    .propertiesCallback = ignore_properties,
+    .completeCallback = probe_complete,
+};
+
+static void create_complete(S3Status status, const S3ErrorDetails *details,
+                            void *callback_data) {
+    struct bucket_create *create = callback_data;
+    if (status == S3StatusOK ||
+        status == S3StatusErrorBucketAlreadyOwnedByYou) {
+        return;
+    }
+    die_s3fatal(create->request.error_text, create->request.bucket, NULL,
+                status, details);
+}
+
+static const S3ResponseHandler create_handler = {
+    .propertiesCallback = ignore_properties,
+    .completeCallback = create_complete,
+};
+
+static int read_put_data(int size, char *data, void *callback_data) {
+    struct object_put *put = callback_data;
+    return put->data_callback(size, data, put->callback_data);
+}
+
+static const S3PutObjectHandler put_handler = {
+    .responseHandler = {
+        .propertiesCallback = ignore_properties,
+        .completeCallback = request_complete,
+    },
+    .putObjectDataCallback = read_put_data,
 };
 
 static bool group_permission(S3Permission permission, bool *read,
@@ -419,6 +474,36 @@ void s3_bucket_check(const struct s3 *s3, const char *bucket) {
                    &response_handler, &request);
 }
 
+void s3_bucket_ensure(const struct s3 *s3, const char *bucket) {
+    validate_bucket(s3, bucket);
+    struct bucket_probe probe = {.status = S3StatusOK};
+    char location[256] = "";
+    S3_test_bucket(s3->protocol, s3->uri_style, s3->access_key,
+                   s3->secret_key, s3->host, bucket, (int) sizeof(location),
+                   location, NULL, &probe_handler, &probe);
+    if (probe.status == S3StatusOK) { return; }
+    if (probe.status != S3StatusErrorNoSuchBucket &&
+        probe.status != S3StatusHttpErrorNotFound) {
+        die_s3fatal("s3ar: unable to access bucket", bucket, NULL,
+                    probe.status, NULL);
+    }
+
+    struct bucket_create create = {
+        .request = {
+            .error_text = "s3ar: unable to create bucket",
+            .bucket = bucket,
+        },
+    };
+    const char *location_constraint =
+        s3->region != NULL && s3->region[0] != '\0' &&
+                strcmp(s3->region, "us-east-1") != 0
+            ? s3->region
+            : NULL;
+    S3_create_bucket(s3->protocol, s3->access_key, s3->secret_key, s3->host,
+                     bucket, S3CannedAclPrivate, location_constraint, NULL,
+                     &create_handler, &create);
+}
+
 void s3_bucket_acl(const struct s3 *s3, const char *bucket,
                    s3_bucket_callback callback, void *callback_data) {
     validate_bucket(s3, bucket);
@@ -594,4 +679,45 @@ void s3_object_get(const struct s3 *s3, const char *bucket, const char *key,
         .callback_data = callback_data,
     };
     S3_get_object(&context, key, NULL, 0, 0, NULL, &get_handler, &get);
+}
+
+void s3_object_put(const struct s3 *s3, const char *bucket, const char *key,
+                   uint64_t size, const struct s3_metadata *metadata,
+                   size_t metadata_count,
+                   s3_object_data_read_callback data_callback,
+                   void *callback_data) {
+    validate_bucket(s3, bucket);
+    if (metadata_count > INT_MAX) {
+        errno = EOVERFLOW;
+        die_fatal("s3ar: too many object metadata values", bucket, key);
+    }
+    S3NameValue *values = NULL;
+    if (metadata_count > 0) {
+        values = calloc(metadata_count, sizeof(*values));
+        if (values == NULL) { die_fatal("s3ar: out of memory", NULL, NULL); }
+        for (size_t i = 0; i < metadata_count; ++i) {
+            values[i] = (S3NameValue) {
+                .name = metadata[i].name,
+                .value = metadata[i].value,
+            };
+        }
+    }
+    const S3PutProperties properties = {
+        .expires = -1,
+        .cannedAcl = S3CannedAclPrivate,
+        .metaDataCount = (int) metadata_count,
+        .metaData = values,
+    };
+    S3BucketContext context = bucket_context(s3, bucket);
+    struct object_put put = {
+        .request = {
+            .error_text = "s3ar: unable to write object",
+            .bucket = bucket,
+            .key = key,
+        },
+        .data_callback = data_callback,
+        .callback_data = callback_data,
+    };
+    S3_put_object(&context, key, size, &properties, NULL, &put_handler, &put);
+    free(values);
 }

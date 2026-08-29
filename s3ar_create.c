@@ -43,22 +43,6 @@ static _Noreturn void archive_fatal(struct archive *archive,
     die_fatal(message, archive_error_string(archive), NULL);
 }
 
-static bool key_is_safe(const char *key) {
-    if (key == NULL || key[0] == '\0' || key[0] == '/') { return false; }
-    const char *component = key;
-    for (;;) {
-        const char *slash = strchr(component, '/');
-        size_t length =
-            slash == NULL ? strlen(component) : (size_t) (slash - component);
-        if (length == 0 || (length == 1 && component[0] == '.') ||
-            (length == 2 && component[0] == '.' && component[1] == '.')) {
-            return false;
-        }
-        if (slash == NULL) { return true; }
-        component = slash + 1;
-    }
-}
-
 static bool bucket_written(const struct bucket_names *buckets,
                            const char *name) {
     for (size_t i = 0; i < buckets->count; ++i) {
@@ -168,7 +152,7 @@ static void ensure_bucket(struct create_context *context, const char *bucket) {
 static S3Status write_object_header(const struct s3_object *object,
                                     void *callback_data) {
     struct get_context *get = callback_data;
-    if (!key_is_safe(get->key) || object->size > INT64_MAX) {
+    if (!s3ar_key_is_safe(get->key) || object->size > INT64_MAX) {
         errno = 0;
         die_fatal("s3ar: unsafe or oversized S3 object", get->bucket,
                   get->key);

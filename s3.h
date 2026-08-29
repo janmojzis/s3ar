@@ -47,11 +47,14 @@ typedef S3Status (*s3_object_properties_callback)(
     const struct s3_object *object, void *callback_data);
 typedef S3Status (*s3_object_data_callback)(int size, const char *data,
                                             void *callback_data);
+typedef int (*s3_object_data_read_callback)(int size, char *data,
+                                            void *callback_data);
 
 void s3_open(const struct s3 *s3);
 void s3_close(void);
 
 void s3_bucket_check(const struct s3 *s3, const char *bucket);
+void s3_bucket_ensure(const struct s3 *s3, const char *bucket);
 void s3_bucket_acl(const struct s3 *s3, const char *bucket,
                    s3_bucket_callback callback, void *callback_data);
 void s3_bucket_list(const struct s3 *s3, s3_bucket_callback callback,
@@ -65,6 +68,11 @@ size_t s3_object_list_prefix(const struct s3 *s3, const char *bucket,
 void s3_object_get(const struct s3 *s3, const char *bucket, const char *key,
                    s3_object_properties_callback properties_callback,
                    s3_object_data_callback data_callback,
+                   void *callback_data);
+void s3_object_put(const struct s3 *s3, const char *bucket, const char *key,
+                   uint64_t size, const struct s3_metadata *metadata,
+                   size_t metadata_count,
+                   s3_object_data_read_callback data_callback,
                    void *callback_data);
 
 #endif

@@ -8,8 +8,8 @@ LDLIBS += -ls3 -larchive
 
 all: s3ar
 
-s3ar: s3ar.c s3ar.h s3ar_create.c s3ar_list.c s3ar_selection.c s3.c s3.h die.c die.h log.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ s3ar.c s3ar_create.c s3ar_list.c s3ar_selection.c s3.c die.c log.c $(LDLIBS)
+s3ar: s3ar.c s3ar.h s3ar_create.c s3ar_extract.c s3ar_list.c s3ar_selection.c s3.c s3.h die.c die.h log.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ s3ar.c s3ar_create.c s3ar_extract.c s3ar_list.c s3ar_selection.c s3.c die.c log.c $(LDLIBS)
 
 clean:
 	rm -f -- s3ar

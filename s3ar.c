@@ -13,12 +13,15 @@
 static void usage(FILE *stream) {
     fprintf(stream, "Usage: s3ar (-c | --create) [-v | --verbose] "
                     "[-f TARFILE] S3...\n"
+                    "       s3ar (-x | --extract) [-v | --verbose] "
+                    "[-f TARFILE] [S3...]\n"
                     "       s3ar (-t | --list) [-v | --verbose] S3...\n"
                     "\n"
                     "Options:\n"
                     "  -c, --create  create a tar archive from S3\n"
+                    "  -x, --extract  extract a tar archive to S3\n"
                     "  -t, --list  list an S3 source\n"
-                    "  -f, --file TARFILE  write the archive to TARFILE\n"
+                    "  -f, --file TARFILE  read or write TARFILE\n"
                     "  -v, --verbose  enable verbose output\n"
                     "  -h, --help  display this help\n"
                     "\n"
@@ -103,6 +106,7 @@ static void parse_s3_environment(struct s3 *s3) {
 
 static const struct option long_options[] = {
     {"create", no_argument, NULL, 'c'},
+    {"extract", no_argument, NULL, 'x'},
     {"list", no_argument, NULL, 't'},
     {"file", required_argument, NULL, 'f'},
     {"verbose", no_argument, NULL, 'v'},
@@ -117,7 +121,7 @@ int main(int argc, char **argv) {
     /* parse options */
     opterr = 0;
     for (;;) {
-        int option = getopt_long(argc, argv, "ctvf:h", long_options, NULL);
+        int option = getopt_long(argc, argv, "cxtvf:h", long_options, NULL);
         if (option == -1) { break; }
 
         /* -c --create */
@@ -127,6 +131,15 @@ int main(int argc, char **argv) {
                 die_fatal("s3ar: command specified twice", NULL, NULL);
             }
             config.command = S3AR_COMMAND_CREATE;
+        }
+
+        /* -x --extract */
+        else if (option == 'x') {
+            if (config.command != S3AR_COMMAND_NONE) {
+                errno = 0;
+                die_fatal("s3ar: command specified twice", NULL, NULL);
+            }
+            config.command = S3AR_COMMAND_EXTRACT;
         }
 
         /* -t --list */
@@ -165,13 +178,13 @@ int main(int argc, char **argv) {
 
     if (config.command == S3AR_COMMAND_NONE) {
         errno = 0;
-        die_fatal("s3ar: specify -c or -t", NULL, NULL);
+        die_fatal("s3ar: specify -c, -x or -t", NULL, NULL);
     }
     if (config.command == S3AR_COMMAND_LIST && config.archive_path != NULL) {
         errno = 0;
-        die_fatal("s3ar: -f is valid only with -c", NULL, NULL);
+        die_fatal("s3ar: -f is valid only with -c or -x", NULL, NULL);
     }
-    if (argc - optind < 1) {
+    if (config.command != S3AR_COMMAND_EXTRACT && argc - optind < 1) {
         errno = 0;
         die_fatal("s3ar: command requires at least one S3 operand", NULL,
                   NULL);
@@ -188,6 +201,9 @@ int main(int argc, char **argv) {
     switch (config.command) {
         case S3AR_COMMAND_CREATE:
             s3ar_create(&config);
+            break;
+        case S3AR_COMMAND_EXTRACT:
+            s3ar_extract(&config);
             break;
         case S3AR_COMMAND_LIST:
             s3ar_list(&config);

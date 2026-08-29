@@ -36,3 +36,31 @@ void s3ar_selection_free(struct s3ar_selection *selection) {
     free(selection->storage);
     *selection = (struct s3ar_selection) {0};
 }
+
+bool s3ar_selection_matches(const struct s3ar_selection *selection,
+                            const char *bucket, const char *key) {
+    if (selection->bucket == NULL) { return true; }
+    if (strcmp(selection->bucket, bucket) != 0) { return false; }
+    if (key == NULL) { return selection->key == NULL; }
+    if (selection->key == NULL) { return true; }
+
+    size_t length = strlen(selection->key);
+    return strcmp(selection->key, key) == 0 ||
+           (strncmp(selection->key, key, length) == 0 && key[length] == '/');
+}
+
+bool s3ar_key_is_safe(const char *key) {
+    if (key == NULL || key[0] == '\0' || key[0] == '/') { return false; }
+    const char *component = key;
+    for (;;) {
+        const char *slash = strchr(component, '/');
+        size_t length =
+            slash == NULL ? strlen(component) : (size_t) (slash - component);
+        if (length == 0 || (length == 1 && component[0] == '.') ||
+            (length == 2 && component[0] == '.' && component[1] == '.')) {
+            return false;
+        }
+        if (slash == NULL) { return true; }
+        component = slash + 1;
+    }
+}
