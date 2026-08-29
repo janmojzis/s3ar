@@ -201,12 +201,12 @@ All positional arguments passed to `--list-buckets` are explicitly ignored.
 In particular, operands such as `s3://asdasd`, `s3://bucket/prefix`, and
 `s3://` neither filter the output nor cause those resources to be accessed.
 
-Every selected object is written to standard output as a reusable S3 URI, one
-entry per line:
+Every selected object is written to standard output as `BUCKET/KEY`, without
+the `s3://` prefix, one entry per line:
 
 ```text
-s3://photos/2026/first.jpg
-s3://photos/2026/second.jpg
+photos/2026/first.jpg
+photos/2026/second.jpg
 ```
 
 Listing `s3://` writes the objects from every bucket. Buckets are processed in
@@ -221,7 +221,7 @@ With `-v` or `--verbose`, objects include their byte size followed by sorted S3
 user metadata:
 
 ```text
-s3://photos/first.jpg    1234    sha256=3472a7,source=camera
+photos/first.jpg    1234    sha256=3472a7,source=camera
 ```
 
 An object without user metadata uses `-`. Verbose object listings perform one

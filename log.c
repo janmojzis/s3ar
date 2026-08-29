@@ -7,8 +7,8 @@
 #include <stdio.h>
 
 static void log_s3_name(const char *bucket, const char *key) {
-    int result = key == NULL ? fprintf(stdout, "s3://%s\n", bucket)
-                             : fprintf(stdout, "s3://%s/%s\n", bucket, key);
+    int result = key == NULL ? fprintf(stdout, "%s\n", bucket)
+                             : fprintf(stdout, "%s/%s\n", bucket, key);
     if (result < 0) {
         die_fatal("s3ar: unable to write standard output", bucket, key);
     }
@@ -19,7 +19,7 @@ void log_s3_object(const struct s3_object *object, bool verbose) {
         log_s3_name(object->bucket, object->key);
         return;
     }
-    int result = fprintf(stdout, "s3://%s/%s\t%" PRIu64 "\t",
+    int result = fprintf(stdout, "%s/%s\t%" PRIu64 "\t",
                          object->bucket, object->key, object->size);
     for (size_t i = 0; result >= 0 && i < object->metadata_count; ++i) {
         result = fprintf(stdout, "%s%s=%s", i > 0 ? "," : "",

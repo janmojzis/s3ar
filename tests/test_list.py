@@ -85,8 +85,8 @@ def test_list_multiple_live_s3_operands(
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
-        "s3://list-multiple/first/a\n"
-        "s3://list-multiple/second/b\n"
+        "list-multiple/first/a\n"
+        "list-multiple/second/b\n"
     )
 
 
@@ -142,8 +142,8 @@ def test_list_objects_in_one_bucket_including_empty_bucket(
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
-        "s3://list-one/folder/a.txt\n"
-        "s3://list-one/z.txt\n"
+        "list-one/folder/a.txt\n"
+        "list-one/z.txt\n"
     )
 
     client.create_bucket(Bucket="list-empty")
@@ -177,7 +177,7 @@ def test_verbose_list_s3(executable, s3_server, s3_environment):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
-        "s3://list-verbose/item\t4\tsha256=3472a7,source=pytest\n"
+        "list-verbose/item\t4\tsha256=3472a7,source=pytest\n"
     )
 
 
@@ -195,9 +195,9 @@ def test_list_objects_in_all_s3_buckets(
 
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
-    assert "s3://aaa-list-all/object" in lines
-    assert "s3://aaa-list-all" not in lines
-    assert "s3://zzz-list-all" not in lines
+    assert "aaa-list-all/object" in lines
+    assert "aaa-list-all" not in lines
+    assert "zzz-list-all" not in lines
 
 
 def test_list_live_s3_prefix(executable, s3_server, s3_environment):
@@ -216,8 +216,8 @@ def test_list_live_s3_prefix(executable, s3_server, s3_environment):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
-        "s3://list-prefix/folder/first\n"
-        "s3://list-prefix/folder/second\n"
+        "list-prefix/folder/first\n"
+        "list-prefix/folder/second\n"
     )
 
 
@@ -240,7 +240,7 @@ def test_list_live_s3_continues_after_first_page(
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == [
-        *(f"s3://{bucket}/{key}" for key in keys),
+        *(f"{bucket}/{key}" for key in keys),
     ]
 
 
