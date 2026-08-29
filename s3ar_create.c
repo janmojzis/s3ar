@@ -92,8 +92,8 @@ static char *object_path(const char *bucket, const char *key) {
 static void verbose_name(const struct create_context *context,
                          const char *bucket, const char *key) {
     if (!context->config->verbose) { return; }
-    int result = key == NULL ? fprintf(stderr, "s3://%s\n", bucket)
-                             : fprintf(stderr, "s3://%s/%s\n", bucket, key);
+    int result = key == NULL ? fprintf(stderr, "%s\n", bucket)
+                             : fprintf(stderr, "%s/%s\n", bucket, key);
     if (result < 0) {
         die_fatal("s3ar: unable to write verbose output", bucket, key);
     }
