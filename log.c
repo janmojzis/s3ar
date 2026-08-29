@@ -14,19 +14,6 @@ static void log_s3_name(const char *bucket, const char *key) {
     }
 }
 
-void log_s3_bucket(const struct s3_bucket *bucket, bool verbose) {
-    if (!verbose) {
-        log_s3_name(bucket->name, NULL);
-        return;
-    }
-    int result = fprintf(stdout, "s3://%s\tacl=%s\n", bucket->name,
-                         bucket->acl != NULL ? bucket->acl : "unavailable");
-    if (result < 0) {
-        die_fatal("s3ar: unable to write standard output", bucket->name,
-                  NULL);
-    }
-}
-
 void log_s3_object(const struct s3_object *object, bool verbose) {
     if (!verbose) {
         log_s3_name(object->bucket, object->key);

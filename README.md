@@ -6,10 +6,11 @@ back to S3. Its member selection follows tar semantics: an operand selects an
 exact member and all descendants below `MEMBER/`.
 
 The command-line interface is intentionally designed to resemble the standard
-`tar` utility. It uses the familiar `-c`, `-x`, `-t`, `-f`, and `-v` options
-and processes selection operands in command-line order. `s3ar` is not a full
-replacement for `tar`; it applies the same style of operation to live S3
-resources and supports only the options documented below.
+`tar` utility. Archive creation and extraction use the familiar `-c`, `-x`,
+`-f`, and `-v` options, and selection operands are processed in command-line
+order. `s3ar` is not a full replacement for `tar`; it applies the same style
+of operation to live S3 resources and supports only the options documented
+below.
 
 This README is the authoritative contract for the command-line interface,
 configuration, and observable behavior.
@@ -59,8 +60,8 @@ so `S3AR_SESSION_TOKEN` is not supported.
 ```text
 s3ar (-c | --create) [-v | --verbose] [--zstd] [-f TARFILE] S3...
 s3ar (-x | --extract) [-v | --verbose] [--zstd] [-f TARFILE] [S3...]
-s3ar (-t | --list) [-v | --verbose] S3...
 s3ar --list-buckets
+s3ar --list-objects [-v | --verbose] S3...
 s3ar (-h | --help)
 ```
 
@@ -68,26 +69,27 @@ The options are:
 
 - `-c`, `--create`: create a tar archive from the selected S3 resources.
 - `-x`, `--extract`, `--get`: extract a tar archive into S3.
-- `-t`, `--list`: list the selected live S3 resource.
 - `--list-buckets`: list all bucket names without listing their objects.
+- `--list-objects`: list objects in the selected live S3 resources.
 - `-f`, `--file TARFILE`: read or write the archive named `TARFILE`.
 - `--zstd`: create a zstd-compressed archive or require zstd when extracting.
 - `-v`, `--verbose`: enable verbose output.
 - `-h`, `--help`: display command-line help and exit successfully.
 
-Create and list require at least one S3 operand. Extract accepts zero or more
-selection operands. Multiple operands are processed in command-line order.
+Create and `--list-objects` require at least one S3 operand. Extract accepts
+zero or more selection operands. Multiple operands are processed in
+command-line order.
 Without `-f`, or with `-f -`, create writes to standard output while extract
 reads from standard input.
 
 Extract automatically detects uncompressed and zstd-compressed tar streams.
 Explicit `--zstd` rejects an uncompressed input. The option is not valid with
-list.
+`--list-buckets` or `--list-objects`.
 
 For example, list two buckets and all their objects in one invocation:
 
 ```sh
-./s3ar -t s3://incoming/ s3://processed/
+./s3ar --list-objects s3://incoming/ s3://processed/
 ```
 
 ## S3 selection contract
@@ -154,7 +156,7 @@ Extract an archive into S3:
 
 Without `-f`, the archive is read from standard input. Operands optionally
 filter archive members using the same exact-member-and-descendants selection
-as create and list:
+as create and `--list-objects`:
 
 ```sh
 ./s3ar -x -f album.tar s3://album/photo
@@ -189,33 +191,30 @@ photos
 
 It accepts no S3 operands.
 
-Every selected bucket or object is written to standard output as a reusable S3
-URI, one entry per line:
+Every selected object is written to standard output as a reusable S3 URI, one
+entry per line:
 
 ```text
-s3://photos
 s3://photos/2026/first.jpg
 s3://photos/2026/second.jpg
 ```
 
-Listing `s3://` writes each bucket followed by its objects. Bucket names are
-sorted. Object listings use S3 ordering and continue across pages of up to 512
-objects.
+Listing `s3://` writes the objects from every bucket. Buckets are processed in
+sorted order. Object listings use S3 ordering and continue across pages of up
+to 512 objects. Empty buckets produce no object output.
 
-Bucket selections write the bucket URI followed by all its object URIs. Object
-selections write the exact object first, when it exists, followed by matching
-descendants in S3 order.
+Bucket selections write all object URIs in that bucket. Object selections
+write the exact object first, when it exists, followed by matching descendants
+in S3 order.
 
-With `-v` or `--verbose`, buckets include their ACL summary. Objects include
-their byte size followed by sorted S3 user metadata:
+With `-v` or `--verbose`, objects include their byte size followed by sorted S3
+user metadata:
 
 ```text
-s3://photos    acl=public-read,custom
 s3://photos/first.jpg    1234    sha256=3472a7,source=camera
 ```
 
-An object without user metadata uses `-`. An ACL unavailable from the S3
-endpoint is written as `acl=unavailable`. Verbose object listings perform one
+An object without user metadata uses `-`. Verbose object listings perform one
 HEAD request per object to retrieve its user metadata.
 
 ## Exit status
@@ -248,11 +247,12 @@ export S3AR_REGION='us-east-1'
 export S3AR_ACCESS_KEY='test-access'
 export S3AR_SECRET_KEY='test-secret'
 
-./s3ar -t s3://
-./s3ar -t s3://photos
-./s3ar -t s3://photos/
-./s3ar -t s3://photos/second.jpg
-./s3ar -t s3://photos/2026/
+./s3ar --list-buckets
+./s3ar --list-objects s3://
+./s3ar --list-objects s3://photos
+./s3ar --list-objects s3://photos/
+./s3ar --list-objects s3://photos/second.jpg
+./s3ar --list-objects s3://photos/2026/
 ./s3ar -c -f photos.tar s3://photos
 ./s3ar -x -f photos.tar
 ```

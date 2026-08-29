@@ -13,10 +13,10 @@ def run(executable, *arguments, cwd=None, env=None):
 
 
 def test_list_rejects_local_archive_operand(executable):
-    result = run(executable, "-t", "archive.tar")
+    result = run(executable, "--list-objects", "archive.tar")
 
     assert result.returncode == 2
-    assert "list operand must be s3://" in result.stderr
+    assert "--list-objects operand must be s3://" in result.stderr
 
 
 def test_list_buckets_writes_bare_names(
@@ -55,7 +55,7 @@ def test_list_multiple_live_s3_operands(
 
     result = run(
         executable,
-        "-t",
+        "--list-objects",
         "s3://list-multiple/first/",
         "s3://list-multiple/second/",
         env=s3_environment,
@@ -91,14 +91,22 @@ def test_gnu_tar_help_alias(executable):
     assert long.stderr == ""
 
 
-def test_l_is_not_a_list_alias(executable):
-    result = run(executable, "-l", "archive.tar")
+def test_short_list_options_are_not_supported(executable):
+    for option in ("-l", "-t"):
+        result = run(executable, option, "s3://bucket")
+
+        assert result.returncode == 2
+        assert f"unknown option {option}" in result.stderr
+
+
+def test_old_long_list_option_is_not_supported(executable):
+    result = run(executable, "--list", "s3://bucket")
 
     assert result.returncode == 2
-    assert "unknown option -l" in result.stderr
+    assert "unknown option --list" in result.stderr
 
 
-def test_list_one_s3_bucket_including_empty_bucket(
+def test_list_objects_in_one_bucket_including_empty_bucket(
     executable, s3_server, s3_environment
 ):
     _endpoint, client = s3_server
@@ -106,19 +114,25 @@ def test_list_one_s3_bucket_including_empty_bucket(
     client.put_object(Bucket="list-one", Key="z.txt", Body=b"z")
     client.put_object(Bucket="list-one", Key="folder/a.txt", Body=b"a")
 
-    result = run(executable, "-t", "s3://list-one", env=s3_environment)
+    result = run(
+        executable, "--list-objects", "s3://list-one", env=s3_environment
+    )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
-        "s3://list-one\n"
         "s3://list-one/folder/a.txt\n"
         "s3://list-one/z.txt\n"
     )
 
     client.create_bucket(Bucket="list-empty")
-    empty = run(executable, "-t", "s3://list-empty/", env=s3_environment)
+    empty = run(
+        executable,
+        "--list-objects",
+        "s3://list-empty/",
+        env=s3_environment,
+    )
     assert empty.returncode == 0, empty.stderr
-    assert empty.stdout == "s3://list-empty\n"
+    assert empty.stdout == ""
 
 
 def test_verbose_list_s3(executable, s3_server, s3_environment):
@@ -131,26 +145,37 @@ def test_verbose_list_s3(executable, s3_server, s3_environment):
         Metadata={"source": "pytest", "sha256": "3472a7"},
     )
 
-    result = run(executable, "-t", "-v", "s3://list-verbose/", env=s3_environment)
+    result = run(
+        executable,
+        "--list-objects",
+        "-v",
+        "s3://list-verbose/",
+        env=s3_environment,
+    )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
-        "s3://list-verbose\tacl=unavailable\n"
         "s3://list-verbose/item\t4\tsha256=3472a7,source=pytest\n"
     )
 
-def test_list_all_s3_buckets(executable, s3_server, s3_environment):
+
+def test_list_objects_in_all_s3_buckets(
+    executable, s3_server, s3_environment
+):
     _endpoint, client = s3_server
     client.create_bucket(Bucket="aaa-list-all")
     client.create_bucket(Bucket="zzz-list-all")
     client.put_object(Bucket="aaa-list-all", Key="object", Body=b"x")
 
-    result = run(executable, "-t", "s3://", env=s3_environment)
+    result = run(
+        executable, "--list-objects", "s3://", env=s3_environment
+    )
 
     assert result.returncode == 0, result.stderr
     lines = result.stdout.splitlines()
-    assert lines.index("s3://aaa-list-all") < lines.index("s3://zzz-list-all")
     assert "s3://aaa-list-all/object" in lines
+    assert "s3://aaa-list-all" not in lines
+    assert "s3://zzz-list-all" not in lines
 
 
 def test_list_live_s3_prefix(executable, s3_server, s3_environment):
@@ -161,7 +186,10 @@ def test_list_live_s3_prefix(executable, s3_server, s3_environment):
     client.put_object(Bucket="list-prefix", Key="outside", Body=b"outside")
 
     result = run(
-        executable, "-t", "s3://list-prefix/folder/", env=s3_environment
+        executable,
+        "--list-objects",
+        "s3://list-prefix/folder/",
+        env=s3_environment,
     )
 
     assert result.returncode == 0, result.stderr
@@ -181,29 +209,30 @@ def test_list_live_s3_continues_after_first_page(
     for key in keys:
         client.put_object(Bucket=bucket, Key=key, Body=b"")
 
-    result = run(executable, "-t", f"s3://{bucket}", env=s3_environment)
+    result = run(
+        executable,
+        "--list-objects",
+        f"s3://{bucket}",
+        env=s3_environment,
+    )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.splitlines() == [
-        f"s3://{bucket}",
         *(f"s3://{bucket}/{key}" for key in keys),
     ]
 
 
 def test_file_option_is_invalid_for_list(executable):
-    result = run(executable, "-tf", "archive.tar")
+    result = run(executable, "--list-objects", "-f", "archive.tar")
 
     assert result.returncode == 2
     assert "-f is valid only with -c or -x" in result.stderr
 
 
 def test_zstd_rejects_live_s3_list(executable):
-    result = run(executable, "-t", "--zstd", "s3://bucket/")
+    result = run(
+        executable, "--list-objects", "--zstd", "s3://bucket/"
+    )
 
     assert result.returncode == 2
-    assert "option --zstd is not valid for live S3 list" in result.stderr
-
-
-def test_cli_rejects_ambiguous_or_not_implemented_forms(executable):
-    ambiguous = run(executable, "-t", "s3://bucket")
-    assert ambiguous.returncode == 2
+    assert "option --zstd is not valid with --list-objects" in result.stderr

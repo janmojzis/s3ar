@@ -39,24 +39,9 @@ static void log_object(const struct s3_object *object, void *callback_data) {
     else { log_s3_object(object, false); }
 }
 
-static void log_acl_bucket(const struct s3_bucket *bucket,
-                           void *callback_data) {
-    const struct list_context *context = callback_data;
-    log_s3_bucket(bucket, context->verbose);
-}
-
-static void log_bucket(const struct s3_bucket *bucket, void *callback_data) {
-    struct list_context *context = callback_data;
-    if (context->verbose) {
-        s3_bucket_acl(context->s3, bucket->name, log_acl_bucket, context);
-    }
-    else { log_s3_bucket(bucket, false); }
-}
-
 static void list_all_bucket(const struct s3_bucket *bucket,
                             void *callback_data) {
     struct list_context *context = callback_data;
-    log_bucket(bucket, context);
     s3_object_list_prefix(context->s3, bucket->name, NULL, log_object, context);
 }
 
@@ -69,11 +54,6 @@ static void list_selection(struct list_context *context,
     }
     if (selection->key == NULL) {
         s3_bucket_check(s3, selection->bucket);
-        const struct s3_bucket bucket = {
-            .name = selection->bucket,
-            .creation_date = -1,
-        };
-        log_bucket(&bucket, context);
         s3_object_list_prefix(s3, selection->bucket, NULL, log_object, context);
         return;
     }
@@ -99,7 +79,7 @@ static void list_selection(struct list_context *context,
     }
 }
 
-void s3ar_list(const struct s3ar_config *config) {
+void s3ar_list_objects(const struct s3ar_config *config) {
     struct list_context context = {
         .s3 = &config->s3,
         .verbose = config->verbose,

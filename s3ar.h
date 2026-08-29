@@ -9,7 +9,7 @@ enum s3ar_command {
     S3AR_COMMAND_NONE,
     S3AR_COMMAND_CREATE,
     S3AR_COMMAND_EXTRACT,
-    S3AR_COMMAND_LIST,
+    S3AR_COMMAND_LIST_OBJECTS,
     S3AR_COMMAND_LIST_BUCKETS,
 };
 
@@ -32,14 +32,13 @@ struct s3ar_selection {
 
 void s3ar_create(const struct s3ar_config *config);
 void s3ar_extract(const struct s3ar_config *config);
-void s3ar_list(const struct s3ar_config *config);
+void s3ar_list_objects(const struct s3ar_config *config);
 void s3ar_list_buckets(const struct s3ar_config *config);
 void s3ar_selection_parse(struct s3ar_selection *selection, const char *uri);
 void s3ar_selection_free(struct s3ar_selection *selection);
 bool s3ar_selection_matches(const struct s3ar_selection *selection,
                             const char *bucket, const char *key);
 bool s3ar_key_is_safe(const char *key);
-void log_s3_bucket(const struct s3_bucket *bucket, bool verbose);
 void log_s3_object(const struct s3_object *object, bool verbose);
 
 #endif
