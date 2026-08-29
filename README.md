@@ -1,9 +1,15 @@
-# s3ar
+# S3 Archiver
 
 `s3ar` is a command-line utility for listing buckets and objects, creating tar
 archives from an S3-compatible object store, and extracting those archives
 back to S3. Its member selection follows tar semantics: an operand selects an
 exact member and all descendants below `MEMBER/`.
+
+The command-line interface is intentionally designed to resemble the standard
+`tar` utility. It uses the familiar `-c`, `-x`, `-t`, `-f`, and `-v` options
+and processes selection operands in command-line order. `s3ar` is not a full
+replacement for `tar`; it applies the same style of operation to live S3
+resources and supports only the options documented below.
 
 This README is the authoritative contract for the command-line interface,
 configuration, and observable behavior.
@@ -132,8 +138,9 @@ SCHILY.xattr.user.NAME=VALUE
 
 Unsafe object keys containing empty, `.` or `..` path components are rejected.
 Create is a weak snapshot: an object can change between LIST and GET. With
-`-v`, created S3 URIs are written to standard error so a tar stream on standard
-output is not corrupted.
+`-v`, archived member names are written without the `s3://` prefix to standard
+error. This is independent of the archive destination and keeps a tar stream
+on standard output unmodified.
 
 ## Extracting archives
 
@@ -165,8 +172,8 @@ an error.
 
 `SCHILY.xattr.user.NAME` values are restored as S3 user metadata. Stored ETags
 and bucket ACL summaries are informational and are not restored; new buckets
-and uploaded objects use private ACLs. With `-v`, extracted S3 URIs are written
-to standard error.
+and uploaded objects use private ACLs. With `-v`, restored member names are
+written without the `s3://` prefix to standard error.
 
 ## Listing output
 
