@@ -19,6 +19,7 @@ struct s3ar_config {
 };
 
 void s3ar_list(const struct s3ar_config *config);
-void log_s3_name(const char *bucket, const char *key);
+void log_s3_bucket(const struct s3_bucket *bucket, bool verbose);
+void log_s3_object(const struct s3_object *object, bool verbose);
 
 #endif

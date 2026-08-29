@@ -19,6 +19,12 @@ struct s3 {
 struct s3_bucket {
     const char *name;
     int64_t creation_date;
+    const char *acl;
+};
+
+struct s3_metadata {
+    const char *name;
+    const char *value;
 };
 
 struct s3_object {
@@ -27,6 +33,8 @@ struct s3_object {
     uint64_t size;
     int64_t last_modified;
     const char *etag;
+    const struct s3_metadata *metadata;
+    size_t metadata_count;
 };
 
 /* Structures and strings passed to callbacks are valid only for the duration
@@ -40,6 +48,8 @@ void s3_open(const struct s3 *s3);
 void s3_close(void);
 
 void s3_bucket_check(const struct s3 *s3, const char *bucket);
+void s3_bucket_acl(const struct s3 *s3, const char *bucket,
+                   s3_bucket_callback callback, void *callback_data);
 void s3_bucket_list(const struct s3 *s3, s3_bucket_callback callback,
                     void *callback_data);
 

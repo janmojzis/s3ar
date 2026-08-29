@@ -109,6 +109,18 @@ Bucket selections write the bucket URI followed by all its object URIs. Object
 selections write the exact object first, when it exists, followed by matching
 descendants in S3 order.
 
+With `-v` or `--verbose`, buckets include their ACL summary. Objects include
+their byte size followed by sorted S3 user metadata:
+
+```text
+s3://photos    acl=public-read,custom
+s3://photos/first.jpg    1234    sha256=3472a7,source=camera
+```
+
+An object without user metadata uses `-`. An ACL unavailable from the S3
+endpoint is written as `acl=unavailable`. Verbose object listings perform one
+HEAD request per object to retrieve its user metadata.
+
 ## Exit status
 
 - `0`: the listing or help completed successfully.

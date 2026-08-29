@@ -9,7 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-enum { LIST_PAGE_SIZE = 1000 };
+enum { LIST_PAGE_SIZE = 512 };
 
 struct s3_request {
     const char *error_text;
@@ -45,6 +45,12 @@ struct object_head {
     uint64_t size;
     int64_t last_modified;
     char *etag;
+    struct s3_metadata *metadata;
+    size_t metadata_count;
+};
+
+struct acl_response {
+    S3Status status;
 };
 
 static S3Status ignore_properties(const S3ResponseProperties *properties,
@@ -79,7 +85,46 @@ static S3Status collect_head(const S3ResponseProperties *properties,
             die_fatal("s3ar: out of memory", NULL, NULL);
         }
     }
+    if (properties->metaDataCount > 0) {
+        head->metadata = calloc((size_t) properties->metaDataCount,
+                                sizeof(*head->metadata));
+        if (head->metadata == NULL) {
+            die_fatal("s3ar: out of memory", NULL, NULL);
+        }
+    }
+    for (int i = 0; i < properties->metaDataCount; ++i) {
+        const char *name = properties->metaData[i].name;
+        const char *value = properties->metaData[i].value;
+        if (name == NULL) { continue; }
+        if (value == NULL) { value = ""; }
+        char *name_copy = strdup(name);
+        char *value_copy = strdup(value);
+        if (name_copy == NULL || value_copy == NULL) {
+            free(name_copy);
+            free(value_copy);
+            die_fatal("s3ar: out of memory", NULL, NULL);
+        }
+        head->metadata[head->metadata_count++] = (struct s3_metadata) {
+            .name = name_copy,
+            .value = value_copy,
+        };
+    }
     return S3StatusOK;
+}
+
+static int compare_metadata(const void *left, const void *right) {
+    const struct s3_metadata *a = left;
+    const struct s3_metadata *b = right;
+    int result = strcmp(a->name, b->name);
+    return result != 0 ? result : strcmp(a->value, b->value);
+}
+
+static void free_metadata(struct object_head *head) {
+    for (size_t i = 0; i < head->metadata_count; ++i) {
+        free((char *) head->metadata[i].name);
+        free((char *) head->metadata[i].value);
+    }
+    free(head->metadata);
 }
 
 static void head_complete(S3Status status, const S3ErrorDetails *details,
@@ -97,6 +142,76 @@ static const S3ResponseHandler head_handler = {
     .propertiesCallback = collect_head,
     .completeCallback = head_complete,
 };
+
+static void acl_complete(S3Status status, const S3ErrorDetails *details,
+                         void *callback_data) {
+    (void) details;
+    ((struct acl_response *) callback_data)->status = status;
+}
+
+static const S3ResponseHandler acl_handler = {
+    .propertiesCallback = ignore_properties,
+    .completeCallback = acl_complete,
+};
+
+static bool group_permission(S3Permission permission, bool *read,
+                             bool *write) {
+    switch (permission) {
+        case S3PermissionRead:
+            *read = true;
+            return true;
+        case S3PermissionWrite:
+            *write = true;
+            return true;
+        case S3PermissionFullControl:
+            *read = true;
+            *write = true;
+            return true;
+        case S3PermissionReadACP:
+        case S3PermissionWriteACP:
+            return false;
+    }
+    return false;
+}
+
+static char *format_acl(bool public_read, bool public_write,
+                        bool authenticated_read, bool authenticated_write,
+                        bool custom) {
+    if (!public_read && !public_write && !authenticated_read &&
+        !authenticated_write && !custom) {
+        return strdup("private");
+    }
+    const char *values[5];
+    size_t count = 0;
+    if (public_read) { values[count++] = "public-read"; }
+    if (public_write) { values[count++] = "public-write"; }
+    if (authenticated_read) { values[count++] = "authenticated-read"; }
+    if (authenticated_write) { values[count++] = "authenticated-write"; }
+    if (custom) { values[count++] = "custom"; }
+
+    size_t length = 0;
+    for (size_t i = 0; i < count; ++i) {
+        size_t value_length = strlen(values[i]);
+        if (length > SIZE_MAX - value_length - (i > 0 ? 1 : 0)) {
+            errno = ENOMEM;
+            die_fatal("s3ar: out of memory", NULL, NULL);
+        }
+        length += value_length + (i > 0 ? 1 : 0);
+    }
+    char *summary = malloc(length + 1);
+    if (summary == NULL) {
+        die_fatal("s3ar: out of memory", NULL, NULL);
+    }
+    size_t offset = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (i > 0) { summary[offset++] = ','; }
+        size_t value_length = strlen(values[i]);
+        memcpy(summary + offset, values[i], value_length);
+        offset += value_length;
+    }
+    summary[offset] = '\0';
+    return summary;
+}
 
 static void append_bucket(struct bucket_list *list, const char *name,
                           int64_t creation_date) {
@@ -248,6 +363,68 @@ void s3_bucket_check(const struct s3 *s3, const char *bucket) {
                    &response_handler, &request);
 }
 
+void s3_bucket_acl(const struct s3 *s3, const char *bucket,
+                   s3_bucket_callback callback, void *callback_data) {
+    validate_bucket(s3, bucket);
+    S3BucketContext context = bucket_context(s3, bucket);
+    char owner_id[S3_MAX_GRANTEE_USER_ID_SIZE] = "";
+    char owner_name[S3_MAX_GRANTEE_DISPLAY_NAME_SIZE] = "";
+    S3AclGrant grants[S3_MAX_ACL_GRANT_COUNT];
+    int grant_count = 0;
+    struct acl_response response = {.status = S3StatusOK};
+    S3_get_acl(&context, NULL, owner_id, owner_name, &grant_count, grants,
+               NULL, &acl_handler, &response);
+
+    char *summary = NULL;
+    if (response.status != S3StatusOK) {
+        summary = strdup("unavailable");
+        if (summary == NULL) {
+            die_fatal("s3ar: out of memory", NULL, NULL);
+        }
+    }
+    else {
+        bool public_read = false;
+        bool public_write = false;
+        bool authenticated_read = false;
+        bool authenticated_write = false;
+        bool custom = false;
+        for (int i = 0; i < grant_count; ++i) {
+            const S3AclGrant *grant = &grants[i];
+            if (grant->granteeType == S3GranteeTypeAllUsers) {
+                if (!group_permission(grant->permission, &public_read,
+                                      &public_write)) {
+                    custom = true;
+                }
+            }
+            else if (grant->granteeType == S3GranteeTypeAllAwsUsers) {
+                if (!group_permission(grant->permission, &authenticated_read,
+                                      &authenticated_write)) {
+                    custom = true;
+                }
+            }
+            else if (grant->granteeType == S3GranteeTypeCanonicalUser &&
+                     strcmp(grant->grantee.canonicalUser.id, owner_id) == 0) {
+                if (grant->permission != S3PermissionFullControl) {
+                    custom = true;
+                }
+            }
+            else {
+                custom = true;
+            }
+        }
+        summary = format_acl(public_read, public_write, authenticated_read,
+                             authenticated_write, custom);
+    }
+
+    const struct s3_bucket value = {
+        .name = bucket,
+        .creation_date = -1,
+        .acl = summary,
+    };
+    callback(&value, callback_data);
+    free(summary);
+}
+
 void s3_bucket_list(const struct s3 *s3, s3_bucket_callback callback,
                     void *callback_data) {
     struct bucket_list list = {
@@ -281,17 +458,23 @@ bool s3_object_head(const struct s3 *s3, const char *bucket, const char *key,
     S3_head_object(&context, key, NULL, &head_handler, &head);
     if (!head.exists) {
         free(head.etag);
+        free_metadata(&head);
         return false;
     }
+    qsort(head.metadata, head.metadata_count, sizeof(*head.metadata),
+          compare_metadata);
     const struct s3_object object = {
         .bucket = bucket,
         .key = key,
         .size = head.size,
         .last_modified = head.last_modified,
         .etag = head.etag,
+        .metadata = head.metadata,
+        .metadata_count = head.metadata_count,
     };
     callback(&object, callback_data);
     free(head.etag);
+    free_metadata(&head);
     return true;
 }
 

@@ -9,26 +9,56 @@
 #include <stdlib.h>
 #include <string.h>
 
+struct list_context {
+    const struct s3 *s3;
+    bool verbose;
+};
+
+static void log_head_object(const struct s3_object *object,
+                            void *callback_data) {
+    const struct list_context *context = callback_data;
+    log_s3_object(object, context->verbose);
+}
+
 static void log_object(const struct s3_object *object, void *callback_data) {
-    (void) callback_data;
-    log_s3_name(object->bucket, object->key);
+    struct list_context *context = callback_data;
+    if (context->verbose) {
+        s3_object_head(context->s3, object->bucket, object->key,
+                       log_head_object, context);
+    }
+    else {
+        log_s3_object(object, false);
+    }
+}
+
+static void log_acl_bucket(const struct s3_bucket *bucket,
+                           void *callback_data) {
+    const struct list_context *context = callback_data;
+    log_s3_bucket(bucket, context->verbose);
 }
 
 static void log_bucket(const struct s3_bucket *bucket, void *callback_data) {
-    (void) callback_data;
-    log_s3_name(bucket->name, NULL);
+    struct list_context *context = callback_data;
+    if (context->verbose) {
+        s3_bucket_acl(context->s3, bucket->name, log_acl_bucket, context);
+    }
+    else {
+        log_s3_bucket(bucket, false);
+    }
 }
 
 static void list_all_bucket(const struct s3_bucket *bucket,
                             void *callback_data) {
-    const struct s3 *s3 = callback_data;
-    log_bucket(bucket, NULL);
-    s3_object_list_prefix(s3, bucket->name, NULL, log_object, NULL);
+    struct list_context *context = callback_data;
+    log_bucket(bucket, context);
+    s3_object_list_prefix(context->s3, bucket->name, NULL, log_object,
+                          context);
 }
 
-static void list_uri(const struct s3 *s3, const char *uri) {
+static void list_uri(struct list_context *context, const char *uri) {
+    const struct s3 *s3 = context->s3;
     if (strcmp(uri, "s3://") == 0) {
-        s3_bucket_list(s3, list_all_bucket, (void *) s3);
+        s3_bucket_list(s3, list_all_bucket, context);
         return;
     }
     if (strncmp(uri, "s3://", 5) != 0 || uri[5] == '\0' || uri[5] == '/') {
@@ -48,14 +78,15 @@ static void list_uri(const struct s3 *s3, const char *uri) {
             .name = member,
             .creation_date = -1,
         };
-        log_bucket(&bucket, NULL);
-        s3_object_list_prefix(s3, member, NULL, log_object, NULL);
+        log_bucket(&bucket, context);
+        s3_object_list_prefix(s3, member, NULL, log_object, context);
         free(member);
         return;
     }
 
     *key++ = '\0';
-    bool found = s3_object_head(s3, member, key, log_object, NULL);
+    bool found =
+        s3_object_head(s3, member, key, log_head_object, context);
     length = strlen(key);
     if (length > SIZE_MAX - 2) {
         errno = ENOMEM;
@@ -67,7 +98,7 @@ static void list_uri(const struct s3 *s3, const char *uri) {
     prefix[length] = '/';
     prefix[length + 1] = '\0';
     size_t descendants =
-        s3_object_list_prefix(s3, member, prefix, log_object, NULL);
+        s3_object_list_prefix(s3, member, prefix, log_object, context);
     free(prefix);
     free(member);
     if (!found && descendants == 0) {
@@ -77,8 +108,11 @@ static void list_uri(const struct s3 *s3, const char *uri) {
 }
 
 void s3ar_list(const struct s3ar_config *config) {
-    const struct s3 *s3 = &config->s3;
+    struct list_context context = {
+        .s3 = &config->s3,
+        .verbose = config->verbose,
+    };
     for (int i = 0; i < config->operand_count; ++i) {
-        list_uri(s3, config->operands[i]);
+        list_uri(&context, config->operands[i]);
     }
 }
