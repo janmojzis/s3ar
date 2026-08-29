@@ -11,10 +11,14 @@
 #include <string.h>
 
 static void usage(FILE *stream) {
-    fprintf(stream, "Usage: s3ar (-t | --list) [-v | --verbose] S3...\n"
+    fprintf(stream, "Usage: s3ar (-c | --create) [-v | --verbose] "
+                    "[-f TARFILE] S3...\n"
+                    "       s3ar (-t | --list) [-v | --verbose] S3...\n"
                     "\n"
                     "Options:\n"
+                    "  -c, --create  create a tar archive from S3\n"
                     "  -t, --list  list an S3 source\n"
+                    "  -f, --file TARFILE  write the archive to TARFILE\n"
                     "  -v, --verbose  enable verbose output\n"
                     "  -h, --help  display this help\n"
                     "\n"
@@ -98,7 +102,9 @@ static void parse_s3_environment(struct s3 *s3) {
 }
 
 static const struct option long_options[] = {
+    {"create", no_argument, NULL, 'c'},
     {"list", no_argument, NULL, 't'},
+    {"file", required_argument, NULL, 'f'},
     {"verbose", no_argument, NULL, 'v'},
     {"help", no_argument, NULL, 'h'},
     {NULL, 0, NULL, 0},
@@ -111,16 +117,34 @@ int main(int argc, char **argv) {
     /* parse options */
     opterr = 0;
     for (;;) {
-        int option = getopt_long(argc, argv, "tvh", long_options, NULL);
+        int option = getopt_long(argc, argv, "ctvf:h", long_options, NULL);
         if (option == -1) { break; }
 
-        /* -t --list */
-        if (option == 't') {
+        /* -c --create */
+        if (option == 'c') {
             if (config.command != S3AR_COMMAND_NONE) {
                 errno = 0;
-                die_fatal("s3ar: list option specified twice", NULL, NULL);
+                die_fatal("s3ar: command specified twice", NULL, NULL);
+            }
+            config.command = S3AR_COMMAND_CREATE;
+        }
+
+        /* -t --list */
+        else if (option == 't') {
+            if (config.command != S3AR_COMMAND_NONE) {
+                errno = 0;
+                die_fatal("s3ar: command specified twice", NULL, NULL);
             }
             config.command = S3AR_COMMAND_LIST;
+        }
+
+        /* -f --file */
+        else if (option == 'f') {
+            if (config.archive_path != NULL) {
+                errno = 0;
+                die_fatal("s3ar: archive file specified twice", NULL, NULL);
+            }
+            config.archive_path = optarg;
         }
 
         /* -v --verbose */
@@ -141,11 +165,16 @@ int main(int argc, char **argv) {
 
     if (config.command == S3AR_COMMAND_NONE) {
         errno = 0;
-        die_fatal("s3ar: specify -t or --list", NULL, NULL);
+        die_fatal("s3ar: specify -c or -t", NULL, NULL);
+    }
+    if (config.command == S3AR_COMMAND_LIST && config.archive_path != NULL) {
+        errno = 0;
+        die_fatal("s3ar: -f is valid only with -c", NULL, NULL);
     }
     if (argc - optind < 1) {
         errno = 0;
-        die_fatal("s3ar: list requires at least one S3 operand", NULL, NULL);
+        die_fatal("s3ar: command requires at least one S3 operand", NULL,
+                  NULL);
     }
     config.operand_count = argc - optind;
     config.operands = &argv[optind];
@@ -157,6 +186,9 @@ int main(int argc, char **argv) {
     /* run commands */
     s3_open(&config.s3);
     switch (config.command) {
+        case S3AR_COMMAND_CREATE:
+            s3ar_create(&config);
+            break;
         case S3AR_COMMAND_LIST:
             s3ar_list(&config);
             break;

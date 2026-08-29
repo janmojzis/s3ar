@@ -55,55 +55,45 @@ static void list_all_bucket(const struct s3_bucket *bucket,
                           context);
 }
 
-static void list_uri(struct list_context *context, const char *uri) {
+static void list_selection(struct list_context *context,
+                           const struct s3ar_selection *selection) {
     const struct s3 *s3 = context->s3;
-    if (strcmp(uri, "s3://") == 0) {
+    if (selection->bucket == NULL) {
         s3_bucket_list(s3, list_all_bucket, context);
         return;
     }
-    if (strncmp(uri, "s3://", 5) != 0 || uri[5] == '\0' || uri[5] == '/') {
-        errno = 0;
-        die_fatal("s3ar: invalid S3 operand", uri, NULL);
-    }
-
-    char *member = strdup(uri + 5);
-    if (member == NULL) { die_fatal("s3ar: out of memory", NULL, NULL); }
-    size_t length = strlen(member);
-    while (length > 0 && member[length - 1] == '/') { member[--length] = '\0'; }
-
-    char *key = strchr(member, '/');
-    if (key == NULL) {
-        s3_bucket_check(s3, member);
+    if (selection->key == NULL) {
+        s3_bucket_check(s3, selection->bucket);
         const struct s3_bucket bucket = {
-            .name = member,
+            .name = selection->bucket,
             .creation_date = -1,
         };
         log_bucket(&bucket, context);
-        s3_object_list_prefix(s3, member, NULL, log_object, context);
-        free(member);
+        s3_object_list_prefix(s3, selection->bucket, NULL, log_object,
+                              context);
         return;
     }
 
-    *key++ = '\0';
     bool found =
-        s3_object_head(s3, member, key, log_head_object, context);
-    length = strlen(key);
+        s3_object_head(s3, selection->bucket, selection->key,
+                       log_head_object, context);
+    size_t length = strlen(selection->key);
     if (length > SIZE_MAX - 2) {
         errno = ENOMEM;
         die_fatal("s3ar: out of memory", NULL, NULL);
     }
     char *prefix = malloc(length + 2);
     if (prefix == NULL) { die_fatal("s3ar: out of memory", NULL, NULL); }
-    memcpy(prefix, key, length);
+    memcpy(prefix, selection->key, length);
     prefix[length] = '/';
     prefix[length + 1] = '\0';
     size_t descendants =
-        s3_object_list_prefix(s3, member, prefix, log_object, context);
+        s3_object_list_prefix(s3, selection->bucket, prefix, log_object,
+                              context);
     free(prefix);
-    free(member);
     if (!found && descendants == 0) {
         errno = 0;
-        die_fatal("s3ar: not found", uri, NULL);
+        die_fatal("s3ar: not found", selection->uri, NULL);
     }
 }
 
@@ -113,6 +103,9 @@ void s3ar_list(const struct s3ar_config *config) {
         .verbose = config->verbose,
     };
     for (int i = 0; i < config->operand_count; ++i) {
-        list_uri(&context, config->operands[i]);
+        struct s3ar_selection selection;
+        s3ar_selection_parse(&selection, config->operands[i]);
+        list_selection(&context, &selection);
+        s3ar_selection_free(&selection);
     }
 }

@@ -53,6 +53,15 @@ struct acl_response {
     S3Status status;
 };
 
+struct object_get {
+    struct s3_request request;
+    const char *bucket;
+    const char *key;
+    s3_object_properties_callback properties_callback;
+    s3_object_data_callback data_callback;
+    void *callback_data;
+};
+
 static S3Status ignore_properties(const S3ResponseProperties *properties,
                                   void *callback_data) {
     (void) properties;
@@ -152,6 +161,53 @@ static void acl_complete(S3Status status, const S3ErrorDetails *details,
 static const S3ResponseHandler acl_handler = {
     .propertiesCallback = ignore_properties,
     .completeCallback = acl_complete,
+};
+
+static S3Status get_properties(const S3ResponseProperties *properties,
+                               void *callback_data) {
+    struct object_get *get = callback_data;
+    size_t count = properties->metaDataCount > 0
+                       ? (size_t) properties->metaDataCount
+                       : 0;
+    struct s3_metadata *metadata = NULL;
+    if (count > 0) {
+        metadata = calloc(count, sizeof(*metadata));
+        if (metadata == NULL) { return S3StatusOutOfMemory; }
+        for (size_t i = 0; i < count; ++i) {
+            metadata[i] = (struct s3_metadata) {
+                .name = properties->metaData[i].name,
+                .value = properties->metaData[i].value != NULL
+                             ? properties->metaData[i].value
+                             : "",
+            };
+        }
+    }
+    const struct s3_object object = {
+        .bucket = get->bucket,
+        .key = get->key,
+        .size = properties->contentLength,
+        .last_modified = properties->lastModified,
+        .etag = properties->eTag,
+        .metadata = metadata,
+        .metadata_count = count,
+    };
+    S3Status status =
+        get->properties_callback(&object, get->callback_data);
+    free(metadata);
+    return status;
+}
+
+static S3Status get_data(int size, const char *data, void *callback_data) {
+    struct object_get *get = callback_data;
+    return get->data_callback(size, data, get->callback_data);
+}
+
+static const S3GetObjectHandler get_handler = {
+    .responseHandler = {
+        .propertiesCallback = get_properties,
+        .completeCallback = request_complete,
+    },
+    .getObjectDataCallback = get_data,
 };
 
 static bool group_permission(S3Permission permission, bool *read,
@@ -517,4 +573,25 @@ size_t s3_object_list_prefix(const struct s3 *s3, const char *bucket,
     }
     free(marker);
     return count;
+}
+
+void s3_object_get(const struct s3 *s3, const char *bucket, const char *key,
+                   s3_object_properties_callback properties_callback,
+                   s3_object_data_callback data_callback,
+                   void *callback_data) {
+    validate_bucket(s3, bucket);
+    S3BucketContext context = bucket_context(s3, bucket);
+    struct object_get get = {
+        .request = {
+            .error_text = "s3ar: unable to read object",
+            .bucket = bucket,
+            .key = key,
+        },
+        .bucket = bucket,
+        .key = key,
+        .properties_callback = properties_callback,
+        .data_callback = data_callback,
+        .callback_data = callback_data,
+    };
+    S3_get_object(&context, key, NULL, 0, 0, NULL, &get_handler, &get);
 }

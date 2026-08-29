@@ -1,8 +1,9 @@
 # s3ar
 
 `s3ar` is a command-line utility for listing buckets and objects in an
-S3-compatible object store. Its member selection follows tar semantics: an
-operand selects an exact member and all descendants below `MEMBER/`.
+S3-compatible object store and creating tar archives from them. Its member
+selection follows tar semantics: an operand selects an exact member and all
+descendants below `MEMBER/`.
 
 This README is the authoritative contract for the command-line interface,
 configuration, and observable behavior.
@@ -12,7 +13,7 @@ configuration, and observable behavior.
 Install the build dependencies:
 
 ```sh
-apt install build-essential libs3-dev
+apt install build-essential libs3-dev libarchive-dev
 ```
 
 Build the executable:
@@ -50,18 +51,22 @@ so `S3AR_SESSION_TOKEN` is not supported.
 ## Command line
 
 ```text
+s3ar (-c | --create) [-v | --verbose] [-f TARFILE] S3...
 s3ar (-t | --list) [-v | --verbose] S3...
 s3ar (-h | --help)
 ```
 
 The options are:
 
+- `-c`, `--create`: create a tar archive from the selected S3 resources.
 - `-t`, `--list`: list the selected live S3 resource.
+- `-f`, `--file TARFILE`: write a created archive to `TARFILE`.
 - `-v`, `--verbose`: enable verbose output.
 - `-h`, `--help`: display command-line help and exit successfully.
 
-At least one S3 operand is required for a listing. Multiple operands are
-processed in command-line order. Archive-related options are rejected.
+At least one S3 operand is required. Multiple operands are processed in
+command-line order. `-f` is valid only with create. Without `-f`, or with
+`-f -`, create writes the archive to standard output.
 
 For example, list two buckets and all their objects in one invocation:
 
@@ -90,7 +95,39 @@ An object selection that matches neither an exact key nor any descendant is an
 error. A bucket selection succeeds for an empty bucket and still writes the
 bucket URI.
 
-## Output
+## Creating archives
+
+Create one bucket in a local tar file:
+
+```sh
+./s3ar -c -f album.tar s3://album
+```
+
+Without `-f`, the archive is streamed to standard output:
+
+```sh
+./s3ar -c s3://album/photo/ >photos.tar
+```
+
+Each selected bucket is stored once as a `BUCKET/` directory entry. Objects
+are regular entries named `BUCKET/KEY`; their bodies are streamed from S3
+directly into libarchive. Empty buckets therefore still produce an archive
+member.
+
+The restricted PAX archive stores S3 metadata as SCHILY extended attributes:
+
+```text
+SCHILY.xattr.s3ar.bucket-acl=public-read,custom
+SCHILY.xattr.etag=ETAG
+SCHILY.xattr.user.NAME=VALUE
+```
+
+Unsafe object keys containing empty, `.` or `..` path components are rejected.
+Create is a weak snapshot: an object can change between LIST and GET. With
+`-v`, created S3 URIs are written to standard error so a tar stream on standard
+output is not corrupted.
+
+## Listing output
 
 Every selected bucket or object is written to standard output as a reusable S3
 URI, one entry per line:
@@ -102,8 +139,8 @@ s3://photos/2026/second.jpg
 ```
 
 Listing `s3://` writes each bucket followed by its objects. Bucket names are
-sorted. Object listings use S3 ordering and continue across 1000-object result
-pages.
+sorted. Object listings use S3 ordering and continue across pages of up to 512
+objects.
 
 Bucket selections write the bucket URI followed by all its object URIs. Object
 selections write the exact object first, when it exists, followed by matching
@@ -156,6 +193,7 @@ export S3AR_SECRET_KEY='test-secret'
 ./s3ar -t s3://photos/
 ./s3ar -t s3://photos/second.jpg
 ./s3ar -t s3://photos/2026/
+./s3ar -c -f photos.tar s3://photos
 ```
 
 The test server imports the filesystem tree at startup. Restart it after
