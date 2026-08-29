@@ -38,7 +38,6 @@ def archive_bytes(buckets):
                 entry = tarfile.TarInfo(f"{bucket}/{key}")
                 entry.size = len(data)
                 entry.pax_headers = {
-                    "SCHILY.xattr.etag": '"old-etag"',
                     "SCHILY.xattr.user.origin": "archive",
                 }
                 archive.addfile(entry, io.BytesIO(data))

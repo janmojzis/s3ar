@@ -137,7 +137,6 @@ The restricted PAX archive stores S3 metadata as SCHILY extended attributes:
 
 ```text
 SCHILY.xattr.s3ar.bucket-acl=public-read,custom
-SCHILY.xattr.etag=ETAG
 SCHILY.xattr.user.NAME=VALUE
 ```
 
@@ -175,10 +174,10 @@ components, links, and other member types are rejected. Uncompressed and zstd
 archives are accepted. A requested operand that matches no archive member is
 an error.
 
-`SCHILY.xattr.user.NAME` values are restored as S3 user metadata. Stored ETags
-and bucket ACL summaries are informational and are not restored; new buckets
-and uploaded objects use private ACLs. With `-v`, restored member names are
-written without the `s3://` prefix to standard error.
+`SCHILY.xattr.user.NAME` values are restored as S3 user metadata. Bucket ACL
+summaries are informational and are not restored; new buckets and uploaded
+objects use private ACLs. With `-v`, restored member names are written without
+the `s3://` prefix to standard error.
 
 ## Listing output
 

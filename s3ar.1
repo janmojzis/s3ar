@@ -160,18 +160,17 @@ use the
 form even though list and verbose output omit that prefix.
 .SH ARCHIVE FORMAT
 Archives use the restricted POSIX PAX format. Plain and zstd-compressed
-archives are supported. Bucket ACL summaries, object ETags, and S3 user
-metadata are stored as SCHILY extended attributes:
+archives are supported. Bucket ACL summaries and S3 user metadata are stored
+as SCHILY extended attributes:
 .PP
 .nf
 SCHILY.xattr.s3ar.bucket-acl=public-read,custom
-SCHILY.xattr.etag=ETAG
 SCHILY.xattr.user.NAME=VALUE
 .fi
 .PP
-User metadata is restored to uploaded objects. Stored ETags and bucket ACL
-summaries are informational and are not restored. Unsafe object keys or
-archive paths containing empty,
+User metadata is restored to uploaded objects. Bucket ACL summaries are
+informational and are not restored. Unsafe object keys or archive paths
+containing empty,
 .BR . ,
 or
 .B ..

@@ -5,9 +5,8 @@
  *
  * S3 metadata is stored in PAX SCHILY extended attributes:
  * SCHILY.xattr.s3ar.bucket-acl records a bucket ACL summary,
- * SCHILY.xattr.etag records an object ETag, and SCHILY.xattr.user.NAME
- * preserves S3 user metadata for later extraction. Unsafe object keys are
- * rejected.
+ * and SCHILY.xattr.user.NAME preserves S3 user metadata for later
+ * extraction. Unsafe object keys are rejected.
  *
  * SPDX-License-Identifier: MIT-0
  */
@@ -185,10 +184,6 @@ static S3Status write_object_header(const struct s3_object *object,
                                 ? (time_t) object->last_modified
                                 : (time_t) 0,
                             0);
-    if (object->etag != NULL) {
-        archive_entry_xattr_add_entry(entry, "etag", object->etag,
-                                      strlen(object->etag));
-    }
     for (size_t i = 0; i < object->metadata_count; ++i) {
         const char *name = object->metadata[i].name;
         const char *value = object->metadata[i].value;

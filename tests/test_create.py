@@ -57,12 +57,12 @@ def raw_tar_entries(path):
     return entries
 
 
-def test_create_single_bucket_with_full_path_etag_and_metadata(
+def test_create_single_bucket_with_full_path_and_metadata(
     executable, s3_server, s3_environment, tmp_path
 ):
     _endpoint, client = s3_server
     client.create_bucket(Bucket="create-single")
-    response = client.put_object(
+    client.put_object(
         Bucket="create-single",
         Key="folder/object.txt",
         Body=b"object data",
@@ -93,17 +93,15 @@ def test_create_single_bucket_with_full_path_etag_and_metadata(
     assert bucket.pax_headers["SCHILY.xattr.s3ar.bucket-acl"] == "unavailable"
     assert item.size == len(b"object data")
     assert "SCHILY.xattr.bucket" not in item.pax_headers
-    assert item.pax_headers["SCHILY.xattr.etag"] == response["ETag"]
     assert item.pax_headers["SCHILY.xattr.user.source"] == "create-test"
 
     raw = raw_tar_entries(target)
     object_pax = next(
         payload for _name, kind, payload in raw
-        if kind == b"x" and b"SCHILY.xattr.etag=" in payload
+        if kind == b"x" and b"SCHILY.xattr.user.source=" in payload
     )
     assert b"LIBARCHIVE.xattr." not in object_pax
     assert b"SCHILY.xattr.bucket=" not in object_pax
-    assert f"SCHILY.xattr.etag={response['ETag']}\n".encode() in object_pax
     assert b"SCHILY.xattr.user.source=create-test\n" in object_pax
     object_header = next(
         name for name, kind, _payload in raw if kind == b"0" and name == b"create-single/folder/object.txt"

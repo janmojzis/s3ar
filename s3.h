@@ -32,7 +32,6 @@ struct s3_object {
     const char *key;
     uint64_t size;
     int64_t last_modified;
-    const char *etag;
     const struct s3_metadata *metadata;
     size_t metadata_count;
 };

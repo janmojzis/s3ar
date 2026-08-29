@@ -4,9 +4,9 @@
  * selected object bodies are streamed directly into S3 PUT requests.
  *
  * s3ar archives store S3 metadata in PAX SCHILY extended attributes:
- * SCHILY.xattr.s3ar.bucket-acl, SCHILY.xattr.etag, and
- * SCHILY.xattr.user.NAME. User metadata is restored to uploaded objects;
- * bucket ACL summaries and ETags are informational and are not restored.
+ * SCHILY.xattr.s3ar.bucket-acl and SCHILY.xattr.user.NAME. User metadata is
+ * restored to uploaded objects; bucket ACL summaries are informational and
+ * are not restored.
  * Unsafe paths, links, and unsupported archive member types are rejected.
  *
  * SPDX-License-Identifier: MIT-0
