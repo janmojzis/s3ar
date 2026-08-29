@@ -1,4 +1,16 @@
-/* SPDX-License-Identifier: MIT-0 */
+/*
+ * Create a POSIX PAX archive from selected buckets and objects in an
+ * S3-compatible store. Object bodies are streamed directly from S3 GET
+ * requests into an uncompressed or zstd-compressed archive.
+ *
+ * S3 metadata is stored in PAX SCHILY extended attributes:
+ * SCHILY.xattr.s3ar.bucket-acl records a bucket ACL summary,
+ * SCHILY.xattr.etag records an object ETag, and SCHILY.xattr.user.NAME
+ * preserves S3 user metadata for later extraction. Unsafe object keys are
+ * rejected.
+ *
+ * SPDX-License-Identifier: MIT-0
+ */
 
 #include "die.h"
 #include "s3.h"

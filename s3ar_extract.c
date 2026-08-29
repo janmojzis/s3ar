@@ -1,6 +1,14 @@
 /*
- * Extract tar bucket and object entries into an S3-compatible store.
- * Archive bodies are streamed directly into object PUT requests.
+ * Restore bucket directories and object members from a POSIX PAX archive to
+ * an S3-compatible store. Plain and zstd-compressed archives are supported;
+ * selected object bodies are streamed directly into S3 PUT requests.
+ *
+ * s3ar archives store S3 metadata in PAX SCHILY extended attributes:
+ * SCHILY.xattr.s3ar.bucket-acl, SCHILY.xattr.etag, and
+ * SCHILY.xattr.user.NAME. User metadata is restored to uploaded objects;
+ * bucket ACL summaries and ETags are informational and are not restored.
+ * Unsafe paths, links, and unsupported archive member types are rejected.
+ *
  * SPDX-License-Identifier: MIT-0
  */
 

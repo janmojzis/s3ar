@@ -1,4 +1,16 @@
-/* SPDX-License-Identifier: MIT-0 */
+/*
+ * Main command-line entry point for S3 Archiver. This module parses command
+ * options and S3 environment variables, initializes the S3 connection, and
+ * dispatches archive creation, extraction, and bucket or object listing.
+ *
+ * s3ar is a tar-like utility. Archive operations intentionally use familiar
+ * tar options such as -c, -x, -f, and -v, and selection operands follow tar
+ * member-selection semantics. s3ar aims to provide a similar command-line
+ * experience for S3 resources, but implements only the options documented by
+ * this utility and is not a complete replacement for tar.
+ *
+ * SPDX-License-Identifier: MIT-0
+ */
 
 #include "die.h"
 #include "s3.h"
