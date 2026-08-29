@@ -17,7 +17,7 @@ static void usage(FILE *stream) {
                     "       s3ar (-x | --extract) [-v | --verbose] "
                     "[--zstd] [-f TARFILE] [S3...]\n"
                     "       s3ar --list-objects [-v | --verbose] S3...\n"
-                    "       s3ar --list-buckets\n"
+                    "       s3ar --list-buckets [-v | --verbose] [S3...]\n"
                     "\n"
                     "Options:\n"
                     "  -c, --create  create a tar archive from S3\n"
@@ -221,11 +221,6 @@ int main(int argc, char **argv) {
         argc - optind < 1) {
         errno = 0;
         die_fatal("s3ar: command requires at least one S3 operand", NULL,
-                  NULL);
-    }
-    if (config.command == S3AR_COMMAND_LIST_BUCKETS && argc - optind != 0) {
-        errno = 0;
-        die_fatal("s3ar: --list-buckets does not accept operands", NULL,
                   NULL);
     }
     if (config.command == S3AR_COMMAND_LIST_OBJECTS ||

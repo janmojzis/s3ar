@@ -15,13 +15,36 @@ struct list_context {
     bool verbose;
 };
 
-static void list_bucket_name(const struct s3_bucket *bucket,
-                             void *callback_data) {
-    (void) callback_data;
-    if (fprintf(stdout, "%s\n", bucket->name) < 0) {
+struct list_buckets_context {
+    const struct s3 *s3;
+    bool verbose;
+};
+
+static void write_bucket_name(const struct s3_bucket *bucket, bool verbose) {
+    int result = verbose
+                     ? fprintf(stdout, "%s\tacl=%s\n", bucket->name,
+                               bucket->acl != NULL ? bucket->acl
+                                                   : "unavailable")
+                     : fprintf(stdout, "%s\n", bucket->name);
+    if (result < 0) {
         die_fatal("s3ar: unable to write standard output", bucket->name,
                   NULL);
     }
+}
+
+static void list_bucket_acl(const struct s3_bucket *bucket,
+                            void *callback_data) {
+    (void) callback_data;
+    write_bucket_name(bucket, true);
+}
+
+static void list_bucket_name(const struct s3_bucket *bucket,
+                             void *callback_data) {
+    struct list_buckets_context *context = callback_data;
+    if (context->verbose) {
+        s3_bucket_acl(context->s3, bucket->name, list_bucket_acl, NULL);
+    }
+    else { write_bucket_name(bucket, false); }
 }
 
 static void log_head_object(const struct s3_object *object,
@@ -93,5 +116,9 @@ void s3ar_list_objects(const struct s3ar_config *config) {
 }
 
 void s3ar_list_buckets(const struct s3ar_config *config) {
-    s3_bucket_list(&config->s3, list_bucket_name, NULL);
+    struct list_buckets_context context = {
+        .s3 = &config->s3,
+        .verbose = config->verbose,
+    };
+    s3_bucket_list(&config->s3, list_bucket_name, &context);
 }

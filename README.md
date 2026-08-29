@@ -60,7 +60,7 @@ so `S3AR_SESSION_TOKEN` is not supported.
 ```text
 s3ar (-c | --create) [-v | --verbose] [--zstd] [-f TARFILE] S3...
 s3ar (-x | --extract) [-v | --verbose] [--zstd] [-f TARFILE] [S3...]
-s3ar --list-buckets
+s3ar --list-buckets [-v | --verbose] [S3...]
 s3ar --list-objects [-v | --verbose] S3...
 s3ar (-h | --help)
 ```
@@ -69,7 +69,8 @@ The options are:
 
 - `-c`, `--create`: create a tar archive from the selected S3 resources.
 - `-x`, `--extract`, `--get`: extract a tar archive into S3.
-- `--list-buckets`: list all bucket names without listing their objects.
+- `--list-buckets`: list all bucket names without listing their objects;
+  positional arguments are ignored.
 - `--list-objects`: list objects in the selected live S3 resources.
 - `-f`, `--file TARFILE`: read or write the archive named `TARFILE`.
 - `--zstd`: create a zstd-compressed archive or require zstd when extracting.
@@ -189,7 +190,16 @@ backups
 photos
 ```
 
-It accepts no S3 operands.
+With `-v` or `--verbose`, every bucket includes its ACL summary:
+
+```text
+album    acl=public-read,custom
+backups  acl=private
+```
+
+All positional arguments passed to `--list-buckets` are explicitly ignored.
+In particular, operands such as `s3://asdasd`, `s3://bucket/prefix`, and
+`s3://` neither filter the output nor cause those resources to be accessed.
 
 Every selected object is written to standard output as a reusable S3 URI, one
 entry per line:

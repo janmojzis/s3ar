@@ -37,11 +37,33 @@ def test_list_buckets_writes_bare_names(
     assert all("/" not in name for name in names)
 
 
-def test_list_buckets_rejects_operands(executable):
-    result = run(executable, "--list-buckets", "s3://bucket")
+def test_list_buckets_ignores_operands(
+    executable, s3_server, s3_environment
+):
+    baseline = run(executable, "--list-buckets", env=s3_environment)
+    result = run(
+        executable,
+        "--list-buckets",
+        "s3://this-bucket-does-not-exist",
+        "s3://",
+        env=s3_environment,
+    )
 
-    assert result.returncode == 2
-    assert "--list-buckets does not accept operands" in result.stderr
+    assert baseline.returncode == 0, baseline.stderr
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == baseline.stdout
+
+
+def test_verbose_list_buckets_includes_acl(
+    executable, s3_server, s3_environment
+):
+    _endpoint, client = s3_server
+    client.create_bucket(Bucket="list-buckets-verbose")
+
+    result = run(executable, "--list-buckets", "-v", env=s3_environment)
+
+    assert result.returncode == 0, result.stderr
+    assert "list-buckets-verbose\tacl=unavailable" in result.stdout.splitlines()
 
 
 def test_list_multiple_live_s3_operands(
