@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <getopt.h>
+#include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -120,6 +121,10 @@ static const struct option long_options[] = {
 static struct s3ar_config config;
 
 int main(int argc, char **argv) {
+    if (setlocale(LC_ALL, "") == NULL) {
+        errno = 0;
+        die_fatal("s3ar: unable to initialize locale", NULL, NULL);
+    }
 
     /* parse options */
     opterr = 0;

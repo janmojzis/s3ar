@@ -30,14 +30,21 @@ struct bucket_list {
     size_t capacity;
 };
 
+struct owned_object {
+    char *key;
+    uint64_t size;
+    int64_t last_modified;
+    char *etag;
+};
+
 struct object_page {
     struct s3_request request;
     const char *bucket;
-    s3_object_callback callback;
-    void *callback_data;
+    struct owned_object *objects;
+    size_t count;
+    size_t capacity;
     bool truncated;
     char *next_marker;
-    size_t count;
 };
 
 struct object_head {
@@ -385,28 +392,62 @@ static void replace_marker(char **destination, const char *marker) {
     *destination = copy;
 }
 
+static void append_object(struct object_page *page,
+                          const S3ListBucketContent *content) {
+    if (page->count == page->capacity) {
+        size_t capacity = page->capacity == 0 ? 8 : page->capacity * 2;
+        if (capacity < page->capacity ||
+            capacity > SIZE_MAX / sizeof(*page->objects)) {
+            errno = ENOMEM;
+            die_fatal("s3ar: out of memory", NULL, NULL);
+        }
+        struct owned_object *objects =
+            realloc(page->objects, capacity * sizeof(*objects));
+        if (objects == NULL) {
+            die_fatal("s3ar: out of memory", NULL, NULL);
+        }
+        page->objects = objects;
+        page->capacity = capacity;
+    }
+    if (content->key == NULL) {
+        errno = 0;
+        die_fatal("s3ar: invalid object key from S3", page->bucket, NULL);
+    }
+    char *key = strdup(content->key);
+    char *etag = content->eTag != NULL ? strdup(content->eTag) : NULL;
+    if (key == NULL || (content->eTag != NULL && etag == NULL)) {
+        free(key);
+        free(etag);
+        die_fatal("s3ar: out of memory", NULL, NULL);
+    }
+    page->objects[page->count++] = (struct owned_object) {
+        .key = key,
+        .size = content->size,
+        .last_modified = content->lastModified,
+        .etag = etag,
+    };
+}
+
+static void free_object_page(struct object_page *page) {
+    for (size_t i = 0; i < page->count; ++i) {
+        free(page->objects[i].key);
+        free(page->objects[i].etag);
+    }
+    free(page->objects);
+    free(page->next_marker);
+}
+
 static S3Status
-emit_objects(int is_truncated, const char *next_marker, int contents_count,
-             const S3ListBucketContent *contents, int common_prefixes_count,
-             const char **common_prefixes, void *callback_data) {
+collect_objects(int is_truncated, const char *next_marker, int contents_count,
+                const S3ListBucketContent *contents,
+                int common_prefixes_count, const char **common_prefixes,
+                void *callback_data) {
     struct object_page *page = callback_data;
     (void) common_prefixes_count;
     (void) common_prefixes;
 
     for (int i = 0; i < contents_count; ++i) {
-        const struct s3_object object = {
-            .bucket = page->bucket,
-            .key = contents[i].key,
-            .size = contents[i].size,
-            .last_modified = contents[i].lastModified,
-            .etag = contents[i].eTag,
-        };
-        page->callback(&object, page->callback_data);
-        if (page->count == SIZE_MAX) {
-            errno = EOVERFLOW;
-            die_fatal("s3ar: too many objects", page->bucket, NULL);
-        }
-        ++page->count;
+        append_object(page, &contents[i]);
     }
 
     page->truncated = is_truncated != 0;
@@ -431,7 +472,7 @@ static const S3ListBucketHandler bucket_handler = {
             .propertiesCallback = ignore_properties,
             .completeCallback = request_complete,
         },
-    .listBucketCallback = emit_objects,
+    .listBucketCallback = collect_objects,
 };
 
 static S3BucketContext bucket_context(const struct s3 *s3, const char *bucket) {
@@ -634,18 +675,27 @@ size_t s3_object_list_prefix(const struct s3 *s3, const char *bucket,
                     .bucket = bucket,
                 },
             .bucket = bucket,
-            .callback = callback,
-            .callback_data = callback_data,
         };
         S3_list_bucket(&context, prefix, marker, NULL, LIST_PAGE_SIZE, NULL,
                        &bucket_handler, &page);
+        for (size_t i = 0; i < page.count; ++i) {
+            const struct owned_object *owned = &page.objects[i];
+            const struct s3_object object = {
+                .bucket = bucket,
+                .key = owned->key,
+                .size = owned->size,
+                .last_modified = owned->last_modified,
+                .etag = owned->etag,
+            };
+            callback(&object, callback_data);
+        }
         if (SIZE_MAX - count < page.count) {
             errno = EOVERFLOW;
             die_fatal("s3ar: too many objects", bucket, NULL);
         }
         count += page.count;
         if (!page.truncated) {
-            free(page.next_marker);
+            free_object_page(&page);
             break;
         }
         if (page.next_marker == NULL ||
@@ -655,6 +705,8 @@ size_t s3_object_list_prefix(const struct s3 *s3, const char *bucket,
         }
         free(marker);
         marker = page.next_marker;
+        page.next_marker = NULL;
+        free_object_page(&page);
     }
     free(marker);
     return count;

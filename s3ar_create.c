@@ -152,10 +152,9 @@ static void ensure_bucket(struct create_context *context, const char *bucket) {
 static S3Status write_object_header(const struct s3_object *object,
                                     void *callback_data) {
     struct get_context *get = callback_data;
-    if (!s3ar_key_is_safe(get->key) || object->size > INT64_MAX) {
+    if (object->size > INT64_MAX) {
         errno = 0;
-        die_fatal("s3ar: unsafe or oversized S3 object", get->bucket,
-                  get->key);
+        die_fatal("s3ar: oversized S3 object", get->bucket, get->key);
     }
     char *path = object_path(get->bucket, get->key);
     struct archive_entry *entry = archive_entry_new();
@@ -233,6 +232,10 @@ static S3Status write_object_data(int size, const char *data,
 
 static void write_object(struct create_context *context, const char *bucket,
                          const char *key) {
+    if (!s3ar_key_is_safe(key)) {
+        errno = 0;
+        die_fatal("s3ar: unsafe S3 key", bucket, key);
+    }
     struct get_context get = {
         .create = context,
         .bucket = bucket,
@@ -275,6 +278,11 @@ static void write_selection(struct create_context *context,
     if (selection->bucket == NULL) {
         s3_bucket_list(s3, write_all_bucket, context);
         return;
+    }
+    if (selection->key != NULL && !s3ar_key_is_safe(selection->key)) {
+        errno = 0;
+        die_fatal("s3ar: unsafe S3 key", selection->bucket,
+                  selection->key);
     }
     ensure_bucket(context, selection->bucket);
     if (selection->key == NULL) {
