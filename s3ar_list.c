@@ -6,12 +6,23 @@
 
 #include <errno.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
 struct list_context {
     const struct s3 *s3;
     bool verbose;
 };
+
+static void list_bucket_name(const struct s3_bucket *bucket,
+                             void *callback_data) {
+    (void) callback_data;
+    if (fprintf(stdout, "%s\n", bucket->name) < 0) {
+        die_fatal("s3ar: unable to write standard output", bucket->name,
+                  NULL);
+    }
+}
 
 static void log_head_object(const struct s3_object *object,
                             void *callback_data) {
@@ -99,4 +110,8 @@ void s3ar_list(const struct s3ar_config *config) {
         list_selection(&context, &selection);
         s3ar_selection_free(&selection);
     }
+}
+
+void s3ar_list_buckets(const struct s3ar_config *config) {
+    s3_bucket_list(&config->s3, list_bucket_name, NULL);
 }

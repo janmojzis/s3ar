@@ -10,6 +10,7 @@ enum s3ar_command {
     S3AR_COMMAND_CREATE,
     S3AR_COMMAND_EXTRACT,
     S3AR_COMMAND_LIST,
+    S3AR_COMMAND_LIST_BUCKETS,
 };
 
 struct s3ar_config {
@@ -32,6 +33,7 @@ struct s3ar_selection {
 void s3ar_create(const struct s3ar_config *config);
 void s3ar_extract(const struct s3ar_config *config);
 void s3ar_list(const struct s3ar_config *config);
+void s3ar_list_buckets(const struct s3ar_config *config);
 void s3ar_selection_parse(struct s3ar_selection *selection, const char *uri);
 void s3ar_selection_free(struct s3ar_selection *selection);
 bool s3ar_selection_matches(const struct s3ar_selection *selection,

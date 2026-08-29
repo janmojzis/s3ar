@@ -60,6 +60,7 @@ so `S3AR_SESSION_TOKEN` is not supported.
 s3ar (-c | --create) [-v | --verbose] [--zstd] [-f TARFILE] S3...
 s3ar (-x | --extract) [-v | --verbose] [--zstd] [-f TARFILE] [S3...]
 s3ar (-t | --list) [-v | --verbose] S3...
+s3ar --list-buckets
 s3ar (-h | --help)
 ```
 
@@ -68,6 +69,7 @@ The options are:
 - `-c`, `--create`: create a tar archive from the selected S3 resources.
 - `-x`, `--extract`, `--get`: extract a tar archive into S3.
 - `-t`, `--list`: list the selected live S3 resource.
+- `--list-buckets`: list all bucket names without listing their objects.
 - `-f`, `--file TARFILE`: read or write the archive named `TARFILE`.
 - `--zstd`: create a zstd-compressed archive or require zstd when extracting.
 - `-v`, `--verbose`: enable verbose output.
@@ -176,6 +178,16 @@ and uploaded objects use private ACLs. With `-v`, restored member names are
 written without the `s3://` prefix to standard error.
 
 ## Listing output
+
+`--list-buckets` writes bare bucket names to standard output, one per line:
+
+```text
+album
+backups
+photos
+```
+
+It accepts no S3 operands.
 
 Every selected bucket or object is written to standard output as a reusable S3
 URI, one entry per line:

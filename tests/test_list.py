@@ -19,6 +19,31 @@ def test_list_rejects_local_archive_operand(executable):
     assert "list operand must be s3://" in result.stderr
 
 
+def test_list_buckets_writes_bare_names(
+    executable, s3_server, s3_environment
+):
+    _endpoint, client = s3_server
+    client.create_bucket(Bucket="list-buckets-first")
+    client.create_bucket(Bucket="list-buckets-second")
+
+    result = run(executable, "--list-buckets", env=s3_environment)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    names = result.stdout.splitlines()
+    assert names == sorted(names)
+    assert "list-buckets-first" in names
+    assert "list-buckets-second" in names
+    assert all("/" not in name for name in names)
+
+
+def test_list_buckets_rejects_operands(executable):
+    result = run(executable, "--list-buckets", "s3://bucket")
+
+    assert result.returncode == 2
+    assert "--list-buckets does not accept operands" in result.stderr
+
+
 def test_list_multiple_live_s3_operands(
     executable, s3_server, s3_environment
 ):

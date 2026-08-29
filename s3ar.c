@@ -17,11 +17,13 @@ static void usage(FILE *stream) {
                     "       s3ar (-x | --extract) [-v | --verbose] "
                     "[--zstd] [-f TARFILE] [S3...]\n"
                     "       s3ar (-t | --list) [-v | --verbose] S3...\n"
+                    "       s3ar --list-buckets\n"
                     "\n"
                     "Options:\n"
                     "  -c, --create  create a tar archive from S3\n"
                     "  -x, --extract, --get  extract a tar archive to S3\n"
                     "  -t, --list  list an S3 source\n"
+                    "      --list-buckets  list bucket names\n"
                     "  -f, --file TARFILE  read or write TARFILE\n"
                     "      --zstd  use zstd archive compression\n"
                     "  -v, --verbose  enable verbose output\n"
@@ -111,6 +113,7 @@ static const struct option long_options[] = {
     {"extract", no_argument, NULL, 'x'},
     {"get", no_argument, NULL, 'x'},
     {"list", no_argument, NULL, 't'},
+    {"list-buckets", no_argument, NULL, 257},
     {"file", required_argument, NULL, 'f'},
     {"zstd", no_argument, NULL, 256},
     {"verbose", no_argument, NULL, 'v'},
@@ -159,6 +162,15 @@ int main(int argc, char **argv) {
             config.command = S3AR_COMMAND_LIST;
         }
 
+        /* --list-buckets */
+        else if (option == 257) {
+            if (config.command != S3AR_COMMAND_NONE) {
+                errno = 0;
+                die_fatal("s3ar: command specified twice", NULL, NULL);
+            }
+            config.command = S3AR_COMMAND_LIST_BUCKETS;
+        }
+
         /* -f --file */
         else if (option == 'f') {
             if (config.archive_path != NULL) {
@@ -191,7 +203,9 @@ int main(int argc, char **argv) {
         errno = 0;
         die_fatal("s3ar: specify -c, -x or -t", NULL, NULL);
     }
-    if (config.command == S3AR_COMMAND_LIST && config.archive_path != NULL) {
+    if ((config.command == S3AR_COMMAND_LIST ||
+         config.command == S3AR_COMMAND_LIST_BUCKETS) &&
+        config.archive_path != NULL) {
         errno = 0;
         die_fatal("s3ar: -f is valid only with -c or -x", NULL, NULL);
     }
@@ -208,12 +222,23 @@ int main(int argc, char **argv) {
         die_fatal("s3ar: command requires at least one S3 operand", NULL,
                   NULL);
     }
-    if (config.command == S3AR_COMMAND_LIST) {
+    if (config.command == S3AR_COMMAND_LIST_BUCKETS && argc - optind != 0) {
+        errno = 0;
+        die_fatal("s3ar: --list-buckets does not accept operands", NULL,
+                  NULL);
+    }
+    if (config.command == S3AR_COMMAND_LIST ||
+        config.command == S3AR_COMMAND_LIST_BUCKETS) {
         if (config.zstd) {
             errno = 0;
-            die_fatal("s3ar: option --zstd is not valid for live S3 list",
+            die_fatal(config.command == S3AR_COMMAND_LIST
+                          ? "s3ar: option --zstd is not valid for live S3 list"
+                          : "s3ar: option --zstd is not valid with "
+                            "--list-buckets",
                       NULL, NULL);
         }
+    }
+    if (config.command == S3AR_COMMAND_LIST) {
         for (int i = optind; i < argc; ++i) {
             if (strncmp(argv[i], "s3://", 5) != 0) {
                 errno = 0;
@@ -238,6 +263,9 @@ int main(int argc, char **argv) {
             break;
         case S3AR_COMMAND_LIST:
             s3ar_list(&config);
+            break;
+        case S3AR_COMMAND_LIST_BUCKETS:
+            s3ar_list_buckets(&config);
             break;
         case S3AR_COMMAND_NONE:
             break;
