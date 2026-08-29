@@ -43,7 +43,7 @@ trailing slash is accepted and removed.
 `S3AR_URI_STYLE` accepts `path` or `virtual` and defaults to `path`.
 
 `S3AR_REGION` selects the S3 region and defaults to `us-east-1` when it is
-unset or empty.
+not set.
 
 The bundled `libs3` interface does not support temporary session credentials,
 so `S3AR_SESSION_TOKEN` is not supported.
