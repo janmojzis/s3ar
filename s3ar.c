@@ -16,8 +16,6 @@ static void usage(FILE *stream) {
                     "       s3ar (-x | --extract) [-v | --verbose] "
                     "[--zstd] [-f TARFILE] [S3...]\n"
                     "       s3ar (-t | --list) [-v | --verbose] S3...\n"
-                    "       s3ar (-t | --list) [-v | --verbose] "
-                    "[--zstd] [-f TARFILE] [S3...]\n"
                     "\n"
                     "Options:\n"
                     "  -c, --create  create a tar archive from S3\n"
@@ -188,8 +186,10 @@ int main(int argc, char **argv) {
         errno = 0;
         die_fatal("s3ar: specify -c, -x or -t", NULL, NULL);
     }
-    bool list_archive = config.command == S3AR_COMMAND_LIST &&
-                        (config.archive_path != NULL || argc - optind == 0);
+    if (config.command == S3AR_COMMAND_LIST && config.archive_path != NULL) {
+        errno = 0;
+        die_fatal("s3ar: -f is valid only with -c or -x", NULL, NULL);
+    }
     if (config.archive_path != NULL &&
         strncmp(config.archive_path, "s3://", 5) == 0) {
         errno = 0;
@@ -197,13 +197,13 @@ int main(int argc, char **argv) {
                   NULL, NULL);
     }
     if ((config.command == S3AR_COMMAND_CREATE ||
-         (config.command == S3AR_COMMAND_LIST && !list_archive)) &&
+         config.command == S3AR_COMMAND_LIST) &&
         argc - optind < 1) {
         errno = 0;
         die_fatal("s3ar: command requires at least one S3 operand", NULL,
                   NULL);
     }
-    if (config.command == S3AR_COMMAND_LIST && !list_archive) {
+    if (config.command == S3AR_COMMAND_LIST) {
         if (config.zstd) {
             errno = 0;
             die_fatal("s3ar: option --zstd is not valid for live S3 list",
@@ -219,11 +219,9 @@ int main(int argc, char **argv) {
     config.operand_count = argc - optind;
     config.operands = &argv[optind];
 
-    /* parse environment and connect only for commands using live S3 */
-    if (!list_archive) {
-        parse_s3_environment(&config.s3);
-        s3_open(&config.s3);
-    }
+    /* parse environment and connect to S3 */
+    parse_s3_environment(&config.s3);
+    s3_open(&config.s3);
 
     /* run commands */
     switch (config.command) {
@@ -239,10 +237,8 @@ int main(int argc, char **argv) {
         case S3AR_COMMAND_NONE:
             break;
     }
-    if (!list_archive) {
-        s3_close();
-        free(config.s3.host);
-    }
+    s3_close();
+    free(config.s3.host);
 
     if (fflush(stdout) == EOF) {
         die_fatal("s3ar: unable to flush standard output", NULL, NULL);
