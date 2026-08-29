@@ -21,7 +21,7 @@ static void usage(FILE *stream) {
                     "\n"
                     "Options:\n"
                     "  -c, --create  create a tar archive from S3\n"
-                    "  -x, --extract  extract a tar archive to S3\n"
+                    "  -x, --extract, --get  extract a tar archive to S3\n"
                     "  -t, --list  list an S3 source\n"
                     "  -f, --file TARFILE  read or write TARFILE\n"
                     "      --zstd  use zstd archive compression\n"
@@ -110,6 +110,7 @@ static void parse_s3_environment(struct s3 *s3) {
 static const struct option long_options[] = {
     {"create", no_argument, NULL, 'c'},
     {"extract", no_argument, NULL, 'x'},
+    {"get", no_argument, NULL, 'x'},
     {"list", no_argument, NULL, 't'},
     {"file", required_argument, NULL, 'f'},
     {"zstd", no_argument, NULL, 256},

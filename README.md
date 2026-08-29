@@ -61,7 +61,7 @@ s3ar (-h | --help)
 The options are:
 
 - `-c`, `--create`: create a tar archive from the selected S3 resources.
-- `-x`, `--extract`: extract a tar archive into S3.
+- `-x`, `--extract`, `--get`: extract a tar archive into S3.
 - `-t`, `--list`: list the selected live S3 resource.
 - `-f`, `--file TARFILE`: read or write the archive named `TARFILE`.
 - `--zstd`: create a zstd-compressed archive or require zstd when reading.
