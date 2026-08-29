@@ -1,0 +1,222 @@
+.TH S3AR 1 "August 2026" "S3 Archiver" "User Commands"
+.SH NAME
+s3ar \- create and extract POSIX PAX archives of S3 objects
+.SH SYNOPSIS
+.B s3ar
+.RB ( \-c | \-\-create )
+.RB [ \-v | \-\-verbose ]
+.RB [ \-\-zstd ]
+.RB [ \-f " TARFILE" ]
+.I S3...
+.br
+.B s3ar
+.RB ( \-x | \-\-extract | \-\-get )
+.RB [ \-v | \-\-verbose ]
+.RB [ \-\-zstd ]
+.RB [ \-f " TARFILE" ]
+.RI [ S3... ]
+.br
+.B s3ar \-\-list-objects
+.RB [ \-v | \-\-verbose ]
+.I S3...
+.br
+.B s3ar \-\-list-buckets
+.RB [ \-v | \-\-verbose ]
+.RI [ S3... ]
+.br
+.B s3ar
+.RB ( \-h | \-\-help )
+.SH DESCRIPTION
+.B s3ar
+is S3 Archiver, a command-line utility for creating POSIX PAX archives from
+an S3-compatible object store, extracting those archives back to S3, and
+listing live buckets or objects.
+.PP
+The interface is intentionally tar-like. Archive operations use familiar
+.BR tar (1)
+options such as
+.BR \-c ,
+.BR \-x ,
+.BR \-f ,
+and
+.BR \-v ,
+and selection operands follow tar member-selection semantics. The utility is
+not a complete replacement for tar and implements only the options documented
+here.
+.PP
+Archive members use the form
+.BR BUCKET/KEY .
+Each selected bucket is represented by one
+.B BUCKET/
+directory member. Object data is streamed between S3 and libarchive without
+staging complete objects on the local filesystem.
+.PP
+Without
+.BR \-f ,
+or with
+.BR "\-f \-" ,
+create writes the archive to standard output and extract reads it from
+standard input. Extract with no S3 operand restores all accepted archive
+members.
+.SH OPERATIONS
+.TP
+.BR \-c ", " \-\-create
+Create an archive from one or more S3 selections. Multiple operands are
+processed in command-line order. If overlapping operands select an object
+more than once, the object is stored once for each matching operand. Bucket
+directory members are stored only once.
+.TP
+.BR \-x ", " \-\-extract ", " \-\-get
+Extract an archive into S3. Operands optionally filter archive members.
+Objects overwrite existing objects with the same keys, and missing buckets
+are created. Multiple matching filters do not upload an archive member more
+than once.
+.TP
+.B \-\-list-objects
+List objects selected by one or more S3 operands. Output contains
+.B BUCKET/KEY
+without an
+.B s3://
+prefix, one object per line. Bucket entries are not printed, and an empty
+bucket produces no output.
+.TP
+.B \-\-list-buckets
+List all bucket names without their objects, one bucket per line. All
+positional arguments are ignored. In particular,
+.BR s3://asdasd ,
+.BR s3://BUCKET/PREFIX ,
+and
+.B s3://
+do not filter the output and do not cause those resources to be accessed.
+.SH OPTIONS
+.TP
+.BR \-f " " TARFILE ", " \-\-file= TARFILE
+Read or write the named archive. This option is valid only with create or
+extract. TARFILE must be a local filesystem path or
+.BR \- .
+Create truncates an existing local file and writes directly to it. If create
+fails after opening the file, a partial archive can remain.
+.TP
+.BR \-v ", " \-\-verbose
+With create and extract, write each successfully archived or restored member
+name as
+.B BUCKET/KEY
+to standard error. The output never includes an
+.B s3://
+prefix and always uses standard error, regardless of the archive stream.
+.PP
+With
+.BR \-\-list-objects ,
+write tab-separated fields to standard output. Each row contains the object
+name, byte size, and comma-separated S3 user metadata sorted by name. A hyphen
+denotes an object without user metadata. This mode performs one HEAD request
+per object.
+.PP
+With
+.BR \-\-list-buckets ,
+append a tab-separated
+.IB acl= ACL
+summary to every bucket name. An ACL unavailable from the endpoint is shown
+as
+.BR acl=unavailable .
+.TP
+.B \-\-zstd
+With create, write a zstd-compressed archive. Extract automatically detects
+plain and zstd-compressed archives; specifying this option requires zstd
+input. The option is not valid with
+.B \-\-list-objects
+or
+.BR \-\-list-buckets .
+.TP
+.BR \-h ", " \-\-help
+Display command usage and exit successfully.
+.SH S3 SELECTION
+.TP
+.B s3://
+Select all buckets and their objects.
+.TP
+.BR s3://BUCKET " or " s3://BUCKET/
+Select the named bucket and all its objects. A trailing slash does not change
+the selection.
+.TP
+.BR s3://BUCKET/NAME " or " s3://BUCKET/NAME/
+Select the exact object key
+.B NAME
+and all objects below
+.BR NAME/ .
+Matching occurs only at a path boundary. For example,
+.B photo
+matches
+.B photo
+and
+.BR photo/first.jpg ,
+but not
+.BR photo1.jpg .
+.PP
+An object selection that matches neither an exact key nor a descendant is an
+error. A bucket selection succeeds for an empty bucket. Input operands must
+use the
+.B s3://
+form even though list and verbose output omit that prefix.
+.SH ARCHIVE FORMAT
+Archives use the restricted POSIX PAX format. Plain and zstd-compressed
+archives are supported. Bucket ACL summaries, object ETags, and S3 user
+metadata are stored as SCHILY extended attributes:
+.PP
+.nf
+SCHILY.xattr.s3ar.bucket-acl=public-read,custom
+SCHILY.xattr.etag=ETAG
+SCHILY.xattr.user.NAME=VALUE
+.fi
+.PP
+User metadata is restored to uploaded objects. Stored ETags and bucket ACL
+summaries are informational and are not restored. Unsafe object keys or
+archive paths containing empty,
+.BR . ,
+or
+.B ..
+components are rejected. Archive links and unsupported member types are also
+rejected.
+.SH ENVIRONMENT
+.TP
+.B S3AR_ACCESS_KEY
+S3 access key. Required.
+.TP
+.B S3AR_SECRET_KEY
+S3 secret key. Required.
+.TP
+.B S3AR_ENDPOINT
+Required S3 endpoint in the form
+.BR [http://|https://]HOST[:PORT] .
+When the scheme is omitted, HTTPS is used. A single trailing slash is accepted
+and removed; URL paths are not accepted.
+.TP
+.B S3AR_URI_STYLE
+S3 addressing style. Accepted values are
+.B path
+and
+.BR virtual .
+The default is
+.BR path .
+.TP
+.B S3AR_REGION
+S3 region. When the variable is not set, the default is
+.BR us-east-1 .
+.PP
+The bundled libs3 interface does not support temporary session credentials;
+.B S3AR_SESSION_TOKEN
+is not supported.
+.SH EXIT STATUS
+.TP
+.B 0
+The operation or help output completed successfully.
+.TP
+.B 2
+Invalid usage or configuration, allocation failure, S3 failure, archive
+failure, or output failure.
+.PP
+Fatal errors and warnings are written to standard error with an
+.B s3ar:
+prefix.
+.SH SEE ALSO
+.BR tar (1)
