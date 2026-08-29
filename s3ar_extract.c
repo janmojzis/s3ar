@@ -277,6 +277,7 @@ void s3ar_extract(const struct s3ar_config *config) {
     struct archive *archive = archive_read_new();
     if (archive == NULL) { die_fatal("s3ar: out of memory", NULL, NULL); }
     if (archive_read_support_filter_none(archive) != ARCHIVE_OK ||
+        archive_read_support_filter_zstd(archive) != ARCHIVE_OK ||
         archive_read_support_format_tar(archive) != ARCHIVE_OK) {
         archive_fatal(archive, "s3ar: cannot initialize archive reader");
     }
@@ -291,6 +292,10 @@ void s3ar_extract(const struct s3ar_config *config) {
     }
     if (result != ARCHIVE_OK) {
         archive_fatal(archive, "s3ar: cannot open archive");
+    }
+    if (config->zstd &&
+        archive_filter_code(archive, 0) != ARCHIVE_FILTER_ZSTD) {
+        archive_fatal(archive, "s3ar: cannot open tar archive");
     }
 
     struct extract_context context = {

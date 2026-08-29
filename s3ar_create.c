@@ -321,6 +321,8 @@ void s3ar_create(const struct s3ar_config *config) {
     if (archive_write_set_format_pax_restricted(archive) != ARCHIVE_OK ||
         archive_write_set_options(archive, "xattrheader=SCHILY") !=
             ARCHIVE_OK ||
+        (config->zstd &&
+         archive_write_add_filter_zstd(archive) != ARCHIVE_OK) ||
         archive_write_open_fd(archive, fd) != ARCHIVE_OK) {
         archive_fatal(archive, "s3ar: cannot open archive");
     }

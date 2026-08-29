@@ -1,9 +1,9 @@
 # s3ar
 
-`s3ar` is a command-line utility for listing buckets and objects in an
-S3-compatible object store, creating tar archives from them, and extracting
-those archives back to S3. Its member selection follows tar semantics: an
-operand selects an exact member and all descendants below `MEMBER/`.
+`s3ar` is a command-line utility for listing buckets, objects, and archives,
+creating tar archives from an S3-compatible object store, and extracting those
+archives back to S3. Its member selection follows tar semantics: an operand
+selects an exact member and all descendants below `MEMBER/`.
 
 This README is the authoritative contract for the command-line interface,
 configuration, and observable behavior.
@@ -51,9 +51,10 @@ so `S3AR_SESSION_TOKEN` is not supported.
 ## Command line
 
 ```text
-s3ar (-c | --create) [-v | --verbose] [-f TARFILE] S3...
-s3ar (-x | --extract) [-v | --verbose] [-f TARFILE] [S3...]
+s3ar (-c | --create) [-v | --verbose] [--zstd] [-f TARFILE] S3...
+s3ar (-x | --extract) [-v | --verbose] [--zstd] [-f TARFILE] [S3...]
 s3ar (-t | --list) [-v | --verbose] S3...
+s3ar (-t | --list) [-v | --verbose] [--zstd] [-f TARFILE] [S3...]
 s3ar (-h | --help)
 ```
 
@@ -63,13 +64,18 @@ The options are:
 - `-x`, `--extract`: extract a tar archive into S3.
 - `-t`, `--list`: list the selected live S3 resource.
 - `-f`, `--file TARFILE`: read or write the archive named `TARFILE`.
+- `--zstd`: create a zstd-compressed archive or require zstd when reading.
 - `-v`, `--verbose`: enable verbose output.
 - `-h`, `--help`: display command-line help and exit successfully.
 
-Create and list require at least one S3 operand. Extract accepts zero or more
-operands. Multiple operands are processed in command-line order. `-f` is valid
-with create and extract. Without `-f`, or with `-f -`, create writes to
-standard output and extract reads from standard input.
+Create and live S3 list require at least one S3 operand. Extract and archive
+list accept zero or more selection operands. Multiple operands are processed
+in command-line order. Without `-f`, or with `-f -`, create writes to standard
+output while extract and archive list read from standard input.
+
+Archive readers automatically detect uncompressed and zstd-compressed tar
+streams. Explicit `--zstd` rejects an uncompressed input. The option is not
+valid when listing live S3.
 
 For example, list two buckets and all their objects in one invocation:
 
@@ -154,9 +160,9 @@ the archive contains no bucket directory entry.
 
 Only tar archives containing top-level bucket directories and regular
 `BUCKET/KEY` object members are accepted. Absolute paths, empty, `.` and `..`
-components, links, and other member types are rejected. Compressed archives
-are not accepted. A requested operand that matches no archive member is an
-error.
+components, links, and other member types are rejected. Uncompressed and zstd
+archives are accepted. A requested operand that matches no archive member is
+an error.
 
 `SCHILY.xattr.user.NAME` values are restored as S3 user metadata. Stored ETags
 and bucket ACL summaries are informational and are not restored; new buckets
@@ -181,6 +187,11 @@ objects.
 Bucket selections write the bucket URI followed by all its object URIs. Object
 selections write the exact object first, when it exists, followed by matching
 descendants in S3 order.
+
+With `-f TARFILE`, list reads a local archive instead of live S3. With no `-f`
+and no operands, it reads an archive from standard input. Archive member names
+are printed without the `s3://` prefix; optional S3 operands filter exact
+members and descendants.
 
 With `-v` or `--verbose`, buckets include their ACL summary. Objects include
 their byte size followed by sorted S3 user metadata:

@@ -15,6 +15,7 @@ enum s3ar_command {
 struct s3ar_config {
     enum s3ar_command command;
     bool verbose;
+    bool zstd;
     int operand_count;
     char **operands;
     const char *archive_path;
