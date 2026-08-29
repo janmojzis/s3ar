@@ -1,0 +1,38 @@
+/* SPDX-License-Identifier: MIT-0 */
+
+#include "die.h"
+
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+_Noreturn void die_fatal(const char *text, const char *x, const char *y) {
+    fputs(text, stderr);
+    if (x) {
+        fprintf(stderr, " %s", x);
+        if (y) { fprintf(stderr, "/%s", y); }
+    }
+
+    if (errno != 0) { fprintf(stderr, ": %s", strerror(errno)); }
+    fprintf(stderr, "\n");
+    fflush(stderr);
+    exit(2);
+}
+
+_Noreturn void die_s3fatal(const char *text, const char *bucket,
+                           const char *key, S3Status status,
+                           const S3ErrorDetails *details) {
+    fputs(text, stderr);
+    if (bucket != NULL) {
+        fprintf(stderr, " %s", bucket);
+        if (key != NULL) { fprintf(stderr, "/%s", key); }
+    }
+    fprintf(stderr, ": %s", S3_get_status_name(status));
+    if (details != NULL && details->message != NULL) {
+        fprintf(stderr, ": %s", details->message);
+    }
+    fputc('\n', stderr);
+    fflush(stderr);
+    exit(2);
+}
