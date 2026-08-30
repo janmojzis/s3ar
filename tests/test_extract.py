@@ -34,6 +34,13 @@ def archive_bytes(buckets):
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w", format=tarfile.PAX_FORMAT) as archive:
         for bucket, objects in buckets.items():
+            entry = tarfile.TarInfo(bucket)
+            entry.type = tarfile.DIRTYPE
+            entry.pax_headers = {
+                "SCHILY.xattr.user.s3ar.format": "1",
+                "SCHILY.xattr.user.s3ar.bucket-acl": "private",
+            }
+            archive.addfile(entry)
             for key, data in objects.items():
                 entry = tarfile.TarInfo(f"{bucket}/{key}")
                 entry.size = len(data)
@@ -91,6 +98,9 @@ def test_extract_accepts_legacy_user_metadata_namespace(
     archive = tmp_path / "legacy-metadata.tar"
     data = io.BytesIO()
     with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        bucket = tarfile.TarInfo("legacy-metadata")
+        bucket.type = tarfile.DIRTYPE
+        tar.addfile(bucket)
         entry = tarfile.TarInfo("legacy-metadata/object")
         entry.size = 1
         entry.pax_headers = {
@@ -119,6 +129,9 @@ def test_extract_rejects_unknown_metadata_format(
     archive = tmp_path / "unknown-metadata-format.tar"
     data = io.BytesIO()
     with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        bucket = tarfile.TarInfo("unknown-metadata-format")
+        bucket.type = tarfile.DIRTYPE
+        tar.addfile(bucket)
         entry = tarfile.TarInfo("unknown-metadata-format/object")
         entry.size = 1
         entry.pax_headers = {"SCHILY.xattr.user.s3ar.format": "2"}
@@ -131,8 +144,7 @@ def test_extract_rejects_unknown_metadata_format(
 
     assert result.returncode != 0
     assert "unsupported archive metadata format" in result.stderr
-    with pytest.raises(botocore.exceptions.ClientError):
-        client.head_bucket(Bucket="unknown-metadata-format")
+    client.head_bucket(Bucket="unknown-metadata-format")
 
 
 def test_extract_explicit_zstd_archive(
@@ -241,6 +253,70 @@ def test_invalid_archive_is_rejected_before_target_bucket_is_created(
         raise AssertionError("bucket was created for an invalid archive")
 
 
+def test_extract_rejects_object_before_bucket_member(
+    executable, s3_server, s3_environment, tmp_path
+):
+    _endpoint, client = s3_server
+    archive = tmp_path / "object-before-bucket.tar"
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        entry = tarfile.TarInfo("object-before-bucket/item")
+        entry.size = 1
+        tar.addfile(entry, io.BytesIO(b"x"))
+        bucket = tarfile.TarInfo("object-before-bucket")
+        bucket.type = tarfile.DIRTYPE
+        tar.addfile(bucket)
+    archive.write_bytes(data.getvalue())
+
+    result = run(
+        executable, "-x", "-f", str(archive), "s3://", env=s3_environment
+    )
+
+    assert result.returncode != 0
+    assert "object precedes bucket archive member" in result.stderr
+    with pytest.raises(botocore.exceptions.ClientError):
+        client.head_bucket(Bucket="object-before-bucket")
+
+
+def test_extract_prefix_initializes_bucket_from_bucket_member(
+    executable, s3_server, s3_environment, tmp_path
+):
+    _endpoint, client = s3_server
+    archive = tmp_path / "prefix-bucket-member.tar"
+    archive.write_bytes(
+        archive_bytes(
+            {
+                "prefix-bucket-member": {
+                    "selected/item": b"selected",
+                    "outside": b"outside",
+                },
+                "prefix-bucket-skipped": {"selected/item": b"skipped"},
+            }
+        )
+    )
+
+    result = run(
+        executable,
+        "-xv",
+        "-f",
+        str(archive),
+        "s3://prefix-bucket-member/selected/",
+        env=s3_environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stderr.splitlines() == [
+        "prefix-bucket-member",
+        "prefix-bucket-member/selected/item",
+    ]
+    restored = client.get_object(
+        Bucket="prefix-bucket-member", Key="selected/item"
+    )
+    assert restored["Body"].read() == b"selected"
+    with pytest.raises(botocore.exceptions.ClientError):
+        client.head_bucket(Bucket="prefix-bucket-skipped")
+
+
 @pytest.mark.parametrize(
     ("pax_key", "namespaced"),
     [
@@ -258,6 +334,9 @@ def test_extract_rejects_metadata_with_http_line_breaks(
     archive = tmp_path / "header-injection.tar"
     data = io.BytesIO()
     with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        bucket = tarfile.TarInfo("header-injection")
+        bucket.type = tarfile.DIRTYPE
+        tar.addfile(bucket)
         entry = tarfile.TarInfo("header-injection/object")
         entry.size = 1
         entry.pax_headers = {pax_key: "archive\r\nx-amz-acl: public-read"}
@@ -277,8 +356,7 @@ def test_extract_rejects_metadata_with_http_line_breaks(
 
     assert result.returncode != 0
     assert "invalid object metadata" in result.stderr
-    with pytest.raises(botocore.exceptions.ClientError):
-        client.head_bucket(Bucket="header-injection")
+    client.head_bucket(Bucket="header-injection")
 
 
 def test_extract_rejects_s3_tarfile(executable):
@@ -363,7 +441,9 @@ def test_verbose_extract_lists_restored_objects(
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
     assert result.stderr == (
-        "verbose-objects/first\nverbose-objects/folder/second\n"
+        "verbose-objects\n"
+        "verbose-objects/first\n"
+        "verbose-objects/folder/second\n"
     )
 
 
@@ -433,8 +513,10 @@ def test_extract_multiple_filters_deduplicate_overlaps(
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
     assert result.stderr.splitlines() == [
+        "extract-multiple-first",
         "extract-multiple-first/selected/a",
         "extract-multiple-first/selected/deeper/b",
+        "extract-multiple-second",
         "extract-multiple-second/selected/c",
     ]
     first = client.list_objects_v2(Bucket="extract-multiple-first")[

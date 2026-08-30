@@ -40,7 +40,8 @@ struct extract_context {
     struct archive *archive;
     struct s3ar_selection *selections;
     bool *matched;
-    struct bucket_names buckets;
+    struct bucket_names archive_buckets;
+    struct bucket_names ready_buckets;
 };
 
 struct put_context {
@@ -54,7 +55,7 @@ static _Noreturn void archive_fatal(struct archive *archive,
     die_fatal(message, archive_error_string(archive), NULL);
 }
 
-static bool bucket_ready(const struct bucket_names *buckets, const char *name) {
+static bool bucket_known(const struct bucket_names *buckets, const char *name) {
     for (size_t i = 0; i < buckets->count; ++i) {
         if (strcmp(buckets->names[i], name) == 0) { return true; }
     }
@@ -85,9 +86,24 @@ static void free_buckets(struct bucket_names *buckets) {
 }
 
 static void ensure_bucket(struct extract_context *context, const char *bucket) {
-    if (bucket_ready(&context->buckets, bucket)) { return; }
+    if (bucket_known(&context->ready_buckets, bucket)) { return; }
     s3_bucket_ensure(&context->config->s3, bucket);
-    remember_bucket(&context->buckets, bucket);
+    remember_bucket(&context->ready_buckets, bucket);
+}
+
+static bool select_bucket_member(struct extract_context *context,
+                                 const char *bucket) {
+    if (context->config->operand_count == 0) { return true; }
+    bool selected = false;
+    for (int i = 0; i < context->config->operand_count; ++i) {
+        const struct s3ar_selection *selection = &context->selections[i];
+        if (selection->bucket == NULL ||
+            strcmp(selection->bucket, bucket) == 0) {
+            selected = true;
+            if (selection->key == NULL) { context->matched[i] = true; }
+        }
+    }
+    return selected;
 }
 
 static bool selected(struct extract_context *context, const char *bucket,
@@ -261,8 +277,14 @@ static void extract_bucket(struct extract_context *context,
         die_fatal("s3ar: invalid bucket archive member", path, NULL);
     }
     (void) namespaced_metadata(entry);
-    if (!selected(context, path, NULL)) { return; }
+    if (bucket_known(&context->archive_buckets, path)) {
+        errno = 0;
+        die_fatal("s3ar: duplicate bucket archive member", path, NULL);
+    }
+    remember_bucket(&context->archive_buckets, path);
+    if (!select_bucket_member(context, path)) { return; }
     ensure_bucket(context, path);
+    /* TODO: Apply the bucket ACL stored on this archive member here. */
     if (context->config->verbose) { log_s3_name(stderr, path, NULL); }
 }
 
@@ -271,6 +293,10 @@ static void extract_object(struct extract_context *context,
     const char *bucket;
     const char *key;
     split_object_path(path, &bucket, &key);
+    if (!bucket_known(&context->archive_buckets, bucket)) {
+        errno = 0;
+        die_fatal("s3ar: object precedes bucket archive member", bucket, key);
+    }
     if (!selected(context, bucket, key)) {
         if (archive_read_data_skip(context->archive) != ARCHIVE_OK) {
             archive_fatal(context->archive, "s3ar: cannot skip archive member");
@@ -285,7 +311,10 @@ static void extract_object(struct extract_context *context,
     }
     size_t metadata_count = 0;
     struct s3_metadata *metadata = read_metadata(entry, &metadata_count);
-    ensure_bucket(context, bucket);
+    if (!bucket_known(&context->ready_buckets, bucket)) {
+        errno = 0;
+        die_fatal("s3ar: selected bucket was not initialized", bucket, NULL);
+    }
     struct put_context put = {
         .archive = context->archive,
         .remaining = (uint64_t) archive_size,
@@ -384,7 +413,8 @@ void s3ar_extract(const struct s3ar_config *config) {
     }
     free(context.selections);
     free(context.matched);
-    free_buckets(&context.buckets);
+    free_buckets(&context.archive_buckets);
+    free_buckets(&context.ready_buckets);
 
     if (archive_read_close(archive) != ARCHIVE_OK) {
         archive_fatal(archive, "s3ar: cannot close archive");

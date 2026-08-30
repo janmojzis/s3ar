@@ -180,8 +180,8 @@ Truncating an existing archive preserves its permissions.
 
 Each selected bucket is stored once as a `BUCKET/` directory entry. Objects
 are regular entries named `BUCKET/KEY`; their bodies are streamed from S3
-directly into libarchive. Empty buckets therefore still produce an archive
-member.
+directly into libarchive. The bucket entry always precedes every object entry
+belonging to it. Empty buckets therefore still produce an archive member.
 
 The restricted PAX archive stores s3ar information as namespaced SCHILY
 extended attributes:
@@ -258,14 +258,19 @@ cat media.tar | ./s3ar -x s3://photos/2026
 
 Bucket directory entries create missing buckets. Object entries are streamed
 directly from libarchive into S3 PUT requests and overwrite objects with the
-same keys. Missing buckets needed by selected objects are created even when
-the archive contains no bucket directory entry.
+same keys.
 
 Only tar archives containing top-level bucket directories and regular
 `BUCKET/KEY` object members are accepted. Absolute paths, empty, `.` and `..`
 components, links, and other member types are rejected. Uncompressed and zstd
 archives are accepted. A requested operand that matches no archive member is
 an error.
+
+Each `BUCKET/` member must occur before all of its `BUCKET/KEY` members and may
+occur only once. During extraction, the bucket is created or checked when its
+directory member is read, before any selected objects are uploaded. A bucket
+member is processed for an object or prefix selection in that bucket as well
+as for a whole-bucket selection. Unselected buckets are not created.
 
 On entries marked with `SCHILY.xattr.user.s3ar.format=1`,
 `SCHILY.xattr.user.s3ar.metadata.NAME` values are restored as S3 user metadata.
