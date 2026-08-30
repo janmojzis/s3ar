@@ -324,7 +324,7 @@ void s3ar_create(const struct s3ar_config *config) {
     bool close_fd = config->archive_path != NULL &&
                     strcmp(config->archive_path, "-") != 0;
     if (close_fd) {
-        fd = open(config->archive_path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        fd = open(config->archive_path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
         if (fd < 0) {
             die_fatal("s3ar: cannot create archive", config->archive_path,
                       NULL);

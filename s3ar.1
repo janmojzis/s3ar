@@ -148,6 +148,10 @@ extract. TARFILE must be a local filesystem path or
 .BR \- .
 Create truncates an existing local file and writes directly to it. If create
 fails after opening the file, a partial archive can remain.
+.PP
+A new archive file is created with mode 0666 modified by the current
+.BR umask .
+Truncating an existing archive preserves its permissions.
 .TP
 .B \-\-zstd
 With create, write a zstd-compressed archive. Extract automatically detects

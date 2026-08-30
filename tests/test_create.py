@@ -1,16 +1,18 @@
 import io
 import shutil
+import stat
 import subprocess
 import tarfile
 
 import pytest
 
 
-def run(executable, *arguments, cwd=None, env=None):
+def run(executable, *arguments, cwd=None, env=None, umask=-1):
     return subprocess.run(
         [str(executable), *arguments],
         cwd=cwd,
         env=env,
+        umask=umask,
         text=True,
         capture_output=True,
         check=False,
@@ -154,6 +156,38 @@ def test_create_all_buckets_uses_full_paths_and_includes_empty_buckets(
     assert "SCHILY.xattr.bucket" not in item.pax_headers
 
 
+@pytest.mark.parametrize(
+    ("process_umask", "expected_mode"),
+    [(0o000, 0o666), (0o022, 0o644), (0o077, 0o600)],
+    ids=("umask-000", "umask-022", "umask-077"),
+)
+def test_create_new_archive_respects_umask(
+    executable,
+    s3_server,
+    s3_environment,
+    tmp_path,
+    process_umask,
+    expected_mode,
+):
+    _endpoint, client = s3_server
+    bucket = f"create-mode-{process_umask:03o}"
+    client.create_bucket(Bucket=bucket)
+    target = tmp_path / "mode.tar"
+
+    result = run(
+        executable,
+        "-c",
+        "-f",
+        str(target),
+        f"s3://{bucket}",
+        env=s3_environment,
+        umask=process_umask,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert stat.S_IMODE(target.stat().st_mode) == expected_mode
+
+
 def test_create_bucket_prefix_keeps_full_key(
     executable, s3_server, s3_environment, tmp_path
 ):
@@ -232,6 +266,7 @@ def test_create_overwrites_existing_tarfile(
     )
     target = tmp_path / "existing.tar"
     target.write_bytes(b"old contents that must be truncated")
+    target.chmod(0o640)
 
     result = run(
         executable,
@@ -243,6 +278,7 @@ def test_create_overwrites_existing_tarfile(
     )
 
     assert result.returncode == 0, result.stderr
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
     with tarfile.open(target, "r:") as archive:
         assert archive.getnames() == [
             "create-overwrite",

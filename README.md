@@ -169,6 +169,9 @@ Without `-f`, the archive is streamed to standard output:
 ./s3ar -c s3://photos/2026 >photos-2026.tar
 ```
 
+A new archive file is created with mode `0666` modified by the current `umask`.
+Truncating an existing archive preserves its permissions.
+
 Each selected bucket is stored once as a `BUCKET/` directory entry. Objects
 are regular entries named `BUCKET/KEY`; their bodies are streamed from S3
 directly into libarchive. Empty buckets therefore still produce an archive
