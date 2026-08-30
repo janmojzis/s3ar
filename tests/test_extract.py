@@ -38,7 +38,8 @@ def archive_bytes(buckets):
                 entry = tarfile.TarInfo(f"{bucket}/{key}")
                 entry.size = len(data)
                 entry.pax_headers = {
-                    "SCHILY.xattr.user.origin": "archive",
+                    "SCHILY.xattr.user.s3ar.format": "1",
+                    "SCHILY.xattr.user.s3ar.metadata.origin": "archive",
                 }
                 archive.addfile(entry, io.BytesIO(data))
     return output.getvalue()
@@ -81,6 +82,57 @@ def test_create_extract_round_trip_into_original_bucket(
     restored = client.get_object(Bucket="roundtrip-source", Key="folder/item")
     assert restored["Body"].read() == b"round trip data"
     assert restored["Metadata"] == {"owner": "s3ar"}
+
+
+def test_extract_accepts_legacy_user_metadata_namespace(
+    executable, s3_server, s3_environment, tmp_path
+):
+    _endpoint, client = s3_server
+    archive = tmp_path / "legacy-metadata.tar"
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        entry = tarfile.TarInfo("legacy-metadata/object")
+        entry.size = 1
+        entry.pax_headers = {
+            "SCHILY.xattr.user.origin": "legacy-archive",
+            "SCHILY.xattr.user.s3ar.metadata.original": "legacy-prefixed",
+        }
+        tar.addfile(entry, io.BytesIO(b"x"))
+    archive.write_bytes(data.getvalue())
+
+    result = run(
+        executable, "-x", "-f", str(archive), "s3://", env=s3_environment
+    )
+
+    assert result.returncode == 0, result.stderr
+    restored = client.get_object(Bucket="legacy-metadata", Key="object")
+    assert restored["Metadata"] == {
+        "origin": "legacy-archive",
+        "s3ar.metadata.original": "legacy-prefixed",
+    }
+
+
+def test_extract_rejects_unknown_metadata_format(
+    executable, s3_server, s3_environment, tmp_path
+):
+    _endpoint, client = s3_server
+    archive = tmp_path / "unknown-metadata-format.tar"
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        entry = tarfile.TarInfo("unknown-metadata-format/object")
+        entry.size = 1
+        entry.pax_headers = {"SCHILY.xattr.user.s3ar.format": "2"}
+        tar.addfile(entry, io.BytesIO(b"x"))
+    archive.write_bytes(data.getvalue())
+
+    result = run(
+        executable, "-x", "-f", str(archive), "s3://", env=s3_environment
+    )
+
+    assert result.returncode != 0
+    assert "unsupported archive metadata format" in result.stderr
+    with pytest.raises(botocore.exceptions.ClientError):
+        client.head_bucket(Bucket="unknown-metadata-format")
 
 
 def test_extract_explicit_zstd_archive(
@@ -189,7 +241,17 @@ def test_invalid_archive_is_rejected_before_target_bucket_is_created(
         raise AssertionError("bucket was created for an invalid archive")
 
 
+@pytest.mark.parametrize(
+    ("pax_key", "namespaced"),
+    [
+        ("SCHILY.xattr.user.s3ar.metadata.source", True),
+        ("SCHILY.xattr.user.source", False),
+    ],
+    ids=("current", "legacy"),
+)
 def test_extract_rejects_metadata_with_http_line_breaks(
+    pax_key,
+    namespaced,
     executable, s3_server, s3_environment, tmp_path
 ):
     _endpoint, client = s3_server
@@ -198,9 +260,9 @@ def test_extract_rejects_metadata_with_http_line_breaks(
     with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
         entry = tarfile.TarInfo("header-injection/object")
         entry.size = 1
-        entry.pax_headers = {
-            "SCHILY.xattr.user.source": "archive\r\nx-amz-acl: public-read"
-        }
+        entry.pax_headers = {pax_key: "archive\r\nx-amz-acl: public-read"}
+        if namespaced:
+            entry.pax_headers["SCHILY.xattr.user.s3ar.format"] = "1"
         tar.addfile(entry, io.BytesIO(b"x"))
     archive.write_bytes(data.getvalue())
 

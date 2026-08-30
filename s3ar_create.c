@@ -4,9 +4,10 @@
  * requests into an uncompressed or zstd-compressed archive.
  *
  * S3 metadata is stored in PAX SCHILY extended attributes:
- * SCHILY.xattr.s3ar.bucket-acl records a bucket ACL summary,
- * and SCHILY.xattr.user.NAME preserves S3 user metadata for later
- * extraction. Unsafe object keys are rejected.
+ * SCHILY.xattr.user.s3ar.format identifies the namespaced layout,
+ * SCHILY.xattr.user.s3ar.bucket-acl records a bucket ACL summary,
+ * and SCHILY.xattr.user.s3ar.metadata.NAME preserves S3 user metadata for
+ * later extraction. Unsafe object keys are rejected.
  *
  * SPDX-License-Identifier: MIT-0
  */
@@ -127,7 +128,8 @@ static void write_bucket_acl(const struct s3_bucket *bucket,
     archive_entry_set_size(entry, 0);
     archive_entry_set_mtime(entry, 0, 0);
     const char *acl = bucket->acl != NULL ? bucket->acl : "unavailable";
-    archive_entry_xattr_add_entry(entry, "s3ar.bucket-acl", acl,
+    archive_entry_xattr_add_entry(entry, "user.s3ar.format", "1", 1);
+    archive_entry_xattr_add_entry(entry, "user.s3ar.bucket-acl", acl,
                                   strlen(acl));
     if (archive_write_header(context->archive, entry) != ARCHIVE_OK) {
         archive_entry_free(entry);
@@ -177,26 +179,29 @@ static S3Status write_object_header(const struct s3_object *object,
                                 ? (time_t) object->last_modified
                                 : (time_t) 0,
                             0);
+    archive_entry_xattr_add_entry(entry, "user.s3ar.format", "1", 1);
     for (size_t i = 0; i < object->metadata_count; ++i) {
         const char *name = object->metadata[i].name;
         const char *value = object->metadata[i].value;
         if (name == NULL) { continue; }
         if (value == NULL) { value = ""; }
         size_t name_length = strlen(name);
-        if (name_length > SIZE_MAX - sizeof("user.")) {
+        if (name_length > SIZE_MAX - sizeof("user.s3ar.metadata.")) {
             archive_entry_free(entry);
             free(path);
             errno = ENOMEM;
             die_fatal("s3ar: out of memory", NULL, NULL);
         }
-        char *xattr = malloc(sizeof("user.") + name_length);
+        char *xattr = malloc(sizeof("user.s3ar.metadata.") + name_length);
         if (xattr == NULL) {
             archive_entry_free(entry);
             free(path);
             die_fatal("s3ar: out of memory", NULL, NULL);
         }
-        memcpy(xattr, "user.", sizeof("user.") - 1);
-        memcpy(xattr + sizeof("user.") - 1, name, name_length + 1);
+        memcpy(xattr, "user.s3ar.metadata.",
+               sizeof("user.s3ar.metadata.") - 1);
+        memcpy(xattr + sizeof("user.s3ar.metadata.") - 1, name,
+               name_length + 1);
         archive_entry_xattr_add_entry(entry, xattr, value, strlen(value));
         free(xattr);
     }

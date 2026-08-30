@@ -183,12 +183,33 @@ are regular entries named `BUCKET/KEY`; their bodies are streamed from S3
 directly into libarchive. Empty buckets therefore still produce an archive
 member.
 
-The restricted PAX archive stores S3 metadata as SCHILY extended attributes:
+The restricted PAX archive stores s3ar information as namespaced SCHILY
+extended attributes:
 
 ```text
-SCHILY.xattr.s3ar.bucket-acl=public-read,custom
-SCHILY.xattr.user.NAME=VALUE
+SCHILY.xattr.user.s3ar.format=1
+SCHILY.xattr.user.s3ar.bucket-acl=public-read,custom
+SCHILY.xattr.user.s3ar.metadata.NAME=VALUE
 ```
+
+The format marker is stored on every bucket and object member. It lets s3ar
+distinguish the namespaced layout from older archives without misinterpreting
+a legacy S3 metadata name that begins with `s3ar.`. The underlying filesystem
+attribute names are therefore `user.s3ar.format` and
+`user.s3ar.bucket-acl` on bucket directory members, and `user.s3ar.format`
+plus `user.s3ar.metadata.NAME` on object members. The `user.` namespace lets
+GNU tar restore them onto filesystems that support extended attributes. GNU
+tar requires xattr handling to be enabled explicitly:
+
+```sh
+mkdir restored
+tar --xattrs --xattrs-include='user.s3ar.*' -xf backup.tar -C restored
+getfattr -d -m 'user.s3ar.*' restored/BUCKET
+getfattr -d -m 'user.s3ar.*' restored/BUCKET/KEY
+```
+
+This filesystem extraction is useful for inspecting and testing archived S3
+metadata; it does not turn the archive into a general filesystem backup.
 
 Unsafe object keys containing empty, `.` or `..` path components are rejected.
 Create is a weak snapshot: an object can change between LIST and GET. With
@@ -246,10 +267,14 @@ components, links, and other member types are rejected. Uncompressed and zstd
 archives are accepted. A requested operand that matches no archive member is
 an error.
 
-`SCHILY.xattr.user.NAME` values are restored as S3 user metadata. Bucket ACL
-summaries are informational and are not restored; new buckets and uploaded
-objects use private ACLs. With `-v`, restored member names are written without
-the `s3://` prefix to standard error.
+On entries marked with `SCHILY.xattr.user.s3ar.format=1`,
+`SCHILY.xattr.user.s3ar.metadata.NAME` values are restored as S3 user metadata.
+On unmarked entries from older s3ar releases, `SCHILY.xattr.user.NAME` is
+accepted instead. This preserves legacy metadata names even when they begin
+with the now-reserved `s3ar.` prefix. Unknown format-marker values are
+rejected. Bucket ACL summaries are informational and are not restored; new
+buckets and uploaded objects use private ACLs. With `-v`, restored member names
+are written without the `s3://` prefix to standard error.
 
 ## Listing buckets and objects
 

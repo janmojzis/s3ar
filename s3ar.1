@@ -292,12 +292,39 @@ directory entry. Objects are regular entries named
 their bodies are streamed from S3 directly into libarchive. Empty buckets
 therefore still produce an archive member.
 .PP
-The restricted PAX archive stores S3 metadata as SCHILY extended attributes:
+The restricted PAX archive stores s3ar information as namespaced SCHILY
+extended attributes:
 .PP
 .nf
-SCHILY.xattr.s3ar.bucket-acl=public-read,custom
-SCHILY.xattr.user.NAME=VALUE
+SCHILY.xattr.user.s3ar.format=1
+SCHILY.xattr.user.s3ar.bucket-acl=public-read,custom
+SCHILY.xattr.user.s3ar.metadata.NAME=VALUE
 .fi
+.PP
+The format marker is stored on every bucket and object member. It lets s3ar
+distinguish the namespaced layout from older archives without misinterpreting
+a legacy S3 metadata name that begins with
+.BR s3ar.
+The corresponding filesystem attribute names are
+.B user.s3ar.format
+and
+.B user.s3ar.bucket-acl
+on bucket directory members and
+.B user.s3ar.format
+plus
+.B user.s3ar.metadata.NAME
+on object members. GNU tar can restore these attributes onto a filesystem
+that supports extended attributes:
+.PP
+.nf
+mkdir restored
+tar --xattrs --xattrs-include='user.s3ar.*' -xf backup.tar -C restored
+getfattr -d -m 'user.s3ar.*' restored/BUCKET
+getfattr -d -m 'user.s3ar.*' restored/BUCKET/KEY
+.fi
+.PP
+This filesystem extraction is useful for inspecting and testing archived S3
+metadata; it does not turn the archive into a general filesystem backup.
 .PP
 Unsafe object keys containing empty,
 .BR . ,
@@ -368,9 +395,18 @@ components, links, and other member types are rejected. Uncompressed and
 zstd-compressed archives are accepted. A requested operand that matches no
 archive member is an error.
 .PP
+On entries marked with
+.BR SCHILY.xattr.user.s3ar.format=1 ,
+.B SCHILY.xattr.user.s3ar.metadata.NAME
+values are restored as S3 user metadata. On unmarked entries from older s3ar
+releases,
 .B SCHILY.xattr.user.NAME
-values are restored as S3 user metadata. Bucket ACL summaries are informational
-and are not restored; new buckets and uploaded objects use private ACLs. With
+is accepted instead. This preserves legacy metadata names even when they begin
+with the now-reserved
+.B s3ar.
+prefix. Unknown format-marker values are rejected. Bucket ACL summaries are
+informational and are not restored; new buckets and uploaded objects use
+private ACLs. With
 .BR \-v ,
 restored member names are written without the
 .B s3://

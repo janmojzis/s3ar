@@ -1,4 +1,5 @@
 import io
+import os
 import shutil
 import stat
 import subprocess
@@ -92,23 +93,87 @@ def test_create_single_bucket_with_full_path_and_metadata(
     item = members["create-single/folder/object.txt"]
     bucket = members["create-single"]
     assert bucket.isdir()
-    assert bucket.pax_headers["SCHILY.xattr.s3ar.bucket-acl"] == "unavailable"
+    assert (
+        bucket.pax_headers["SCHILY.xattr.user.s3ar.bucket-acl"]
+        == "unavailable"
+    )
+    assert bucket.pax_headers["SCHILY.xattr.user.s3ar.format"] == "1"
     assert item.size == len(b"object data")
     assert "SCHILY.xattr.bucket" not in item.pax_headers
-    assert item.pax_headers["SCHILY.xattr.user.source"] == "create-test"
+    assert (
+        item.pax_headers["SCHILY.xattr.user.s3ar.metadata.source"]
+        == "create-test"
+    )
+    assert item.pax_headers["SCHILY.xattr.user.s3ar.format"] == "1"
+    assert "SCHILY.xattr.s3ar.bucket-acl" not in bucket.pax_headers
+    assert "SCHILY.xattr.user.source" not in item.pax_headers
 
     raw = raw_tar_entries(target)
     object_pax = next(
         payload for _name, kind, payload in raw
-        if kind == b"x" and b"SCHILY.xattr.user.source=" in payload
+        if kind == b"x"
+        and b"SCHILY.xattr.user.s3ar.metadata.source=" in payload
     )
     assert b"LIBARCHIVE.xattr." not in object_pax
     assert b"SCHILY.xattr.bucket=" not in object_pax
-    assert b"SCHILY.xattr.user.source=create-test\n" in object_pax
+    assert b"SCHILY.xattr.user.s3ar.format=1\n" in object_pax
+    assert b"SCHILY.xattr.user.s3ar.metadata.source=create-test\n" in object_pax
     object_header = next(
         name for name, kind, _payload in raw if kind == b"0" and name == b"create-single/folder/object.txt"
     )
     assert object_header == b"create-single/folder/object.txt"
+
+
+def test_created_metadata_can_be_restored_as_filesystem_xattrs(
+    executable, s3_server, s3_environment, tmp_path
+):
+    if not hasattr(os, "getxattr") or shutil.which("tar") is None:
+        pytest.skip("filesystem xattrs and GNU tar are required")
+    _endpoint, client = s3_server
+    client.create_bucket(Bucket="create-filesystem-xattrs")
+    client.put_object(
+        Bucket="create-filesystem-xattrs",
+        Key="object",
+        Body=b"data",
+        Metadata={"source": "filesystem-test"},
+    )
+    target = tmp_path / "filesystem-xattrs.tar"
+
+    created = run(
+        executable,
+        "-c",
+        "-f",
+        str(target),
+        "s3://create-filesystem-xattrs",
+        env=s3_environment,
+    )
+    assert created.returncode == 0, created.stderr
+
+    destination = tmp_path / "extracted"
+    destination.mkdir()
+    extracted = subprocess.run(
+        [
+            "tar",
+            "--xattrs",
+            "--xattrs-include=user.s3ar.*",
+            "-xf",
+            str(target),
+            "-C",
+            str(destination),
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert extracted.returncode == 0, extracted.stderr
+    bucket = destination / "create-filesystem-xattrs"
+    assert os.getxattr(bucket, "user.s3ar.bucket-acl") == b"unavailable"
+    assert os.getxattr(bucket, "user.s3ar.format") == b"1"
+    assert (
+        os.getxattr(bucket / "object", "user.s3ar.metadata.source")
+        == b"filesystem-test"
+    )
+    assert os.getxattr(bucket / "object", "user.s3ar.format") == b"1"
 
 def test_create_zstd_archive(
     executable, s3_server, s3_environment, tmp_path

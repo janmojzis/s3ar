@@ -4,9 +4,11 @@
  * selected object bodies are streamed directly into S3 PUT requests.
  *
  * s3ar archives store S3 metadata in PAX SCHILY extended attributes:
- * SCHILY.xattr.s3ar.bucket-acl and SCHILY.xattr.user.NAME. User metadata is
- * restored to uploaded objects; bucket ACL summaries are informational and
- * are not restored.
+ * SCHILY.xattr.user.s3ar.format identifies the namespaced layout,
+ * SCHILY.xattr.user.s3ar.bucket-acl and
+ * SCHILY.xattr.user.s3ar.metadata.NAME. User metadata is restored to uploaded
+ * objects; bucket ACL summaries are informational and are not restored.
+ * Legacy SCHILY.xattr.user.NAME metadata remains readable.
  * Unsafe paths, links, and unsupported archive member types are rejected.
  *
  * SPDX-License-Identifier: MIT-0
@@ -158,8 +160,39 @@ static void append_metadata(struct s3_metadata **metadata, size_t *count,
     ++*count;
 }
 
+static bool namespaced_metadata(struct archive_entry *entry) {
+    static const char format_name[] = "user.s3ar.format";
+    static const char raw_format_name[] = "SCHILY.xattr.user.s3ar.format";
+    archive_entry_xattr_reset(entry);
+    const char *name;
+    const void *value;
+    size_t value_size;
+    while (archive_entry_xattr_next(entry, &name, &value, &value_size) ==
+           ARCHIVE_OK) {
+        if (name == NULL ||
+            (strcmp(name, format_name) != 0 &&
+             strcmp(name, raw_format_name) != 0)) {
+            continue;
+        }
+        if (value == NULL || value_size != 1 ||
+            memcmp(value, "1", 1) != 0) {
+            errno = 0;
+            die_fatal("s3ar: unsupported archive metadata format", NULL,
+                      NULL);
+        }
+        return true;
+    }
+    return false;
+}
+
 static struct s3_metadata *read_metadata(struct archive_entry *entry,
                                          size_t *count) {
+    static const char metadata_prefix[] = "user.s3ar.metadata.";
+    static const char raw_metadata_prefix[] =
+        "SCHILY.xattr.user.s3ar.metadata.";
+    static const char legacy_prefix[] = "user.";
+    static const char raw_legacy_prefix[] = "SCHILY.xattr.user.";
+    bool namespaced = namespaced_metadata(entry);
     struct s3_metadata *metadata = NULL;
     archive_entry_xattr_reset(entry);
     const char *xattr_name;
@@ -169,9 +202,25 @@ static struct s3_metadata *read_metadata(struct archive_entry *entry,
            ARCHIVE_OK) {
         const char *name = NULL;
         if (xattr_name == NULL) { continue; }
-        if (strncmp(xattr_name, "user.", 5) == 0) { name = xattr_name + 5; }
-        else if (strncmp(xattr_name, "SCHILY.xattr.user.", 19) == 0) {
-            name = xattr_name + 19;
+        if (namespaced &&
+            strncmp(xattr_name, metadata_prefix,
+                    sizeof(metadata_prefix) - 1) == 0) {
+            name = xattr_name + sizeof(metadata_prefix) - 1;
+        }
+        else if (namespaced &&
+                 strncmp(xattr_name, raw_metadata_prefix,
+                         sizeof(raw_metadata_prefix) - 1) == 0) {
+            name = xattr_name + sizeof(raw_metadata_prefix) - 1;
+        }
+        else if (!namespaced &&
+                 strncmp(xattr_name, legacy_prefix,
+                         sizeof(legacy_prefix) - 1) == 0) {
+            name = xattr_name + sizeof(legacy_prefix) - 1;
+        }
+        else if (!namespaced &&
+                 strncmp(xattr_name, raw_legacy_prefix,
+                         sizeof(raw_legacy_prefix) - 1) == 0) {
+            name = xattr_name + sizeof(raw_legacy_prefix) - 1;
         }
         if (name != NULL) {
             append_metadata(&metadata, count, name, value, value_size);
@@ -205,11 +254,13 @@ static int read_object_data(int size, char *data, void *callback_data) {
     return (int) amount;
 }
 
-static void extract_bucket(struct extract_context *context, char *path) {
+static void extract_bucket(struct extract_context *context,
+                           struct archive_entry *entry, char *path) {
     if (!bucket_path(path)) {
         errno = 0;
         die_fatal("s3ar: invalid bucket archive member", path, NULL);
     }
+    (void) namespaced_metadata(entry);
     if (!selected(context, path, NULL)) { return; }
     ensure_bucket(context, path);
     if (context->config->verbose) { log_s3_name(stderr, path, NULL); }
@@ -266,7 +317,7 @@ static void extract_entry(struct extract_context *context,
         die_fatal("s3ar: archive links are not supported", path, NULL);
     }
     mode_t type = archive_entry_filetype(entry);
-    if (type == AE_IFDIR) { extract_bucket(context, path); }
+    if (type == AE_IFDIR) { extract_bucket(context, entry, path); }
     else if (type == AE_IFREG) { extract_object(context, entry, path); }
     else {
         errno = 0;
