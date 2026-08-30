@@ -130,8 +130,10 @@ s3://videos/2027/videoN.jpg
 
 ## Creating archives
 
-The following examples use the S3 objects shown above. Back up everything in
-S3:
+Create always requires at least one S3 selection operand. To select everything,
+pass `s3://` explicitly; omitting the operand is an error.
+
+The following examples use the S3 objects shown above. Back up everything in S3:
 
 ```sh
 ./s3ar -c -f media.tar s3://
@@ -186,6 +188,10 @@ error. This is independent of the archive destination and keeps a tar stream
 on standard output unmodified.
 
 ## Extracting archives
+
+Selection operands are optional with extract. With no S3 operand, every
+accepted archive member is restored; one or more operands limit extraction to
+matching members.
 
 Assuming `media.tar` contains the full backup created above, extract all of it
 back to S3:

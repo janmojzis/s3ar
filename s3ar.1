@@ -225,6 +225,11 @@ s3://videos/2027/video2.jpg
 s3://videos/2027/videoN.jpg
 .fi
 .SH CREATING ARCHIVES
+Create always requires at least one S3 selection operand. To select everything,
+pass
+.B s3://
+explicitly; omitting the operand is an error.
+.PP
 Back up everything in S3:
 .PP
 .nf
@@ -290,6 +295,10 @@ archived member names are written without the
 prefix to standard error. This is independent of the archive destination and
 keeps a tar stream on standard output unmodified.
 .SH EXTRACTING ARCHIVES
+Selection operands are optional with extract. With no S3 operand, every
+accepted archive member is restored; one or more operands limit extraction to
+matching members.
+.PP
 Assuming
 .B media.tar
 contains the full backup created above, extract all of it back to S3:
