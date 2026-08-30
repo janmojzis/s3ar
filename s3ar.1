@@ -179,6 +179,18 @@ or with
 .BR "\-f \-" ,
 create writes to standard output while extract reads from standard input.
 Extract with no S3 operand restores all accepted archive members.
+.SH NAME QUOTING
+Names in listings, verbose output, and diagnostics use the GNU tar default
+.B escape
+quoting style. Control characters are written as backslash escapes such as
+.B \en
+and
+.BR \et ,
+a backslash is written as
+.BR \e\e ,
+and other non-printable bytes use three-digit octal escapes. Printable
+characters, including spaces and printable characters in the current locale,
+are written unchanged.
 .SH SELECTING S3 RESOURCES
 A trailing slash does not change the selection.
 .TP

@@ -181,6 +181,33 @@ def test_verbose_list_s3(executable, s3_server, s3_environment):
     )
 
 
+def test_diagnostic_quotes_control_characters(executable):
+    result = run(
+        executable,
+        "--list-objects",
+        "not\nS3\t\\\x01-ž",
+        env={"LC_ALL": "C.UTF-8"},
+    )
+
+    assert result.returncode == 2
+    assert result.stderr == (
+        "s3ar: --list-objects operand must be s3:// "
+        "not\\nS3\\t\\\\\\001-ž\n"
+    )
+
+
+def test_diagnostic_quotes_nonprintable_locale_bytes(executable):
+    result = run(
+        executable,
+        "--list-objects",
+        "not-ž",
+        env={"LC_ALL": "C"},
+    )
+
+    assert result.returncode == 2
+    assert result.stderr.endswith(" not-\\305\\276\n")
+
+
 def test_list_objects_in_all_s3_buckets(
     executable, s3_server, s3_environment
 ):

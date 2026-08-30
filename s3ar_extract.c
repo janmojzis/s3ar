@@ -13,6 +13,7 @@
  */
 
 #include "die.h"
+#include "log.h"
 #include "s3.h"
 #include "s3ar.h"
 
@@ -100,16 +101,6 @@ static bool selected(struct extract_context *context, const char *bucket,
         }
     }
     return selected;
-}
-
-static void verbose_name(const struct extract_context *context,
-                         const char *bucket, const char *key) {
-    if (!context->config->verbose) { return; }
-    int result = key == NULL ? fprintf(stderr, "%s\n", bucket)
-                             : fprintf(stderr, "%s/%s\n", bucket, key);
-    if (result < 0) {
-        die_fatal("s3ar: unable to write verbose output", bucket, key);
-    }
 }
 
 static bool bucket_path(char *path) {
@@ -218,7 +209,7 @@ static void extract_bucket(struct extract_context *context, char *path) {
     }
     if (!selected(context, path, NULL)) { return; }
     ensure_bucket(context, path);
-    verbose_name(context, path, NULL);
+    if (context->config->verbose) { log_s3_name(stderr, path, NULL); }
 }
 
 static void extract_object(struct extract_context *context,
@@ -252,7 +243,7 @@ static void extract_object(struct extract_context *context,
         errno = 0;
         die_fatal("s3ar: incomplete object in archive", bucket, key);
     }
-    verbose_name(context, bucket, key);
+    if (context->config->verbose) { log_s3_name(stderr, bucket, key); }
 }
 
 static void extract_entry(struct extract_context *context,

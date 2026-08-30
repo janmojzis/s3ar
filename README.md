@@ -84,6 +84,12 @@ Extract automatically detects uncompressed and zstd-compressed tar streams.
 Explicit `--zstd` rejects an uncompressed input. The option is not valid with
 `--list-buckets` or `--list-objects`.
 
+Names in listings, verbose output, and diagnostics use GNU tar's default
+`escape` quoting style. Control characters are written as backslash escapes
+such as `\n` and `\t`, a backslash is written as `\\`, and other non-printable
+bytes use three-digit octal escapes. Printable characters, including spaces
+and printable characters in the current locale, are written unchanged.
+
 For example, list the `photos` and `videos` buckets in one invocation:
 
 ```sh

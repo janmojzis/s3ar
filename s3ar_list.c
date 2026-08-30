@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT-0 */
 
 #include "die.h"
+#include "log.h"
 #include "s3.h"
 #include "s3ar.h"
 
@@ -20,22 +21,10 @@ struct list_buckets_context {
     bool verbose;
 };
 
-static void write_bucket_name(const struct s3_bucket *bucket, bool verbose) {
-    int result = verbose
-                     ? fprintf(stdout, "%s\tacl=%s\n", bucket->name,
-                               bucket->acl != NULL ? bucket->acl
-                                                   : "unavailable")
-                     : fprintf(stdout, "%s\n", bucket->name);
-    if (result < 0) {
-        die_fatal("s3ar: unable to write standard output", bucket->name,
-                  NULL);
-    }
-}
-
 static void list_bucket_acl(const struct s3_bucket *bucket,
                             void *callback_data) {
     (void) callback_data;
-    write_bucket_name(bucket, true);
+    log_s3_bucket(bucket, true);
 }
 
 static void list_bucket_name(const struct s3_bucket *bucket,
@@ -44,7 +33,7 @@ static void list_bucket_name(const struct s3_bucket *bucket,
     if (context->verbose) {
         s3_bucket_acl(context->s3, bucket->name, list_bucket_acl, NULL);
     }
-    else { write_bucket_name(bucket, false); }
+    else { log_s3_bucket(bucket, false); }
 }
 
 static void log_head_object(const struct s3_object *object,

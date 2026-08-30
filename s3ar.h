@@ -39,6 +39,5 @@ void s3ar_selection_free(struct s3ar_selection *selection);
 bool s3ar_selection_matches(const struct s3ar_selection *selection,
                             const char *bucket, const char *key);
 bool s3ar_key_is_safe(const char *key);
-void log_s3_object(const struct s3_object *object, bool verbose);
 
 #endif

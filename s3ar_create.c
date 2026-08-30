@@ -12,6 +12,7 @@
  */
 
 #include "die.h"
+#include "log.h"
 #include "s3.h"
 #include "s3ar.h"
 
@@ -100,16 +101,6 @@ static char *object_path(const char *bucket, const char *key) {
     return path;
 }
 
-static void verbose_name(const struct create_context *context,
-                         const char *bucket, const char *key) {
-    if (!context->config->verbose) { return; }
-    int result = key == NULL ? fprintf(stderr, "%s\n", bucket)
-                             : fprintf(stderr, "%s/%s\n", bucket, key);
-    if (result < 0) {
-        die_fatal("s3ar: unable to write verbose output", bucket, key);
-    }
-}
-
 static void write_bucket_acl(const struct s3_bucket *bucket,
                              void *callback_data) {
     struct create_context *context = callback_data;
@@ -150,7 +141,9 @@ static void write_bucket_acl(const struct s3_bucket *bucket,
     }
     archive_entry_free(entry);
     free(path);
-    verbose_name(context, bucket->name, NULL);
+    if (context->config->verbose) {
+        log_s3_name(stderr, bucket->name, NULL);
+    }
 }
 
 static void ensure_bucket(struct create_context *context, const char *bucket) {
@@ -257,7 +250,7 @@ static void write_object(struct create_context *context, const char *bucket,
     if (archive_write_finish_entry(context->archive) != ARCHIVE_OK) {
         archive_fatal(context->archive, "s3ar: cannot finish object entry");
     }
-    verbose_name(context, bucket, key);
+    if (context->config->verbose) { log_s3_name(stderr, bucket, key); }
 }
 
 static void write_listed_object(const struct s3_object *object,
