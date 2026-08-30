@@ -43,12 +43,8 @@ static void log_head_object(const struct s3_object *object,
 }
 
 static void log_object(const struct s3_object *object, void *callback_data) {
-    struct list_context *context = callback_data;
-    if (context->verbose) {
-        s3_object_head(context->s3, object->bucket, object->key,
-                       log_head_object, context);
-    }
-    else { log_s3_object(object, false); }
+    const struct list_context *context = callback_data;
+    log_s3_object(object, context->verbose);
 }
 
 static void list_all_bucket(const struct s3_bucket *bucket,

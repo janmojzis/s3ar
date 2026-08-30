@@ -331,15 +331,15 @@ A bucket operand lists all objects in that bucket. An object operand lists the
 exact object first, when it exists, followed by matching descendants in S3
 order.
 
-With `-v` or `--verbose`, each object is followed by its byte size and sorted
-S3 user metadata, separated by tabs:
+With `-v` or `--verbose`, each object is followed by its byte size, last
+modification time as a Unix timestamp in seconds, and ETag, separated by tabs:
 
 ```text
-photos/2026/photo1.jpg	1234	sha256=3472a7,source=camera
+photos/2026/photo1.jpg	1234	1788104297	"3472a7..."
 ```
 
-An object without user metadata uses `-`. Verbose object listings perform one
-HEAD request per object to retrieve its user metadata.
+An unavailable ETag is written as `-`. These fields are obtained directly from
+the object listing, without a HEAD request for every listed object.
 
 ## Exit status
 

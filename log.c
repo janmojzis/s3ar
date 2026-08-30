@@ -85,15 +85,9 @@ void log_s3_object(const struct s3_object *object, bool verbose) {
     if (result >= 0) { result = fputc('/', stdout) == EOF ? -1 : 0; }
     if (result >= 0) { result = log_quote_name(stdout, object->key); }
     if (result >= 0) {
-        result = fprintf(stdout, "\t%" PRIu64 "\t", object->size);
-    }
-    for (size_t i = 0; result >= 0 && i < object->metadata_count; ++i) {
-        result = fprintf(stdout, "%s%s=%s", i > 0 ? "," : "",
-                         object->metadata[i].name,
-                         object->metadata[i].value);
-    }
-    if (result >= 0 && object->metadata_count == 0) {
-        result = fputc('-', stdout);
+        result = fprintf(stdout, "\t%" PRIu64 "\t%" PRId64 "\t%s",
+                         object->size, object->last_modified,
+                         object->etag != NULL ? object->etag : "-");
     }
     if (result >= 0) { result = fputc('\n', stdout); }
     if (result < 0) {

@@ -34,6 +34,7 @@ struct owned_object {
     char *key;
     uint64_t size;
     int64_t last_modified;
+    char *etag;
 };
 
 struct object_page {
@@ -51,6 +52,7 @@ struct object_head {
     bool exists;
     uint64_t size;
     int64_t last_modified;
+    char *etag;
     struct s3_metadata *metadata;
     size_t metadata_count;
 };
@@ -108,6 +110,12 @@ static S3Status collect_head(const S3ResponseProperties *properties,
     struct object_head *head = callback_data;
     head->size = properties->contentLength;
     head->last_modified = properties->lastModified;
+    if (properties->eTag != NULL) {
+        head->etag = strdup(properties->eTag);
+        if (head->etag == NULL) {
+            die_fatal("s3ar: out of memory", NULL, NULL);
+        }
+    }
     if (properties->metaDataCount > 0) {
         head->metadata = calloc((size_t) properties->metaDataCount,
                                 sizeof(*head->metadata));
@@ -201,6 +209,7 @@ static S3Status get_properties(const S3ResponseProperties *properties,
         .key = get->key,
         .size = properties->contentLength,
         .last_modified = properties->lastModified,
+        .etag = properties->eTag,
         .metadata = metadata,
         .metadata_count = count,
     };
@@ -405,20 +414,24 @@ static void append_object(struct object_page *page,
         die_fatal("s3ar: invalid object key from S3", page->bucket, NULL);
     }
     char *key = strdup(content->key);
-    if (key == NULL) {
+    char *etag = content->eTag != NULL ? strdup(content->eTag) : NULL;
+    if (key == NULL || (content->eTag != NULL && etag == NULL)) {
         free(key);
+        free(etag);
         die_fatal("s3ar: out of memory", NULL, NULL);
     }
     page->objects[page->count++] = (struct owned_object) {
         .key = key,
         .size = content->size,
         .last_modified = content->lastModified,
+        .etag = etag,
     };
 }
 
 static void free_object_page(struct object_page *page) {
     for (size_t i = 0; i < page->count; ++i) {
         free(page->objects[i].key);
+        free(page->objects[i].etag);
     }
     free(page->objects);
     free(page->next_marker);
@@ -626,6 +639,7 @@ bool s3_object_head(const struct s3 *s3, const char *bucket, const char *key,
     };
     S3_head_object(&context, key, NULL, &head_handler, &head);
     if (!head.exists) {
+        free(head.etag);
         free_metadata(&head);
         return false;
     }
@@ -636,10 +650,12 @@ bool s3_object_head(const struct s3 *s3, const char *bucket, const char *key,
         .key = key,
         .size = head.size,
         .last_modified = head.last_modified,
+        .etag = head.etag,
         .metadata = head.metadata,
         .metadata_count = head.metadata_count,
     };
     callback(&object, callback_data);
+    free(head.etag);
     free_metadata(&head);
     return true;
 }
@@ -669,6 +685,7 @@ size_t s3_object_list_prefix(const struct s3 *s3, const char *bucket,
                 .key = owned->key,
                 .size = owned->size,
                 .last_modified = owned->last_modified,
+                .etag = owned->etag,
             };
             callback(&object, callback_data);
         }

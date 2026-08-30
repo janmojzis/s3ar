@@ -160,24 +160,26 @@ def test_list_objects_in_one_bucket_including_empty_bucket(
 def test_verbose_list_s3(executable, s3_server, s3_environment):
     _endpoint, client = s3_server
     client.create_bucket(Bucket="list-verbose")
-    client.put_object(
+    put = client.put_object(
         Bucket="list-verbose",
         Key="item",
         Body=b"1234",
         Metadata={"source": "pytest", "sha256": "3472a7"},
     )
+    listed = client.list_objects_v2(Bucket="list-verbose")["Contents"][0]
 
     result = run(
         executable,
         "--list-objects",
         "-v",
         "s3://list-verbose/",
-        env=s3_environment,
+        env={**s3_environment, "TZ": "Europe/Prague"},
     )
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
-        "list-verbose/item\t4\tsha256=3472a7,source=pytest\n"
+        f"list-verbose/item\t4\t{int(listed['LastModified'].timestamp())}"
+        f"\t{put['ETag']}\n"
     )
 
 

@@ -483,17 +483,17 @@ With
 .BR \-v
 or
 .BR \-\-verbose ,
-each object is followed by its byte size and sorted S3 user metadata, separated
-by tabs:
+each object is followed by its byte size, last modification time as a Unix
+timestamp in seconds, and ETag, separated by tabs:
 .PP
 .nf
-photos/2026/photo1.jpg	1234	sha256=3472a7,source=camera
+photos/2026/photo1.jpg	1234	1788104297	"3472a7..."
 .fi
 .PP
-An object without user metadata uses
+An unavailable ETag is written as
 .BR \- .
-Verbose object listings perform one HEAD request per object to retrieve its
-user metadata.
+These fields are obtained directly from the object listing, without a HEAD
+request for every listed object.
 .SH EXIT STATUS
 .TP
 .B 0

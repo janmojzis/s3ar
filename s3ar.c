@@ -22,6 +22,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static void usage(FILE *stream) {
     fprintf(stream, "Usage: s3ar (-c | --create) [-v | --verbose] "
@@ -140,6 +141,13 @@ int main(int argc, char **argv) {
         errno = 0;
         die_fatal("s3ar: unable to initialize locale", NULL, NULL);
     }
+    /* libs3 parses S3's UTC timestamps with mktime(3).  Set TZ before
+     * reading any environment-backed configuration pointers so those
+     * timestamps remain UTC and setenv(3) cannot invalidate the pointers. */
+    if (setenv("TZ", "UTC0", 1) != 0) {
+        die_fatal("s3ar: unable to set UTC timezone", NULL, NULL);
+    }
+    tzset();
 
     /* parse options */
     opterr = 0;
