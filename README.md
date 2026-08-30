@@ -1,36 +1,27 @@
 # S3 Archiver
 
-`s3ar` (S3 Archiver) is a command-line utility for creating tar archives from
-an S3-compatible object store and extracting those archives back to S3. In
-addition to object data, the archives store S3 user metadata and bucket ACL
-summaries in PAX `SCHILY` extended-attribute headers.
+`s3ar` creates tar archives directly from S3-compatible storage and restores
+them back to S3. It preserves object metadata and records bucket ACLs in PAX
+headers.
 
-The command-line interface is intentionally designed to resemble the standard
-`tar` utility. Archive creation and extraction use the familiar `-c`, `-x`,
-`-f`, and `-v` options, and selection operands are processed in command-line
-order. `s3ar` is not a full replacement for `tar`; it applies the same style
-of operation to live S3 resources and supports only the options documented
-below.
+Its command line follows the familiar `tar` style, including `-c`, `-x`, `-f`,
+and `-v`. It is not a general replacement for `tar`: it works with live S3
+resources and implements only the options described here.
 
 ## Building
 
-Install the build dependencies:
+Install the dependencies and build `s3ar`:
 
 ```sh
 apt install build-essential libs3-dev libarchive-dev
-```
-
-Build the executable:
-
-```sh
 make
 ```
 
-The resulting executable is `./s3ar`.
+The executable is written to `./s3ar`.
 
 ## S3 configuration
 
-S3 access requires these environment variables:
+Set your S3 credentials and endpoint. The values below are only an example:
 
 ```sh
 export S3AR_ACCESS_KEY='access-key'
@@ -40,9 +31,9 @@ export S3AR_URI_STYLE='path'
 export S3AR_REGION='us-east-1'
 ```
 
-`S3AR_ENDPOINT` contains a host and optional port, but no URL path. Its scheme
-may be `http://` or `https://`; HTTPS is used when the scheme is omitted. One
-trailing slash is accepted and removed.
+`S3AR_ENDPOINT` may contain a host and port, but not a URL path. Both `http://`
+and `https://` are accepted; without a scheme, `s3ar` uses HTTPS. A single
+trailing slash is harmless.
 
 `S3AR_URI_STYLE` accepts `path` or `virtual` and defaults to `path`.
 
@@ -50,7 +41,19 @@ trailing slash is accepted and removed.
 not set.
 
 The bundled `libs3` interface does not support temporary session credentials,
-so `S3AR_SESSION_TOKEN` is not currently supported.
+so `S3AR_SESSION_TOKEN` is not available.
+
+## Quick start
+
+Back up the `photos` bucket and restore it later:
+
+```sh
+./s3ar -c -f photos.tar s3://photos
+./s3ar -x -f photos.tar
+```
+
+Use `s3://` instead of a bucket name to include everything your credentials
+can access.
 
 ## Command line
 
@@ -74,27 +77,22 @@ The options are:
 - `-v`, `--verbose`: enable verbose output.
 - `-h`, `--help`: display command-line help and exit successfully.
 
-Create and `--list-objects` require at least one S3 operand. Extract accepts
-zero or more selection operands. Multiple operands are processed in
+`--create` and `--list-objects` need at least one S3 URI. `--extract` does not:
+without a URI, it restores the whole archive. Multiple URIs are processed in
 command-line order.
-Without `-f`, or with `-f -`, create writes to standard output while extract
-reads from standard input.
 
-Extract automatically detects uncompressed and zstd-compressed tar streams.
-Explicit `--zstd` rejects an uncompressed input. The option is not valid with
-`--list-buckets` or `--list-objects`.
+Without `-f`, or with `-f -`, `--create` writes to standard output and
+`--extract` reads from standard input.
+
+`--extract` detects uncompressed and zstd-compressed tar streams automatically.
+Passing `--zstd` explicitly rejects uncompressed input. This option cannot be
+used with `--list-buckets` or `--list-objects`.
 
 Names in listings, verbose output, and diagnostics use GNU tar's default
 `escape` quoting style. Control characters are written as backslash escapes
 such as `\n` and `\t`, a backslash is written as `\\`, and other non-printable
 bytes use three-digit octal escapes. Printable characters, including spaces
 and printable characters in the current locale, are written unchanged.
-
-For example, list the `photos` and `videos` buckets in one invocation:
-
-```sh
-./s3ar --list-objects s3://photos s3://videos
-```
 
 ## Selecting S3 resources
 
@@ -108,16 +106,14 @@ A trailing slash does not change the selection:
 | `s3://BUCKET/NAME` | The exact `NAME` key and objects below `NAME/` |
 | `s3://BUCKET/NAME/` | The same as `s3://BUCKET/NAME` |
 
-Matching occurs only at a path boundary. Selecting `photo` can match the exact
-key `photo` and keys such as `photo/first.jpg`, but never `photo1.jpg` or
-`photo-old.jpg`. The exact key does not need to exist when matching descendants
-exist.
+Matches stop at path boundaries. For example, `photo` matches the exact key
+`photo` and keys below `photo/`, but not `photo1.jpg` or `photo-old.jpg`. The
+exact key itself does not need to exist if matching descendants do.
 
-An object selection that matches neither an exact key nor any descendant is an
-error. A bucket selection succeeds for an empty bucket and still writes the
-bucket URI.
+If a URI matches neither an object nor a prefix, the command fails. Empty
+buckets are valid and still produce a bucket entry when creating an archive.
 
-For example, suppose S3 contains these objects:
+The examples below assume that S3 contains these objects:
 
 ```text
 s3://photos/2026/photo1.jpg
@@ -136,34 +132,31 @@ s3://videos/2027/videoN.jpg
 
 ## Creating archives
 
-Create always requires at least one S3 selection operand. To select everything,
-pass `s3://` explicitly; omitting the operand is an error.
-
-The following examples use the S3 objects shown above. Back up everything in S3:
+`--create` always needs an S3 URI. Back up everything:
 
 ```sh
 ./s3ar -c -f media.tar s3://
 ```
 
-For this example, explicitly selecting both buckets archives the same objects:
+The same backup, with both buckets named explicitly:
 
 ```sh
 ./s3ar -c -f media.tar s3://photos s3://videos
 ```
 
-Back up exactly one bucket and all its objects:
+One bucket:
 
 ```sh
 ./s3ar -c -f photos.tar s3://photos
 ```
 
-Back up only the photos from 2026:
+One prefix:
 
 ```sh
 ./s3ar -c -f photos-2026.tar s3://photos/2026
 ```
 
-Back up the photos and videos from 2026:
+Two prefixes:
 
 ```sh
 ./s3ar -c -f media-2026.tar s3://photos/2026 s3://videos/2026
@@ -175,16 +168,22 @@ Without `-f`, the archive is streamed to standard output:
 ./s3ar -c s3://photos/2026 >photos-2026.tar
 ```
 
-A new archive file is created with mode `0666` modified by the current `umask`.
-Truncating an existing archive preserves its permissions.
+A new archive starts with mode `0666`, modified by the current `umask`.
+Overwriting an existing archive keeps its permissions.
 
-Each selected bucket is stored once as a `BUCKET/` directory entry. Objects
-are regular entries named `BUCKET/KEY`; their bodies are streamed from S3
-directly into libarchive. The bucket entry always precedes every object entry
-belonging to it. Empty buckets therefore still produce an archive member.
+Each bucket becomes a `BUCKET/` directory entry. Its objects are stored as
+regular `BUCKET/KEY` entries and streamed directly from S3 into libarchive.
+The bucket entry comes first, so an empty bucket still appears in the archive.
 
-The restricted PAX archive stores s3ar information as namespaced SCHILY
-extended attributes:
+Note: archive creation is not atomic. An object may change between the S3 LIST
+and GET requests.
+
+With `-v`, archived member names are written to standard error without the
+`s3://` prefix. A tar stream written to standard output remains untouched.
+
+### Archive format
+
+S3-specific information is stored in namespaced SCHILY extended attributes:
 
 ```text
 SCHILY.xattr.user.s3ar.format=1
@@ -192,14 +191,14 @@ SCHILY.xattr.user.s3ar.bucket-acl=public-read,custom
 SCHILY.xattr.user.s3ar.metadata.NAME=VALUE
 ```
 
-The format marker is stored on every bucket and object member. It lets s3ar
-distinguish the namespaced layout from older archives without misinterpreting
-a legacy S3 metadata name that begins with `s3ar.`. The underlying filesystem
-attribute names are therefore `user.s3ar.format` and
-`user.s3ar.bucket-acl` on bucket directory members, and `user.s3ar.format`
-plus `user.s3ar.metadata.NAME` on object members. The `user.` namespace lets
-GNU tar restore them onto filesystems that support extended attributes. GNU
-tar requires xattr handling to be enabled explicitly:
+Every bucket and object carries the format marker. This prevents metadata from
+older archives whose name begins with `s3ar.` from being mistaken for part of
+the current format. On a filesystem, the attributes are
+`user.s3ar.format` and `user.s3ar.bucket-acl` for bucket directories, plus
+`user.s3ar.metadata.NAME` for objects.
+
+GNU tar can restore these attributes on filesystems that support them, but
+xattr handling must be enabled explicitly:
 
 ```sh
 mkdir restored
@@ -208,78 +207,66 @@ getfattr -d -m 'user.s3ar.*' restored/BUCKET
 getfattr -d -m 'user.s3ar.*' restored/BUCKET/KEY
 ```
 
-This filesystem extraction is useful for inspecting and testing archived S3
-metadata; it does not turn the archive into a general filesystem backup.
+This is useful for inspecting or testing S3 metadata. It does not make the
+archive a general filesystem backup.
 
 Unsafe object keys containing empty, `.` or `..` path components are rejected.
-Create is a weak snapshot: an object can change between LIST and GET. With
-`-v`, archived member names are written without the `s3://` prefix to standard
-error. This is independent of the archive destination and keeps a tar stream
-on standard output unmodified.
 
 ## Extracting archives
 
-Selection operands are optional with extract. With no S3 operand, every
-accepted archive member is restored; one or more operands limit extraction to
-matching members.
-
-Assuming `media.tar` contains the full backup created above, extract all of it
-back to S3:
+Without an S3 URI, `--extract` restores the whole archive:
 
 ```sh
 ./s3ar -x -f media.tar
 ```
 
-Extract exactly the `photos` bucket and all its objects:
+To restore only part of it, use the same URI syntax described in
+[Selecting S3 resources](#selecting-s3-resources). Restore the `photos` bucket:
 
 ```sh
 ./s3ar -x -f media.tar s3://photos
 ```
 
-Extract only the photos from 2026:
+Restore one prefix:
 
 ```sh
 ./s3ar -x -f media.tar s3://photos/2026
 ```
 
-Multiple operands can select several branches. This extracts the photos and
-videos from 2026:
+Restore two prefixes:
 
 ```sh
 ./s3ar -x -f media.tar s3://photos/2026 s3://videos/2026
 ```
 
-Without `-f`, the archive is read from standard input. Selection operands work
-the same way as with an archive file:
+Without `-f`, the archive is read from standard input:
 
 ```sh
 cat media.tar | ./s3ar -x s3://photos/2026
 ```
 
-Bucket directory entries create missing buckets. Object entries are streamed
-directly from libarchive into S3 PUT requests and overwrite objects with the
-same keys.
+Bucket entries create buckets that do not exist yet. Object data is streamed
+from libarchive into S3 PUT requests, overwriting objects with the same keys.
 
-Only tar archives containing top-level bucket directories and regular
-`BUCKET/KEY` object members are accepted. Absolute paths, empty, `.` and `..`
-components, links, and other member types are rejected. Uncompressed and zstd
-archives are accepted. A requested operand that matches no archive member is
-an error.
+An accepted archive contains top-level bucket directories and regular
+`BUCKET/KEY` object entries. `s3ar` rejects absolute paths, empty, `.` or `..`
+components, links, and other entry types. It accepts uncompressed and zstd
+archives. A URI that matches no archive entry is an error.
 
-Each `BUCKET/` member must occur before all of its `BUCKET/KEY` members and may
-occur only once. During extraction, the bucket is created or checked when its
-directory member is read, before any selected objects are uploaded. A bucket
-member is processed for an object or prefix selection in that bucket as well
-as for a whole-bucket selection. Unselected buckets are not created.
+Each `BUCKET/` entry must appear exactly once and before its objects. `s3ar`
+creates or checks the bucket before uploading anything into it. Selecting an
+object or prefix also processes its bucket entry; unselected buckets are not
+created.
 
 On entries marked with `SCHILY.xattr.user.s3ar.format=1`,
 `SCHILY.xattr.user.s3ar.metadata.NAME` values are restored as S3 user metadata.
-On unmarked entries from older s3ar releases, `SCHILY.xattr.user.NAME` is
-accepted instead. This preserves legacy metadata names even when they begin
-with the now-reserved `s3ar.` prefix. Unknown format-marker values are
-rejected. Bucket ACL summaries are informational and are not restored; new
-buckets and uploaded objects use private ACLs. With `-v`, restored member names
-are written without the `s3://` prefix to standard error.
+For unmarked entries from older releases, `SCHILY.xattr.user.NAME` is accepted
+instead, including legacy names that begin with the now-reserved `s3ar.`
+prefix. Unknown format-marker values are rejected.
+
+Bucket ACL summaries are informational and are not restored. New buckets and
+uploaded objects use private ACLs. With `-v`, restored names are written to
+standard error without the `s3://` prefix.
 
 ## Listing buckets and objects
 
@@ -291,29 +278,27 @@ are written without the `s3://` prefix to standard error.
 ./s3ar --list-buckets
 ```
 
-The names are written to standard output, one per line:
+Bucket names are written to standard output, one per line:
 
 ```text
 photos
 videos
 ```
 
-With `-v` or `--verbose`, every name is followed by a tab and its ACL summary:
+Add `-v` to include the ACL summary after a tab:
 
 ```text
 photos	acl=public-read,custom
 videos	acl=private
 ```
 
-All positional arguments passed to `--list-buckets` are ignored. In
-particular, operands such as `s3://asdasd`, `s3://bucket/prefix`, and `s3://`
-do not filter the output or cause those resources to be accessed.
+`--list-buckets` ignores positional arguments. A URI such as
+`s3://bucket/prefix` neither filters the output nor accesses that resource.
 
 ### Listing objects
 
-`--list-objects` requires one or more S3 selection operands. It writes every
-selected object to standard output as `BUCKET/KEY`, without the `s3://` prefix,
-one object per line. For example:
+`--list-objects` needs one or more S3 URIs. It prints matching objects as
+`BUCKET/KEY`, one per line and without the `s3://` prefix:
 
 ```sh
 ./s3ar --list-objects s3://photos/2026
@@ -327,24 +312,23 @@ photos/2026/photo2.jpg
 photos/2026/photoN.jpg
 ```
 
-The operand `s3://` lists objects from every bucket. Buckets are processed in
-sorted order. Object listings use S3 ordering and continue across pages of up
-to 512 objects. Bucket names are not printed separately, so empty buckets
-produce no output.
+The URI `s3://` lists objects from every bucket. Buckets are processed in
+sorted order, while objects keep S3's ordering. Listings continue across pages
+of up to 512 objects. Empty buckets produce no output because bucket names are
+not printed separately.
 
-A bucket operand lists all objects in that bucket. An object operand lists the
-exact object first, when it exists, followed by matching descendants in S3
-order.
+A bucket URI lists the whole bucket. An object URI lists the exact object
+first, if it exists, followed by matching descendants in S3 order.
 
-With `-v` or `--verbose`, each object is followed by its byte size, last
-modification time as a Unix timestamp in seconds, and ETag, separated by tabs:
+Add `-v` to include the byte size, modification time as a Unix timestamp, and
+ETag. The fields are separated by tabs:
 
 ```text
 photos/2026/photo1.jpg	1234	1788104297	"3472a7..."
 ```
 
-An unavailable ETag is written as `-`. These fields are obtained directly from
-the object listing, without a HEAD request for every listed object.
+An unavailable ETag is shown as `-`. The values come directly from the object
+listing; `s3ar` does not send a HEAD request for every object.
 
 ## Exit status
 
@@ -352,7 +336,7 @@ the object listing, without a HEAD request for every listed object.
 - `2`: invalid usage, invalid configuration, allocation failure, S3 failure,
   or output failure.
 
-Fatal errors are written to standard error with an `s3ar:` prefix.
+Fatal errors go to standard error and start with `s3ar:`.
 
 ## Testing with the local S3 server
 
@@ -400,5 +384,5 @@ export S3AR_SECRET_KEY='test-secret'
 ./s3ar -x -f media.tar s3://photos/2026 s3://videos/2026
 ```
 
-The test server imports the filesystem tree at startup. Restart it after
-changing files directly in the test-data directory.
+The test server reads the filesystem tree only at startup. Restart it after
+changing anything directly in the test-data directory.
