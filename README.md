@@ -1,9 +1,9 @@
 # S3 Archiver
 
-`s3ar` is a command-line utility for listing buckets and objects, creating tar
-archives from an S3-compatible object store, and extracting those archives
-back to S3. Its member selection follows tar semantics: an operand selects an
-exact member and all descendants below `MEMBER/`.
+`s3ar` (S3 Archiver) is a command-line utility for creating tar archives from
+an S3-compatible object store and extracting those archives back to S3. In
+addition to object data, the archives store S3 user metadata and bucket ACL
+summaries in PAX `SCHILY` extended-attribute headers.
 
 The command-line interface is intentionally designed to resemble the standard
 `tar` utility. Archive creation and extraction use the familiar `-c`, `-x`,
@@ -12,10 +12,7 @@ order. `s3ar` is not a full replacement for `tar`; it applies the same style
 of operation to live S3 resources and supports only the options documented
 below.
 
-This README is the authoritative contract for the command-line interface,
-configuration, and observable behavior.
-
-## Building on Debian
+## Building
 
 Install the build dependencies:
 
@@ -53,7 +50,7 @@ trailing slash is accepted and removed.
 not set.
 
 The bundled `libs3` interface does not support temporary session credentials,
-so `S3AR_SESSION_TOKEN` is not supported.
+so `S3AR_SESSION_TOKEN` is not currently supported.
 
 ## Command line
 
@@ -87,13 +84,13 @@ Extract automatically detects uncompressed and zstd-compressed tar streams.
 Explicit `--zstd` rejects an uncompressed input. The option is not valid with
 `--list-buckets` or `--list-objects`.
 
-For example, list two buckets and all their objects in one invocation:
+For example, list the `photos` and `videos` buckets in one invocation:
 
 ```sh
-./s3ar --list-objects s3://incoming/ s3://processed/
+./s3ar --list-objects s3://photos s3://videos
 ```
 
-## S3 selection contract
+## Selecting S3 resources
 
 A trailing slash does not change the selection:
 
@@ -114,18 +111,60 @@ An object selection that matches neither an exact key nor any descendant is an
 error. A bucket selection succeeds for an empty bucket and still writes the
 bucket URI.
 
+For example, suppose S3 contains these objects:
+
+```text
+s3://photos/2026/photo1.jpg
+s3://photos/2026/photo2.jpg
+s3://photos/2026/photoN.jpg
+s3://photos/2027/photo1.jpg
+s3://photos/2027/photo2.jpg
+s3://photos/2027/photoN.jpg
+s3://videos/2026/video1.jpg
+s3://videos/2026/video2.jpg
+s3://videos/2026/videoN.jpg
+s3://videos/2027/video1.jpg
+s3://videos/2027/video2.jpg
+s3://videos/2027/videoN.jpg
+```
+
 ## Creating archives
 
-Create one bucket in a local tar file:
+The following examples use the S3 objects shown above. Back up everything in
+S3:
 
 ```sh
-./s3ar -c -f album.tar s3://album
+./s3ar -c -f media.tar s3://
+```
+
+For this example, explicitly selecting both buckets archives the same objects:
+
+```sh
+./s3ar -c -f media.tar s3://photos s3://videos
+```
+
+Back up exactly one bucket and all its objects:
+
+```sh
+./s3ar -c -f photos.tar s3://photos
+```
+
+Back up only the photos from 2026:
+
+```sh
+./s3ar -c -f photos-2026.tar s3://photos/2026
+```
+
+Back up the photos and videos from 2026:
+
+```sh
+./s3ar -c -f media-2026.tar s3://photos/2026 s3://videos/2026
 ```
 
 Without `-f`, the archive is streamed to standard output:
 
 ```sh
-./s3ar -c s3://album/photo/ >photos.tar
+./s3ar -c s3://photos/2026 >photos-2026.tar
 ```
 
 Each selected bucket is stored once as a `BUCKET/` directory entry. Objects
@@ -148,19 +187,37 @@ on standard output unmodified.
 
 ## Extracting archives
 
-Extract an archive into S3:
+Assuming `media.tar` contains the full backup created above, extract all of it
+back to S3:
 
 ```sh
-./s3ar -x -f album.tar
+./s3ar -x -f media.tar
 ```
 
-Without `-f`, the archive is read from standard input. Operands optionally
-filter archive members using the same exact-member-and-descendants selection
-as create and `--list-objects`:
+Extract exactly the `photos` bucket and all its objects:
 
 ```sh
-./s3ar -x -f album.tar s3://album/photo
-cat album.tar | ./s3ar -x s3://album/photo
+./s3ar -x -f media.tar s3://photos
+```
+
+Extract only the photos from 2026:
+
+```sh
+./s3ar -x -f media.tar s3://photos/2026
+```
+
+Multiple operands can select several branches. This extracts the photos and
+videos from 2026:
+
+```sh
+./s3ar -x -f media.tar s3://photos/2026 s3://videos/2026
+```
+
+Without `-f`, the archive is read from standard input. Selection operands work
+the same way as with an archive file:
+
+```sh
+cat media.tar | ./s3ar -x s3://photos/2026
 ```
 
 Bucket directory entries create missing buckets. Object entries are streamed
@@ -179,48 +236,66 @@ summaries are informational and are not restored; new buckets and uploaded
 objects use private ACLs. With `-v`, restored member names are written without
 the `s3://` prefix to standard error.
 
-## Listing output
+## Listing buckets and objects
 
-`--list-buckets` writes bare bucket names to standard output, one per line:
+### Listing buckets
+
+`--list-buckets` lists all bucket names without listing their objects:
+
+```sh
+./s3ar --list-buckets
+```
+
+The names are written to standard output, one per line:
 
 ```text
-album
-backups
 photos
+videos
 ```
 
-With `-v` or `--verbose`, every bucket includes its ACL summary:
+With `-v` or `--verbose`, every name is followed by a tab and its ACL summary:
 
 ```text
-album    acl=public-read,custom
-backups  acl=private
+photos	acl=public-read,custom
+videos	acl=private
 ```
 
-All positional arguments passed to `--list-buckets` are explicitly ignored.
-In particular, operands such as `s3://asdasd`, `s3://bucket/prefix`, and
-`s3://` neither filter the output nor cause those resources to be accessed.
+All positional arguments passed to `--list-buckets` are ignored. In
+particular, operands such as `s3://asdasd`, `s3://bucket/prefix`, and `s3://`
+do not filter the output or cause those resources to be accessed.
 
-Every selected object is written to standard output as `BUCKET/KEY`, without
-the `s3://` prefix, one entry per line:
+### Listing objects
+
+`--list-objects` requires one or more S3 selection operands. It writes every
+selected object to standard output as `BUCKET/KEY`, without the `s3://` prefix,
+one object per line. For example:
+
+```sh
+./s3ar --list-objects s3://photos/2026
+```
+
+produces:
 
 ```text
-photos/2026/first.jpg
-photos/2026/second.jpg
+photos/2026/photo1.jpg
+photos/2026/photo2.jpg
+photos/2026/photoN.jpg
 ```
 
-Listing `s3://` writes the objects from every bucket. Buckets are processed in
+The operand `s3://` lists objects from every bucket. Buckets are processed in
 sorted order. Object listings use S3 ordering and continue across pages of up
-to 512 objects. Empty buckets produce no object output.
+to 512 objects. Bucket names are not printed separately, so empty buckets
+produce no output.
 
-Bucket selections write all object URIs in that bucket. Object selections
-write the exact object first, when it exists, followed by matching descendants
-in S3 order.
+A bucket operand lists all objects in that bucket. An object operand lists the
+exact object first, when it exists, followed by matching descendants in S3
+order.
 
-With `-v` or `--verbose`, objects include their byte size followed by sorted S3
-user metadata:
+With `-v` or `--verbose`, each object is followed by its byte size and sorted
+S3 user metadata, separated by tabs:
 
 ```text
-photos/first.jpg    1234    sha256=3472a7,source=camera
+photos/2026/photo1.jpg	1234	sha256=3472a7,source=camera
 ```
 
 An object without user metadata uses `-`. Verbose object listings perform one
@@ -240,11 +315,19 @@ Prepare a filesystem-backed test store and start the server:
 
 ```sh
 test_data=$(mktemp -d)
-mkdir -p "$test_data/photos/2026" "$test_data/empty"
-printf 'first\n' >"$test_data/photos/2026/first.jpg"
-printf 'second\n' >"$test_data/photos/second.jpg"
+mkdir -p "$test_data/photos/2026" "$test_data/photos/2027"
+mkdir -p "$test_data/videos/2026" "$test_data/videos/2027"
 
-python3 ../s3testserver.py "$test_data" --host 127.0.0.1 --port 9000
+for year in 2026 2027; do
+    for number in 1 2 N; do
+        printf 'photo%s from %s\n' "$number" "$year" \
+            >"$test_data/photos/$year/photo$number.jpg"
+        printf 'video%s from %s\n' "$number" "$year" \
+            >"$test_data/videos/$year/video$number.jpg"
+    done
+done
+
+python3 ./s3testserver.py "$test_data" --host 127.0.0.1 --port 9000
 ```
 
 In another shell, configure and run `s3ar`:
@@ -258,12 +341,18 @@ export S3AR_SECRET_KEY='test-secret'
 
 ./s3ar --list-buckets
 ./s3ar --list-objects s3://
-./s3ar --list-objects s3://photos
-./s3ar --list-objects s3://photos/
-./s3ar --list-objects s3://photos/second.jpg
-./s3ar --list-objects s3://photos/2026/
-./s3ar -c -f photos.tar s3://photos
-./s3ar -x -f photos.tar
+./s3ar --list-objects s3://photos s3://videos
+./s3ar --list-objects s3://photos/2026
+./s3ar --list-objects s3://photos/2026 s3://videos/2026
+
+./s3ar -c -f media.tar s3://
+./s3ar -c -f media-buckets.tar s3://photos s3://videos
+./s3ar -c -f photos-2026.tar s3://photos/2026
+./s3ar -c -f media-2026.tar s3://photos/2026 s3://videos/2026
+
+./s3ar -x -f media.tar
+./s3ar -x -f media.tar s3://photos/2026
+./s3ar -x -f media.tar s3://photos/2026 s3://videos/2026
 ```
 
 The test server imports the filesystem tree at startup. Restart it after

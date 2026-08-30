@@ -1,6 +1,6 @@
 .TH S3AR 1 "August 2026" "S3 Archiver" "User Commands"
 .SH NAME
-s3ar \- create and extract POSIX PAX archives of S3 objects
+s3ar \- create tar archives from S3 and extract them back to S3
 .SH SYNOPSIS
 .B s3ar
 .RB ( \-c | \-\-create )
@@ -16,167 +16,90 @@ s3ar \- create and extract POSIX PAX archives of S3 objects
 .RB [ \-f " TARFILE" ]
 .RI [ S3... ]
 .br
-.B s3ar \-\-list-objects
-.RB [ \-v | \-\-verbose ]
-.I S3...
-.br
 .B s3ar \-\-list-buckets
 .RB [ \-v | \-\-verbose ]
 .RI [ S3... ]
+.br
+.B s3ar \-\-list-objects
+.RB [ \-v | \-\-verbose ]
+.I S3...
 .br
 .B s3ar
 .RB ( \-h | \-\-help )
 .SH DESCRIPTION
 .B s3ar
-is S3 Archiver, a command-line utility for creating POSIX PAX archives from
-an S3-compatible object store, extracting those archives back to S3, and
-listing live buckets or objects.
+(S3 Archiver) is a command-line utility for creating tar archives from an
+S3-compatible object store and extracting those archives back to S3. In
+addition to object data, the archives store S3 user metadata and bucket ACL
+summaries in PAX
+.B SCHILY
+extended-attribute headers.
 .PP
-The interface is intentionally tar-like. Archive operations use familiar
+The command-line interface is intentionally designed to resemble the standard
 .BR tar (1)
-options such as
+utility. Archive creation and extraction use the familiar
 .BR \-c ,
 .BR \-x ,
 .BR \-f ,
 and
-.BR \-v ,
-and selection operands follow tar member-selection semantics. The utility is
-not a complete replacement for tar and implements only the options documented
-here.
-.PP
-Archive members use the form
-.BR BUCKET/KEY .
-Each selected bucket is represented by one
-.B BUCKET/
-directory member. Object data is streamed between S3 and libarchive without
-staging complete objects on the local filesystem.
-.PP
-Without
-.BR \-f ,
-or with
-.BR "\-f \-" ,
-create writes the archive to standard output and extract reads it from
-standard input. Extract with no S3 operand restores all accepted archive
-members.
-.SH OPERATIONS
-.TP
-.BR \-c ", " \-\-create
-Create an archive from one or more S3 selections. Multiple operands are
-processed in command-line order. If overlapping operands select an object
-more than once, the object is stored once for each matching operand. Bucket
-directory members are stored only once.
-.TP
-.BR \-x ", " \-\-extract ", " \-\-get
-Extract an archive into S3. Operands optionally filter archive members.
-Objects overwrite existing objects with the same keys, and missing buckets
-are created. Multiple matching filters do not upload an archive member more
-than once.
-.TP
-.B \-\-list-objects
-List objects selected by one or more S3 operands. Output contains
-.B BUCKET/KEY
-without an
-.B s3://
-prefix, one object per line. Bucket entries are not printed, and an empty
-bucket produces no output.
-.TP
-.B \-\-list-buckets
-List all bucket names without their objects, one bucket per line. All
-positional arguments are ignored. In particular,
-.BR s3://asdasd ,
-.BR s3://BUCKET/PREFIX ,
-and
-.B s3://
-do not filter the output and do not cause those resources to be accessed.
-.SH OPTIONS
-.TP
-.BR \-f " " TARFILE ", " \-\-file= TARFILE
-Read or write the named archive. This option is valid only with create or
-extract. TARFILE must be a local filesystem path or
-.BR \- .
-Create truncates an existing local file and writes directly to it. If create
-fails after opening the file, a partial archive can remain.
-.TP
-.BR \-v ", " \-\-verbose
-With create and extract, write each successfully archived or restored member
-name as
-.B BUCKET/KEY
-to standard error. The output never includes an
-.B s3://
-prefix and always uses standard error, regardless of the archive stream.
-.PP
-With
-.BR \-\-list-objects ,
-write tab-separated fields to standard output. Each row contains the object
-name, byte size, and comma-separated S3 user metadata sorted by name. A hyphen
-denotes an object without user metadata. This mode performs one HEAD request
-per object.
-.PP
-With
-.BR \-\-list-buckets ,
-append a tab-separated
-.IB acl= ACL
-summary to every bucket name. An ACL unavailable from the endpoint is shown
-as
-.BR acl=unavailable .
-.TP
-.B \-\-zstd
-With create, write a zstd-compressed archive. Extract automatically detects
-plain and zstd-compressed archives; specifying this option requires zstd
-input. The option is not valid with
-.B \-\-list-objects
-or
-.BR \-\-list-buckets .
-.TP
-.BR \-h ", " \-\-help
-Display command usage and exit successfully.
-.SH S3 SELECTION
-.TP
-.B s3://
-Select all buckets and their objects.
-.TP
-.BR s3://BUCKET " or " s3://BUCKET/
-Select the named bucket and all its objects. A trailing slash does not change
-the selection.
-.TP
-.BR s3://BUCKET/NAME " or " s3://BUCKET/NAME/
-Select the exact object key
-.B NAME
-and all objects below
-.BR NAME/ .
-Matching occurs only at a path boundary. For example,
-.B photo
-matches
-.B photo
-and
-.BR photo/first.jpg ,
-but not
-.BR photo1.jpg .
-.PP
-An object selection that matches neither an exact key nor a descendant is an
-error. A bucket selection succeeds for an empty bucket. Input operands must
-use the
-.B s3://
-form even though list and verbose output omit that prefix.
-.SH ARCHIVE FORMAT
-Archives use the restricted POSIX PAX format. Plain and zstd-compressed
-archives are supported. Bucket ACL summaries and S3 user metadata are stored
-as SCHILY extended attributes:
+.B \-v
+options, and selection operands are processed in command-line order.
+.B s3ar
+is not a full replacement for
+.BR tar ;
+it applies the same style of operation to live S3 resources and supports only
+the options documented here.
+.SH BUILDING
+On Debian, install the build dependencies and build the executable with:
 .PP
 .nf
-SCHILY.xattr.s3ar.bucket-acl=public-read,custom
-SCHILY.xattr.user.NAME=VALUE
+apt install build-essential libs3-dev libarchive-dev
+make
 .fi
 .PP
-User metadata is restored to uploaded objects. Bucket ACL summaries are
-informational and are not restored. Unsafe object keys or archive paths
-containing empty,
-.BR . ,
+The resulting executable is
+.BR ./s3ar .
+.SH S3 CONFIGURATION
+Configure S3 access with these environment variables:
+.PP
+.nf
+export S3AR_ACCESS_KEY='access-key'
+export S3AR_SECRET_KEY='secret-key'
+export S3AR_ENDPOINT='https://s3.example.net'
+export S3AR_URI_STYLE='path'
+export S3AR_REGION='us-east-1'
+.fi
+.PP
+.BR S3AR_ACCESS_KEY ,
+.BR S3AR_SECRET_KEY ,
+and
+.B S3AR_ENDPOINT
+are required.
+.B S3AR_ENDPOINT
+contains a host and optional port, but no URL path. Its scheme may be
+.B http://
 or
-.B ..
-components are rejected. Archive links and unsupported member types are also
-rejected.
-.SH ENVIRONMENT
+.BR https:// ;
+HTTPS is used when the scheme is omitted. One trailing slash is accepted and
+removed.
+.PP
+.B S3AR_URI_STYLE
+accepts
+.B path
+or
+.B virtual
+and defaults to
+.BR path .
+.B S3AR_REGION
+selects the S3 region and defaults to
+.B us-east-1
+when it is not set.
+.PP
+The bundled libs3 interface does not support temporary session credentials,
+so
+.B S3AR_SESSION_TOKEN
+is not currently supported.
+.SS Environment variables
 .TP
 .B S3AR_ACCESS_KEY
 S3 access key. Required.
@@ -185,37 +108,390 @@ S3 access key. Required.
 S3 secret key. Required.
 .TP
 .B S3AR_ENDPOINT
-Required S3 endpoint in the form
+S3 endpoint in the form
 .BR [http://|https://]HOST[:PORT] .
-When the scheme is omitted, HTTPS is used. A single trailing slash is accepted
-and removed; URL paths are not accepted.
+Required.
 .TP
 .B S3AR_URI_STYLE
-S3 addressing style. Accepted values are
-.B path
-and
-.BR virtual .
-The default is
+S3 addressing style. Optional; defaults to
 .BR path .
 .TP
 .B S3AR_REGION
-S3 region. When the variable is not set, the default is
+S3 region. Optional; defaults to
 .BR us-east-1 .
+.SH COMMAND LINE
+.SS Operations
+.TP
+.BR \-c ", " \-\-create
+Create a tar archive from one or more selected S3 resources. At least one S3
+operand is required. Multiple operands are processed in command-line order.
+If overlapping operands select an object more than once, the object is stored
+once for each matching operand. Bucket directory members are stored only once.
+.TP
+.BR \-x ", " \-\-extract ", " \-\-get
+Extract a tar archive into S3. Zero or more S3 operands may filter archive
+members. Multiple matching filters do not upload an archive member more than
+once.
+.TP
+.B \-\-list-buckets
+List all bucket names without listing their objects. Positional arguments are
+ignored.
+.TP
+.B \-\-list-objects
+List objects in the selected live S3 resources. At least one S3 operand is
+required.
+.SS Options
+.TP
+.BR \-f " " TARFILE ", " \-\-file= TARFILE
+Read or write the named archive. This option is valid only with create or
+extract. TARFILE must be a local filesystem path or
+.BR \- .
+Create truncates an existing local file and writes directly to it. If create
+fails after opening the file, a partial archive can remain.
+.TP
+.B \-\-zstd
+With create, write a zstd-compressed archive. Extract automatically detects
+plain and zstd-compressed archives; specifying this option requires zstd
+input. The option is not valid with
+.B \-\-list-buckets
+or
+.BR \-\-list-objects .
+.TP
+.BR \-v ", " \-\-verbose
+Enable verbose output. With create and extract, write each successfully
+archived or restored member name as
+.B BUCKET/KEY
+to standard error, without the
+.B s3://
+prefix. With listing operations, include the additional fields described in
+.BR "LISTING BUCKETS AND OBJECTS" .
+.TP
+.BR \-h ", " \-\-help
+Display command-line help and exit successfully.
 .PP
-The bundled libs3 interface does not support temporary session credentials;
-.B S3AR_SESSION_TOKEN
-is not supported.
+Without
+.BR \-f ,
+or with
+.BR "\-f \-" ,
+create writes to standard output while extract reads from standard input.
+Extract with no S3 operand restores all accepted archive members.
+.SH SELECTING S3 RESOURCES
+A trailing slash does not change the selection.
+.TP
+.B s3://
+Select all buckets and all their objects.
+.TP
+.BR s3://BUCKET " or " s3://BUCKET/
+Select the named bucket and all its objects.
+.TP
+.BR s3://BUCKET/NAME " or " s3://BUCKET/NAME/
+Select the exact
+.B NAME
+key and all objects below
+.BR NAME/ .
+.PP
+Matching occurs only at a path boundary. Selecting
+.B photo
+can match the exact key
+.B photo
+and keys such as
+.BR photo/first.jpg ,
+but never
+.B photo1.jpg
+or
+.BR photo-old.jpg .
+The exact key does not need to exist when matching descendants exist.
+.PP
+An object selection that matches neither an exact key nor any descendant is an
+error. A bucket selection succeeds for an empty bucket and still writes the
+bucket archive member during creation. Input operands use the
+.B s3://
+form even though listing and verbose output omit that prefix.
+.PP
+The following S3 objects are used in the examples below:
+.PP
+.nf
+s3://photos/2026/photo1.jpg
+s3://photos/2026/photo2.jpg
+s3://photos/2026/photoN.jpg
+s3://photos/2027/photo1.jpg
+s3://photos/2027/photo2.jpg
+s3://photos/2027/photoN.jpg
+s3://videos/2026/video1.jpg
+s3://videos/2026/video2.jpg
+s3://videos/2026/videoN.jpg
+s3://videos/2027/video1.jpg
+s3://videos/2027/video2.jpg
+s3://videos/2027/videoN.jpg
+.fi
+.SH CREATING ARCHIVES
+Back up everything in S3:
+.PP
+.nf
+s3ar \-c \-f media.tar s3://
+.fi
+.PP
+For the example resources above, explicitly selecting both buckets archives
+the same objects:
+.PP
+.nf
+s3ar \-c \-f media.tar s3://photos s3://videos
+.fi
+.PP
+Back up exactly one bucket and all its objects:
+.PP
+.nf
+s3ar \-c \-f photos.tar s3://photos
+.fi
+.PP
+Back up only the photos from 2026:
+.PP
+.nf
+s3ar \-c \-f photos-2026.tar s3://photos/2026
+.fi
+.PP
+Back up the photos and videos from 2026:
+.PP
+.nf
+s3ar \-c \-f media-2026.tar s3://photos/2026 s3://videos/2026
+.fi
+.PP
+Without
+.BR \-f ,
+the archive is streamed to standard output:
+.PP
+.nf
+s3ar \-c s3://photos/2026 >photos-2026.tar
+.fi
+.PP
+Each selected bucket is stored once as a
+.B BUCKET/
+directory entry. Objects are regular entries named
+.BR BUCKET/KEY ;
+their bodies are streamed from S3 directly into libarchive. Empty buckets
+therefore still produce an archive member.
+.PP
+The restricted PAX archive stores S3 metadata as SCHILY extended attributes:
+.PP
+.nf
+SCHILY.xattr.s3ar.bucket-acl=public-read,custom
+SCHILY.xattr.user.NAME=VALUE
+.fi
+.PP
+Unsafe object keys containing empty,
+.BR . ,
+or
+.B ..
+path components are rejected. Create is a weak snapshot: an object can change
+between LIST and GET. With
+.BR \-v ,
+archived member names are written without the
+.B s3://
+prefix to standard error. This is independent of the archive destination and
+keeps a tar stream on standard output unmodified.
+.SH EXTRACTING ARCHIVES
+Assuming
+.B media.tar
+contains the full backup created above, extract all of it back to S3:
+.PP
+.nf
+s3ar \-x \-f media.tar
+.fi
+.PP
+Extract exactly the
+.B photos
+bucket and all its objects:
+.PP
+.nf
+s3ar \-x \-f media.tar s3://photos
+.fi
+.PP
+Extract only the photos from 2026:
+.PP
+.nf
+s3ar \-x \-f media.tar s3://photos/2026
+.fi
+.PP
+Multiple operands can select several branches. This extracts the photos and
+videos from 2026:
+.PP
+.nf
+s3ar \-x \-f media.tar s3://photos/2026 s3://videos/2026
+.fi
+.PP
+Without
+.BR \-f ,
+the archive is read from standard input. Selection operands work the same way
+as with an archive file:
+.PP
+.nf
+cat media.tar | s3ar \-x s3://photos/2026
+.fi
+.PP
+Bucket directory entries create missing buckets. Object entries are streamed
+directly from libarchive into S3 PUT requests and overwrite objects with the
+same keys. Missing buckets needed by selected objects are created even when
+the archive contains no bucket directory entry.
+.PP
+Only tar archives containing top-level bucket directories and regular
+.B BUCKET/KEY
+object members are accepted. Absolute paths, empty,
+.BR . ,
+and
+.B ..
+components, links, and other member types are rejected. Uncompressed and
+zstd-compressed archives are accepted. A requested operand that matches no
+archive member is an error.
+.PP
+.B SCHILY.xattr.user.NAME
+values are restored as S3 user metadata. Bucket ACL summaries are informational
+and are not restored; new buckets and uploaded objects use private ACLs. With
+.BR \-v ,
+restored member names are written without the
+.B s3://
+prefix to standard error.
+.SH LISTING BUCKETS AND OBJECTS
+.SS Listing buckets
+.B \-\-list-buckets
+lists all bucket names without listing their objects:
+.PP
+.nf
+s3ar \-\-list-buckets
+.fi
+.PP
+The names are written to standard output, one per line:
+.PP
+.nf
+photos
+videos
+.fi
+.PP
+With
+.BR \-v
+or
+.BR \-\-verbose ,
+every name is followed by a tab and its ACL summary:
+.PP
+.nf
+photos	acl=public-read,custom
+videos	acl=private
+.fi
+.PP
+An ACL unavailable from the endpoint is shown as
+.BR acl=unavailable .
+All positional arguments passed to
+.B \-\-list-buckets
+are ignored. In particular,
+.BR s3://asdasd ,
+.BR s3://bucket/prefix ,
+and
+.B s3://
+do not filter the output or cause those resources to be accessed.
+.SS Listing objects
+.B \-\-list-objects
+requires one or more S3 selection operands. It writes every selected object to
+standard output as
+.BR BUCKET/KEY ,
+without the
+.B s3://
+prefix, one object per line. For example:
+.PP
+.nf
+s3ar \-\-list-objects s3://photos/2026
+.fi
+.PP
+produces:
+.PP
+.nf
+photos/2026/photo1.jpg
+photos/2026/photo2.jpg
+photos/2026/photoN.jpg
+.fi
+.PP
+The operand
+.B s3://
+lists objects from every bucket. Buckets are processed in sorted order. Object
+listings use S3 ordering and continue across pages of up to 512 objects. Bucket
+names are not printed separately, so empty buckets produce no output.
+.PP
+A bucket operand lists all objects in that bucket. An object operand lists the
+exact object first, when it exists, followed by matching descendants in S3
+order.
+.PP
+With
+.BR \-v
+or
+.BR \-\-verbose ,
+each object is followed by its byte size and sorted S3 user metadata, separated
+by tabs:
+.PP
+.nf
+photos/2026/photo1.jpg	1234	sha256=3472a7,source=camera
+.fi
+.PP
+An object without user metadata uses
+.BR \- .
+Verbose object listings perform one HEAD request per object to retrieve its
+user metadata.
 .SH EXIT STATUS
 .TP
 .B 0
-The operation or help output completed successfully.
+The listing or help completed successfully.
 .TP
 .B 2
-Invalid usage or configuration, allocation failure, S3 failure, archive
-failure, or output failure.
+Invalid usage, invalid configuration, allocation failure, S3 failure, or
+output failure.
 .PP
-Fatal errors and warnings are written to standard error with an
+Fatal errors are written to standard error with an
 .B s3ar:
 prefix.
+.SH TESTING WITH THE LOCAL S3 SERVER
+Prepare a filesystem-backed test store and start the server:
+.PP
+.nf
+test_data=$(mktemp \-d)
+mkdir \-p "$test_data/photos/2026" "$test_data/photos/2027"
+mkdir \-p "$test_data/videos/2026" "$test_data/videos/2027"
+
+for year in 2026 2027; do
+    for number in 1 2 N; do
+        printf 'photo%s from %s\\n' "$number" "$year" \\
+            >"$test_data/photos/$year/photo$number.jpg"
+        printf 'video%s from %s\\n' "$number" "$year" \\
+            >"$test_data/videos/$year/video$number.jpg"
+    done
+done
+
+python3 ./s3testserver.py "$test_data" \-\-host 127.0.0.1 \-\-port 9000
+.fi
+.PP
+In another shell, configure and run
+.BR s3ar :
+.PP
+.nf
+export S3AR_ENDPOINT='http://127.0.0.1:9000'
+export S3AR_URI_STYLE='path'
+export S3AR_REGION='us-east-1'
+export S3AR_ACCESS_KEY='test-access'
+export S3AR_SECRET_KEY='test-secret'
+
+\&./s3ar \-\-list-buckets
+\&./s3ar \-\-list-objects s3://
+\&./s3ar \-\-list-objects s3://photos s3://videos
+\&./s3ar \-\-list-objects s3://photos/2026
+\&./s3ar \-\-list-objects s3://photos/2026 s3://videos/2026
+
+\&./s3ar \-c \-f media.tar s3://
+\&./s3ar \-c \-f media-buckets.tar s3://photos s3://videos
+\&./s3ar \-c \-f photos-2026.tar s3://photos/2026
+\&./s3ar \-c \-f media-2026.tar s3://photos/2026 s3://videos/2026
+
+\&./s3ar \-x \-f media.tar
+\&./s3ar \-x \-f media.tar s3://photos/2026
+\&./s3ar \-x \-f media.tar s3://photos/2026 s3://videos/2026
+.fi
+.PP
+The test server imports the filesystem tree at startup. Restart it after
+changing files directly in the test-data directory.
 .SH SEE ALSO
 .BR tar (1)
