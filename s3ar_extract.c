@@ -129,7 +129,10 @@ static void split_object_path(char *path, const char **bucket,
 static void append_metadata(struct s3_metadata **metadata, size_t *count,
                             const char *name, const void *value,
                             size_t value_size) {
-    if (name[0] == '\0' || (value_size > 0 && value == NULL) ||
+    if (name[0] == '\0' || strpbrk(name, "\r\n") != NULL ||
+        (value_size > 0 && value == NULL) ||
+        (value_size > 0 && memchr(value, '\r', value_size) != NULL) ||
+        (value_size > 0 && memchr(value, '\n', value_size) != NULL) ||
         (value_size > 0 && memchr(value, '\0', value_size) != NULL) ||
         value_size == SIZE_MAX || *count == SIZE_MAX / sizeof(**metadata)) {
         errno = 0;

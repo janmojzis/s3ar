@@ -189,6 +189,36 @@ def test_invalid_archive_is_rejected_before_target_bucket_is_created(
         raise AssertionError("bucket was created for an invalid archive")
 
 
+def test_extract_rejects_metadata_with_http_line_breaks(
+    executable, s3_server, s3_environment, tmp_path
+):
+    _endpoint, client = s3_server
+    archive = tmp_path / "header-injection.tar"
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        entry = tarfile.TarInfo("header-injection/object")
+        entry.size = 1
+        entry.pax_headers = {
+            "SCHILY.xattr.user.source": "archive\r\nx-amz-acl: public-read"
+        }
+        tar.addfile(entry, io.BytesIO(b"x"))
+    archive.write_bytes(data.getvalue())
+
+    result = run(
+        executable,
+        "-x",
+        "-f",
+        str(archive),
+        "s3://",
+        env=s3_environment,
+    )
+
+    assert result.returncode != 0
+    assert "invalid object metadata" in result.stderr
+    with pytest.raises(botocore.exceptions.ClientError):
+        client.head_bucket(Bucket="header-injection")
+
+
 def test_extract_rejects_s3_tarfile(executable):
     result = run(
         executable,
