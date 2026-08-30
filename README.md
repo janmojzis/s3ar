@@ -132,7 +132,9 @@ s3://videos/2027/videoN.jpg
 
 ## Creating archives
 
-`--create` always needs an S3 URI. Back up everything:
+`--create` always needs an S3 URI.
+
+Back up everything:
 
 ```sh
 ./s3ar -c -f media.tar s3://
