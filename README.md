@@ -37,8 +37,10 @@ trailing slash is harmless.
 
 `S3AR_URI_STYLE` accepts `path` or `virtual` and defaults to `path`.
 
-`S3AR_REGION` selects the S3 region and defaults to `us-east-1` when it is
-not set.
+`S3AR_REGION` sets the location constraint used when creating a bucket that
+does not already exist. It defaults to `us-east-1`; for that value, `s3ar`
+omits the location constraint. The variable does not select a region for
+requests involving existing buckets.
 
 The bundled `libs3` interface does not support temporary session credentials,
 so `S3AR_SESSION_TOKEN` is not available.

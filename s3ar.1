@@ -79,9 +79,13 @@ or
 and defaults to
 .BR path .
 .B S3AR_REGION
-selects the S3 region and defaults to
+sets the location constraint used when creating a bucket that does not already
+exist. It defaults to
 .B us-east-1
-when it is not set.
+when it is not set; for that value,
+.B s3ar
+omits the location constraint. The variable does not select a region for
+requests involving existing buckets.
 .PP
 The bundled libs3 interface does not support temporary session credentials.
 .B S3AR_SESSION_TOKEN
@@ -104,8 +108,10 @@ S3 addressing style. Optional; defaults to
 .BR path .
 .TP
 .B S3AR_REGION
-S3 region. Optional; defaults to
-.BR us-east-1 .
+Location constraint used when creating a bucket that does not already exist.
+Optional; defaults to
+.BR us-east-1 ,
+which omits the location constraint.
 .SH COMMAND LINE
 .SS Operations
 .TP
