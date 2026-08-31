@@ -1,4 +1,10 @@
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import os
+import re
 import subprocess
+import threading
+
+import pytest
 
 
 def run(executable, *arguments, cwd=None, env=None):
@@ -35,6 +41,77 @@ def test_list_buckets_writes_bare_names(
     assert "list-buckets-first" in names
     assert "list-buckets-second" in names
     assert all("/" not in name for name in names)
+
+
+def test_list_buckets_uses_english_http_date(executable, tmp_path):
+    locale_path = tmp_path / "locale"
+    locale_path.mkdir()
+    generated = subprocess.run(
+        [
+            "localedef",
+            "--no-archive",
+            "-i",
+            "cs_CZ",
+            "-f",
+            "UTF-8",
+            str(locale_path / "cs_CZ.UTF-8"),
+        ],
+        capture_output=True,
+        check=False,
+    )
+    if generated.returncode != 0:
+        pytest.skip("cs_CZ locale sources are unavailable")
+
+    class DateCheckingS3Handler(BaseHTTPRequestHandler):
+        date = None
+
+        def log_message(self, _format, *_arguments):
+            pass
+
+        def do_GET(self):
+            type(self).date = self.headers.get("x-amz-date")
+            english_date = re.fullmatch(
+                r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), [0-9]{2} "
+                r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) "
+                r"[0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT",
+                type(self).date or "",
+            )
+            if english_date:
+                status = 200
+                body = b"<ListAllMyBucketsResult><Buckets/>"
+                body += b"</ListAllMyBucketsResult>"
+            else:
+                status = 403
+                body = b"<Error><Code>AccessDenied</Code></Error>"
+            self.send_response(status)
+            self.send_header("Content-Type", "application/xml")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), DateCheckingS3Handler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "LANG": "C.UTF-8",
+                "LC_TIME": "cs_CZ.UTF-8",
+                "LOCPATH": str(locale_path),
+                "S3AR_ENDPOINT": f"http://127.0.0.1:{server.server_port}",
+                "S3AR_ACCESS_KEY": "test-access",
+                "S3AR_SECRET_KEY": "test-secret",
+            }
+        )
+        result = run(executable, "--list-buckets", env=environment)
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+    assert result.returncode == 0, result.stderr
+    assert DateCheckingS3Handler.date is not None
 
 
 def test_list_buckets_ignores_operands(
@@ -111,6 +188,21 @@ def test_gnu_tar_help_alias(executable):
     assert long.returncode == 0, long.stderr
     assert long.stdout == short.stdout
     assert long.stderr == ""
+
+
+def test_invalid_locale_falls_back_to_c(executable):
+    result = run(
+        executable,
+        "--help",
+        env={"LC_ALL": "s3ar-test-invalid-locale"},
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.startswith("Usage: s3ar ")
+    assert result.stderr == (
+        "s3ar: warning: unable to initialize character locale; "
+        "using C locale\n"
+    )
 
 
 def test_short_list_options_are_not_supported(executable):

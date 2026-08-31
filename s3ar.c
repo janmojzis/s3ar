@@ -137,9 +137,21 @@ static const struct option long_options[] = {
 static struct s3ar_config config;
 
 int main(int argc, char **argv) {
-    if (setlocale(LC_ALL, "") == NULL) {
+    if (setlocale(LC_CTYPE, "") == NULL) {
+        fputs("s3ar: warning: unable to initialize character locale; "
+              "using C locale\n",
+              stderr);
+        if (setlocale(LC_CTYPE, "C") == NULL) {
+            errno = 0;
+            die_fatal("s3ar: unable to initialize C locale", NULL, NULL);
+        }
+    }
+    /* libs3 formats the signed x-amz-date header with strftime(3), but HTTP
+     * dates always require English day and month names.  Only LC_CTYPE needs
+     * the user-selected locale; keep libs3's dates independent of LC_TIME. */
+    if (setlocale(LC_TIME, "C") == NULL) {
         errno = 0;
-        die_fatal("s3ar: unable to initialize locale", NULL, NULL);
+        die_fatal("s3ar: unable to initialize time locale", NULL, NULL);
     }
     /* libs3 parses S3's UTC timestamps with mktime(3).  Set TZ before
      * reading any environment-backed configuration pointers so those
