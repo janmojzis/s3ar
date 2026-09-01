@@ -12,10 +12,10 @@ _Noreturn void die_fatal(const char *text, const char *x, const char *y) {
     fputs(text, stderr);
     if (x) {
         fputc(' ', stderr);
-        log_quote_name(stderr, x);
+        log_url_encoded_name(stderr, x);
         if (y) {
             fputc('/', stderr);
-            log_quote_name(stderr, y);
+            log_url_encoded_name(stderr, y);
         }
     }
 
@@ -31,10 +31,10 @@ _Noreturn void die_s3fatal(const char *text, const char *bucket,
     fputs(text, stderr);
     if (bucket != NULL) {
         fputc(' ', stderr);
-        log_quote_name(stderr, bucket);
+        log_url_encoded_name(stderr, bucket);
         if (key != NULL) {
             fputc('/', stderr);
-            log_quote_name(stderr, key);
+            log_url_encoded_name(stderr, key);
         }
     }
     fprintf(stderr, ": %s", s3_result_name(result));

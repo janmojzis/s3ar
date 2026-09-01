@@ -144,7 +144,7 @@ def test_verbose_list_buckets_includes_acl(
     result = run(executable, "--list-buckets", "-v", env=s3_environment)
 
     assert result.returncode == 0, result.stderr
-    assert "list-buckets-verbose\tacl=private" in result.stdout.splitlines()
+    assert "list-buckets-verbose acl=private" in result.stdout.splitlines()
 
 
 def test_list_multiple_live_s3_operands(
@@ -258,7 +258,7 @@ def test_verbose_list_s3(executable, s3_server, s3_environment):
     client.create_bucket(Bucket="list-verbose")
     put = client.put_object(
         Bucket="list-verbose",
-        Key="item",
+        Key="folder/a b+%ž",
         Body=b"1234",
         Metadata={"source": "pytest", "sha256": "3472a7"},
     )
@@ -274,12 +274,13 @@ def test_verbose_list_s3(executable, s3_server, s3_environment):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == (
-        f"list-verbose/item\t4\t{int(listed['LastModified'].timestamp())}"
-        f"\t{put['ETag']}\n"
+        "list-verbose/folder/a%20b%2B%25%C5%BE"
+        f" 4 {int(listed['LastModified'].timestamp())}"
+        f" {put['ETag']}\n"
     )
 
 
-def test_diagnostic_quotes_control_characters(executable):
+def test_diagnostic_url_encodes_control_characters(executable):
     result = run(
         executable,
         "--list-objects",
@@ -290,20 +291,20 @@ def test_diagnostic_quotes_control_characters(executable):
     assert result.returncode == 2
     assert result.stderr == (
         "s3ar: --list-objects operand must be s3:// "
-        "not\\nS3\\t\\\\\\001-ž\n"
+        "not%0AS3%09%5C%01-%C5%BE\n"
     )
 
 
-def test_diagnostic_quotes_nonprintable_locale_bytes(executable):
+def test_diagnostic_url_encoding_is_locale_independent(executable):
     result = run(
         executable,
         "--list-objects",
-        "not-ž",
+        "not/S3 100%+?#-ž",
         env={"LC_ALL": "C"},
     )
 
     assert result.returncode == 2
-    assert result.stderr.endswith(" not-\\305\\276\n")
+    assert result.stderr.endswith(" not/S3%20100%25%2B%3F%23-%C5%BE\n")
 
 
 def test_list_objects_in_all_s3_buckets(

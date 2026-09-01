@@ -88,11 +88,11 @@ Without `-f`, or with `-f -`, `--create` writes to standard output and
 Passing `--zstd` explicitly rejects uncompressed input. This option cannot be
 used with `--list-buckets` or `--list-objects`.
 
-Names in listings, verbose output, and diagnostics use GNU tar's default
-`escape` quoting style. Control characters are written as backslash escapes
-such as `\n` and `\t`, a backslash is written as `\\`, and other non-printable
-bytes use three-digit octal escapes. Printable characters, including spaces
-and printable characters in the current locale, are written unchanged.
+Names in listings, verbose output, and diagnostics use byte-oriented URL
+encoding. ASCII letters, digits, `-`, `.`, `_`, `~`, and `/` are written
+unchanged; every other byte is written as `%HH` with uppercase hexadecimal
+digits. A space is therefore `%20`, a literal `%` is `%25`, and UTF-8 names
+are encoded byte by byte. The format is independent of the current locale.
 
 ## Selecting S3 resources
 
@@ -287,11 +287,11 @@ photos
 videos
 ```
 
-Add `-v` to include the ACL summary after a tab:
+Add `-v` to include the ACL summary after a space:
 
 ```text
-photos	acl=public-read,custom
-videos	acl=private
+photos acl=public-read,custom
+videos acl=private
 ```
 
 `--list-buckets` ignores positional arguments. A URI such as
@@ -323,10 +323,11 @@ A bucket URI lists the whole bucket. An object URI lists the exact object
 first, if it exists, followed by matching descendants in S3 order.
 
 Add `-v` to include the byte size, modification time as a Unix timestamp, and
-ETag. The fields are separated by tabs:
+ETag. The fields are separated by spaces; spaces in names are encoded as
+`%20`:
 
 ```text
-photos/2026/photo1.jpg	1234	1788104297	"3472a7..."
+photos/2026/photo1.jpg 1234 1788104297 "3472a7..."
 ```
 
 An unavailable ETag is shown as `-`. The values come directly from the object
