@@ -25,6 +25,22 @@ def test_list_rejects_local_archive_operand(executable):
     assert "--list-objects operand must be s3://" in result.stderr
 
 
+def test_list_reports_configuration_error_without_duplicate_context(
+    executable,
+):
+    environment = os.environ.copy()
+    environment.pop("S3AR_ENDPOINT", None)
+
+    result = run(
+        executable, "--list-objects", "s3://", env=environment
+    )
+
+    assert result.returncode == 2
+    assert result.stderr == (
+        "s3ar: configuration error: $S3AR_ENDPOINT not set\n"
+    )
+
+
 def test_list_buckets_writes_bare_names(
     executable, s3_server, s3_environment
 ):

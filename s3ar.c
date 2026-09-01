@@ -197,8 +197,7 @@ int main(int argc, char **argv) {
     /* Parse environment and connect to S3. */
     s3_result = s3_config_from_env(&s3_config, &s3_error);
     if (s3_result != S3_RESULT_OK) {
-        die_s3fatal("s3ar: invalid S3 configuration", NULL, NULL, s3_result,
-                    &s3_error);
+        die_s3fatal("s3ar", NULL, NULL, s3_result, &s3_error);
     }
     s3_result = s3_client_open(&config.s3, &s3_error, &s3_config.client);
     if (s3_result != S3_RESULT_OK) {
