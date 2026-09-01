@@ -1,7 +1,7 @@
 # S3 Archiver
 
 `s3ar` creates tar archives directly from S3-compatible storage and restores
-them back to S3. It preserves object metadata and records bucket ACLs in PAX
+them back to S3. It preserves S3 user metadata and records bucket ACLs in PAX
 headers.
 
 Its command line follows the familiar `tar` style, including `-c`, `-x`, `-f`,
@@ -180,6 +180,10 @@ The bucket entry comes first, so an empty bucket still appears in the archive.
 Note: archive creation is not atomic. An object may change between the S3 LIST
 and GET requests.
 
+Object transfers are intentionally sequential because they are written to a
+single streaming tar output. The implementation avoids redundant validation
+requests but does not prefetch object bodies.
+
 With `-v`, archived member names are written to standard error without the
 `s3://` prefix. A tar stream written to standard output remains untouched.
 
@@ -198,6 +202,9 @@ older archives whose name begins with `s3ar.` from being mistaken for part of
 the current format. On a filesystem, the attributes are
 `user.s3ar.format` and `user.s3ar.bucket-acl` for bucket directories, plus
 `user.s3ar.metadata.NAME` for objects.
+
+Standard HTTP properties such as `Content-Type`, `Content-Encoding`, and
+`Cache-Control` are not stored in the archive and are not restored.
 
 GNU tar can restore these attributes on filesystems that support them, but
 xattr handling must be enabled explicitly:

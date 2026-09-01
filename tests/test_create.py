@@ -1,10 +1,12 @@
 import io
 import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import shutil
 import stat
 import subprocess
 import tarfile
 import threading
+import urllib.parse
 
 import pytest
 
@@ -59,6 +61,91 @@ def raw_tar_entries(path):
         offset += 512 + ((size + 511) // 512) * 512
     assert data[offset : offset + 1024] == bytes(1024)
     return entries
+
+
+def test_create_exact_object_avoids_redundant_head_requests(
+    executable, tmp_path
+):
+    acl = (
+        b"<AccessControlPolicy><Owner><ID>owner</ID></Owner>"
+        b"<AccessControlList/></AccessControlPolicy>"
+    )
+
+    class RequestCountingHandler(BaseHTTPRequestHandler):
+        requests = []
+
+        def log_message(self, _format, *_arguments):
+            pass
+
+        def reply(self, status, body=b"", headers=()):
+            self.send_response(status)
+            self.send_header("Content-Length", str(len(body)))
+            for name, value in headers:
+                self.send_header(name, value)
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def do_HEAD(self):
+            type(self).requests.append(("HEAD", self.path))
+            self.reply(500)
+
+        def do_GET(self):
+            type(self).requests.append(("GET", self.path))
+            parsed = urllib.parse.urlsplit(self.path)
+            query = urllib.parse.parse_qs(parsed.query)
+            if parsed.path == "/request-create" and parsed.query == "acl":
+                self.reply(200, acl)
+            elif parsed.path == "/request-create/object":
+                self.reply(200, b"data", (("ETag", '"object"'),))
+            elif (
+                parsed.path == "/request-create"
+                and query.get("list-type") == ["2"]
+                and query.get("prefix") == ["object/"]
+            ):
+                self.reply(
+                    200,
+                    b"<ListBucketResult><IsTruncated>false</IsTruncated>"
+                    b"</ListBucketResult>",
+                )
+            else:
+                self.reply(404)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RequestCountingHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    target = tmp_path / "request-count.tar"
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "S3AR_ENDPOINT": f"http://127.0.0.1:{server.server_port}",
+            "S3AR_URI_STYLE": "path",
+            "S3AR_REGION": "us-east-1",
+            "S3AR_ACCESS_KEY": "test-access",
+            "S3AR_SECRET_KEY": "test-secret",
+        }
+    )
+    try:
+        result = run(
+            executable,
+            "-cf",
+            str(target),
+            "s3://request-create/object",
+            env=environment,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+    assert result.returncode == 0, result.stderr
+    assert [method for method, _path in RequestCountingHandler.requests] == [
+        "GET",
+        "GET",
+        "GET",
+    ]
+    with tarfile.open(target, "r:") as archive:
+        assert archive.extractfile("request-create/object").read() == b"data"
 
 
 def test_create_single_bucket_with_full_path_and_metadata(

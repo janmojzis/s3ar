@@ -16,11 +16,6 @@ struct list_context {
     bool verbose;
 };
 
-struct list_buckets_context {
-    struct s3_client *s3;
-    bool verbose;
-};
-
 static bool list_bucket_acl(void *callback_data,
                             const struct s3_bucket *bucket) {
     (void) callback_data;
@@ -30,7 +25,7 @@ static bool list_bucket_acl(void *callback_data,
 
 static bool list_bucket_name(void *callback_data,
                              const struct s3_bucket *bucket) {
-    struct list_buckets_context *context = callback_data;
+    struct list_context *context = callback_data;
     if (context->verbose) {
         struct s3_error error;
         enum s3_result result = s3_bucket_acl(
@@ -77,11 +72,6 @@ static void list_selection(struct list_context *context,
         return;
     }
     if (selection->key == NULL) {
-        result = s3_bucket_head(s3, &error, selection->bucket);
-        if (result != S3_RESULT_OK) {
-            die_s3fatal("s3ar: unable to access bucket", selection->bucket,
-                        NULL, result, &error);
-        }
         result = s3_object_list(s3, &error, selection->bucket, NULL,
                                 log_object, context, NULL);
         if (result != S3_RESULT_OK) {
@@ -148,7 +138,7 @@ void s3ar_list_objects(const struct s3ar_config *config) {
 }
 
 void s3ar_list_buckets(const struct s3ar_config *config) {
-    struct list_buckets_context context = {
+    struct list_context context = {
         .s3 = config->s3,
         .verbose = config->verbose,
     };

@@ -13,7 +13,6 @@ enum { S3_BUCKET_LIST_BODY_LIMIT = 16 * 1024 * 1024 };
 
 struct owned_bucket {
     char *name;
-    int64_t creation_date;
 };
 
 struct bucket_array {
@@ -29,64 +28,6 @@ struct bucket_list_context {
     size_t body_capacity;
     enum s3_result body_error;
 };
-
-static bool parse_digits(const char *text, size_t count, unsigned *value) {
-    unsigned result = 0;
-    for (size_t i = 0; i < count; ++i) {
-        if (text[i] < '0' || text[i] > '9') return false;
-        result = result * 10U + (unsigned) (text[i] - '0');
-    }
-    *value = result;
-    return true;
-}
-
-static bool leap_year(unsigned year) {
-    return year % 4U == 0 && (year % 100U != 0 || year % 400U == 0);
-}
-
-static bool parse_creation_date(const char *text, int64_t *timestamp) {
-    static const unsigned days_per_month[] = {31, 28, 31, 30, 31, 30,
-                                              31, 31, 30, 31, 30, 31};
-    unsigned year, month, day, hour, minute, second;
-    const char *end;
-    int64_t adjusted_year;
-    int64_t era;
-    unsigned year_of_era;
-    unsigned day_of_year;
-    unsigned day_of_era;
-    int64_t days;
-    if (strlen(text) < 20 || text[4] != '-' || text[7] != '-' ||
-        text[10] != 'T' || text[13] != ':' || text[16] != ':' ||
-        !parse_digits(text, 4, &year) || !parse_digits(text + 5, 2, &month) ||
-        !parse_digits(text + 8, 2, &day) ||
-        !parse_digits(text + 11, 2, &hour) ||
-        !parse_digits(text + 14, 2, &minute) ||
-        !parse_digits(text + 17, 2, &second))
-        return false;
-    end = text + 19;
-    if (*end == '.') {
-        ++end;
-        if (*end < '0' || *end > '9') return false;
-        while (*end >= '0' && *end <= '9') ++end;
-    }
-    if (end[0] != 'Z' || end[1] != '\0' || year == 0 || month == 0 ||
-        month > 12 || day == 0 ||
-        day > days_per_month[month - 1] +
-                  (month == 2 && leap_year(year) ? 1U : 0U) ||
-        hour > 23 || minute > 59 || second > 59)
-        return false;
-    adjusted_year = (int64_t) year - (month <= 2 ? 1 : 0);
-    era = adjusted_year / 400;
-    year_of_era = (unsigned) (adjusted_year - era * 400);
-    day_of_year =
-        (153U * (month > 2 ? month - 3U : month + 9U) + 2U) / 5U + day - 1U;
-    day_of_era = year_of_era * 365U + year_of_era / 4U - year_of_era / 100U +
-                 day_of_year;
-    days = era * 146097 + (int64_t) day_of_era - 719468;
-    *timestamp =
-        days * 86400 + (int64_t) hour * 3600 + (int64_t) minute * 60 + second;
-    return true;
-}
 
 static xmlNode *child_element(xmlNode *parent, const char *name) {
     for (xmlNode *node = parent->children; node != NULL; node = node->next)
@@ -104,18 +45,13 @@ static void bucket_array_free(struct bucket_array *array) {
 static enum s3_result bucket_array_append(struct bucket_array *array,
                                           xmlDoc *doc, xmlNode *node) {
     xmlNode *name_node = child_element(node, "Name");
-    xmlNode *date_node = child_element(node, "CreationDate");
     xmlChar *name = NULL;
-    xmlChar *date = NULL;
     struct owned_bucket *items;
-    int64_t timestamp;
     size_t capacity;
     enum s3_result result = S3_RESULT_PROTOCOL_ERROR;
-    if (name_node == NULL || date_node == NULL) return result;
+    if (name_node == NULL) return result;
     name = xmlNodeListGetString(doc, name_node->children, 1);
-    date = xmlNodeListGetString(doc, date_node->children, 1);
-    if (name == NULL || name[0] == '\0' || date == NULL) goto done;
-    if (!parse_creation_date((const char *) date, &timestamp)) goto done;
+    if (name == NULL || name[0] == '\0') goto done;
     if (array->count == array->capacity) {
         capacity = array->capacity == 0 ? 8 : array->capacity * 2;
         if (capacity < array->capacity ||
@@ -136,13 +72,11 @@ static enum s3_result bucket_array_append(struct bucket_array *array,
         result = S3_RESULT_ERROR;
         goto done;
     }
-    array->items[array->count].creation_date = timestamp;
     ++array->count;
     result = S3_RESULT_OK;
 
 done:
     xmlFree(name);
-    xmlFree(date);
     return result;
 }
 
@@ -202,7 +136,6 @@ enum s3_result s3_parse_bucket_list(const char *body, size_t size,
     for (size_t i = 0; i < buckets.count; ++i) {
         const struct s3_bucket bucket = {
             .name = buckets.items[i].name,
-            .creation_date = buckets.items[i].creation_date,
         };
         if (!callback(data, &bucket)) {
             if (error != NULL) error->callback_errno = errno != 0 ? errno : EIO;
@@ -600,22 +533,11 @@ enum s3_result s3_bucket_acl(struct s3_client *client, struct s3_error *error,
                             "invalid GetBucketAcl arguments");
     result =
         bucket_request(client, error, bucket, "acl", "GET", NULL, &body, &size);
-    if (result != S3_RESULT_OK) {
-        const struct s3_bucket value = {
-            .name = bucket, .creation_date = -1, .acl = "unavailable"};
-        s3_error_clear(error);
-        if (!callback(data, &value)) {
-            error->callback_errno = errno != 0 ? errno : EIO;
-            return s3_error_set(error, S3_RESULT_CALLBACK_ERROR,
-                                "bucket callback failed");
-        }
-        return S3_RESULT_OK;
-    }
+    if (result != S3_RESULT_OK) return result;
     result = parse_acl(body, size, summary, sizeof(summary), error);
     free(body);
     if (result == S3_RESULT_OK) {
-        const struct s3_bucket value = {
-            .name = bucket, .creation_date = -1, .acl = summary};
+        const struct s3_bucket value = {.name = bucket, .acl = summary};
         if (!callback(data, &value)) {
             error->callback_errno = errno != 0 ? errno : EIO;
             return s3_error_set(error, S3_RESULT_CALLBACK_ERROR,

@@ -62,7 +62,6 @@ struct s3_object_properties {
 /* Strings passed to callbacks are valid only during the callback. */
 struct s3_bucket {
     const char *name;
-    int64_t creation_date;
     const char *acl;
 };
 

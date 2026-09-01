@@ -25,6 +25,62 @@ def test_list_rejects_local_archive_operand(executable):
     assert "--list-objects operand must be s3://" in result.stderr
 
 
+def test_list_bucket_avoids_redundant_head_request(executable):
+    class RequestCountingHandler(BaseHTTPRequestHandler):
+        requests = []
+
+        def log_message(self, _format, *_arguments):
+            pass
+
+        def do_HEAD(self):
+            type(self).requests.append(("HEAD", self.path))
+            self.send_response(500)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def do_GET(self):
+            type(self).requests.append(("GET", self.path))
+            body = (
+                b"<ListBucketResult><IsTruncated>false</IsTruncated>"
+                b"</ListBucketResult>"
+            )
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RequestCountingHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    environment = os.environ.copy()
+    environment.update(
+        {
+            "S3AR_ENDPOINT": f"http://127.0.0.1:{server.server_port}",
+            "S3AR_URI_STYLE": "path",
+            "S3AR_REGION": "us-east-1",
+            "S3AR_ACCESS_KEY": "test-access",
+            "S3AR_SECRET_KEY": "test-secret",
+        }
+    )
+    try:
+        result = run(
+            executable,
+            "--list-objects",
+            "s3://request-list",
+            env=environment,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+    assert result.returncode == 0, result.stderr
+    assert len(RequestCountingHandler.requests) == 1
+    method, path = RequestCountingHandler.requests[0]
+    assert method == "GET"
+    assert path.startswith("/request-list?list-type=2&max-keys=1000")
+
+
 def test_list_reports_configuration_error_without_duplicate_context(
     executable,
 ):

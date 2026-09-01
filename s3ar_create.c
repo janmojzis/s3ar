@@ -153,13 +153,8 @@ static void ensure_bucket(struct create_context *context, const char *bucket) {
     if (bucket_written(&context->buckets, bucket)) { return; }
     struct s3_error error;
     enum s3_result result =
-        s3_bucket_head(context->config->s3, &error, bucket);
-    if (result != S3_RESULT_OK) {
-        die_s3fatal("s3ar: unable to access bucket", bucket, NULL, result,
-                    &error);
-    }
-    result = s3_bucket_acl(context->config->s3, &error, bucket,
-                           write_bucket_acl, context);
+        s3_bucket_acl(context->config->s3, &error, bucket, write_bucket_acl,
+                      context);
     if (result != S3_RESULT_OK) {
         die_s3fatal("s3ar: unable to read bucket ACL", bucket, NULL, result,
                     &error);
@@ -246,8 +241,8 @@ static bool write_object_data(void *callback_data,
     return true;
 }
 
-static void write_object(struct create_context *context, const char *bucket,
-                         const char *key) {
+static bool write_object(struct create_context *context, const char *bucket,
+                         const char *key, bool optional) {
     if (!s3ar_key_is_safe(key)) {
         errno = 0;
         die_fatal("s3ar: unsafe S3 key", bucket, key);
@@ -261,6 +256,9 @@ static void write_object(struct create_context *context, const char *bucket,
     enum s3_result result = s3_object_get(
         context->config->s3, &error, write_object_header, write_object_data,
         &get, bucket, key);
+    if (optional && result == S3_RESULT_NOT_FOUND && !get.header_written) {
+        return false;
+    }
     if (result != S3_RESULT_OK) {
         die_s3fatal("s3ar: unable to read object", bucket, key, result,
                     &error);
@@ -273,12 +271,13 @@ static void write_object(struct create_context *context, const char *bucket,
         archive_fatal(context->archive, "s3ar: cannot finish object entry");
     }
     if (context->config->verbose) { log_s3_name(stderr, bucket, key); }
+    return true;
 }
 
 static bool write_listed_object(void *callback_data,
                                 const struct s3_object *object) {
     struct create_context *context = callback_data;
-    write_object(context, object->bucket, object->key);
+    (void) write_object(context, object->bucket, object->key, false);
     return true;
 }
 
@@ -326,18 +325,8 @@ static void write_selection(struct create_context *context,
         return;
     }
 
-    struct s3_object_properties properties = {0};
-    result = s3_object_head(s3, &error, &properties, selection->bucket,
-                            selection->key);
-    bool found = result == S3_RESULT_OK;
-    if (found) {
-        s3_object_properties_free(&properties);
-        write_object(context, selection->bucket, selection->key);
-    }
-    else if (result != S3_RESULT_NOT_FOUND) {
-        die_s3fatal("s3ar: unable to inspect object", selection->bucket,
-                    selection->key, result, &error);
-    }
+    bool found = write_object(context, selection->bucket, selection->key,
+                              true);
     size_t length = strlen(selection->key);
     if (length > SIZE_MAX - 2) {
         errno = ENOMEM;
