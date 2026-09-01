@@ -5,6 +5,7 @@
  *
  * s3ar archives store S3 metadata in PAX SCHILY extended attributes:
  * SCHILY.xattr.user.s3ar.format identifies the namespaced layout,
+ * SCHILY.xattr.user.s3ar.bucket and .key identify S3 names,
  * SCHILY.xattr.user.s3ar.bucket-acl and
  * SCHILY.xattr.user.s3ar.metadata.NAME. User metadata is restored to uploaded
  * objects; bucket ACL summaries are informational and are not restored.
@@ -127,29 +128,6 @@ static bool selected(struct extract_context *context, const char *bucket,
     return selected;
 }
 
-static bool bucket_path(char *path) {
-    size_t length = strlen(path);
-    if (length == 0 || path[0] == '/') { return false; }
-    if (path[length - 1] == '/') { path[--length] = '\0'; }
-    return length > 0 && strchr(path, '/') == NULL;
-}
-
-static void split_object_path(char *path, const char **bucket,
-                              const char **key) {
-    if (!s3ar_key_is_safe(path)) {
-        errno = 0;
-        die_fatal("s3ar: unsafe archive member", path, NULL);
-    }
-    char *slash = strchr(path, '/');
-    if (slash == NULL || slash[1] == '\0') {
-        errno = 0;
-        die_fatal("s3ar: invalid object archive member", path, NULL);
-    }
-    *slash = '\0';
-    *bucket = path;
-    *key = slash + 1;
-}
-
 static void append_metadata(struct s3_metadata **metadata, size_t *count,
                             const char *name, const void *value,
                             size_t value_size) {
@@ -207,6 +185,108 @@ static bool namespaced_metadata(struct archive_entry *entry) {
     return false;
 }
 
+static bool identity_safe(unsigned char value) {
+    return (value >= 'A' && value <= 'Z') ||
+           (value >= 'a' && value <= 'z') ||
+           (value >= '0' && value <= '9') || value == '-' || value == '.' ||
+           value == '_' || value == '~' || value == '/';
+}
+
+static int hex_value(unsigned char value) {
+    if (value >= '0' && value <= '9') { return value - '0'; }
+    if (value >= 'A' && value <= 'F') { return value - 'A' + 10; }
+    if (value >= 'a' && value <= 'f') { return value - 'a' + 10; }
+    return -1;
+}
+
+static char *decode_identity(const char *header, const void *value,
+                             size_t value_size) {
+    if (value == NULL || value_size == 0) {
+        errno = 0;
+        die_fatal("s3ar: invalid URL-encoded PAX header", header, NULL);
+    }
+    char *decoded = malloc(value_size + 1);
+    if (decoded == NULL) { die_fatal("s3ar: out of memory", NULL, NULL); }
+    const unsigned char *input = value;
+    size_t output_size = 0;
+    for (size_t i = 0; i < value_size; ++i) {
+        unsigned char byte = input[i];
+        if (byte == '%') {
+            if (i + 2 >= value_size) {
+                free(decoded);
+                errno = 0;
+                die_fatal("s3ar: invalid URL-encoded PAX header", header,
+                          NULL);
+            }
+            int high = hex_value(input[++i]);
+            int low = hex_value(input[++i]);
+            if (high < 0 || low < 0) {
+                free(decoded);
+                errno = 0;
+                die_fatal("s3ar: invalid URL-encoded PAX header", header,
+                          NULL);
+            }
+            byte = (unsigned char) ((high << 4) | low);
+        }
+        else if (!identity_safe(byte)) {
+            free(decoded);
+            errno = 0;
+            die_fatal("s3ar: invalid URL-encoded PAX header", header, NULL);
+        }
+        if (byte == '\0') {
+            free(decoded);
+            errno = 0;
+            die_fatal("s3ar: invalid URL-encoded PAX header", header, NULL);
+        }
+        decoded[output_size++] = (char) byte;
+    }
+    decoded[output_size] = '\0';
+    return decoded;
+}
+
+static char *read_identity_header(struct archive_entry *entry,
+                                  const char *name) {
+    char *decoded = NULL;
+    archive_entry_xattr_reset(entry);
+    const char *xattr_name;
+    const void *value;
+    size_t value_size;
+    while (archive_entry_xattr_next(entry, &xattr_name, &value, &value_size) ==
+           ARCHIVE_OK) {
+        if (xattr_name == NULL || strcmp(xattr_name, name) != 0) {
+            continue;
+        }
+        if (decoded != NULL) {
+            free(decoded);
+            errno = 0;
+            die_fatal("s3ar: duplicate S3 identity PAX header", name, NULL);
+        }
+        decoded = decode_identity(name, value, value_size);
+    }
+    return decoded;
+}
+
+static void read_identity(struct archive_entry *entry, bool object,
+                          char **bucket, char **key) {
+    static const char bucket_name[] = "user.s3ar.bucket";
+    static const char key_name[] = "user.s3ar.key";
+    *bucket = NULL;
+    *key = NULL;
+    (void) namespaced_metadata(entry);
+    *bucket = read_identity_header(entry, bucket_name);
+    *key = read_identity_header(entry, key_name);
+    if (*bucket == NULL || (object ? *key == NULL : *key != NULL) ||
+        strchr(*bucket, '/') != NULL) {
+        free(*bucket);
+        free(*key);
+        *bucket = NULL;
+        *key = NULL;
+        errno = 0;
+        die_fatal("s3ar: incomplete or invalid S3 identity PAX headers", NULL,
+                  NULL);
+    }
+}
+
 static struct s3_metadata *read_metadata(struct archive_entry *entry,
                                          size_t *count) {
     static const char metadata_prefix[] = "user.s3ar.metadata.";
@@ -224,6 +304,10 @@ static struct s3_metadata *read_metadata(struct archive_entry *entry,
            ARCHIVE_OK) {
         const char *name = NULL;
         if (xattr_name == NULL) { continue; }
+        if (strcmp(xattr_name, "user.s3ar.bucket") == 0 ||
+            strcmp(xattr_name, "user.s3ar.key") == 0) {
+            continue;
+        }
         if (namespaced &&
             strncmp(xattr_name, metadata_prefix,
                     sizeof(metadata_prefix) - 1) == 0) {
@@ -282,28 +366,33 @@ static enum s3_read_result read_object_data(void *callback_data,
 }
 
 static void extract_bucket(struct extract_context *context,
-                           struct archive_entry *entry, char *path) {
-    if (!bucket_path(path)) {
+                           struct archive_entry *entry) {
+    char *header_bucket;
+    char *header_key;
+    read_identity(entry, false, &header_bucket, &header_key);
+    const char *bucket = header_bucket;
+    if (bucket_known(&context->archive_buckets, bucket)) {
         errno = 0;
-        die_fatal("s3ar: invalid bucket archive member", path, NULL);
+        die_fatal("s3ar: duplicate bucket archive member", bucket, NULL);
     }
-    (void) namespaced_metadata(entry);
-    if (bucket_known(&context->archive_buckets, path)) {
-        errno = 0;
-        die_fatal("s3ar: duplicate bucket archive member", path, NULL);
+    remember_bucket(&context->archive_buckets, bucket);
+    if (!select_bucket_member(context, bucket)) {
+        free(header_bucket);
+        return;
     }
-    remember_bucket(&context->archive_buckets, path);
-    if (!select_bucket_member(context, path)) { return; }
-    ensure_bucket(context, path);
+    ensure_bucket(context, bucket);
     /* TODO: Apply the bucket ACL stored on this archive member here. */
-    if (context->config->verbose) { log_s3_name(stderr, path, NULL); }
+    if (context->config->verbose) { log_s3_name(stderr, bucket, NULL); }
+    free(header_bucket);
 }
 
 static void extract_object(struct extract_context *context,
-                           struct archive_entry *entry, char *path) {
-    const char *bucket;
-    const char *key;
-    split_object_path(path, &bucket, &key);
+                           struct archive_entry *entry) {
+    char *header_bucket;
+    char *header_key;
+    read_identity(entry, true, &header_bucket, &header_key);
+    const char *bucket = header_bucket;
+    const char *key = header_key;
     if (!bucket_known(&context->archive_buckets, bucket)) {
         errno = 0;
         die_fatal("s3ar: object precedes bucket archive member", bucket, key);
@@ -312,6 +401,8 @@ static void extract_object(struct extract_context *context,
         if (archive_read_data_skip(context->archive) != ARCHIVE_OK) {
             archive_fatal(context->archive, "s3ar: cannot skip archive member");
         }
+        free(header_bucket);
+        free(header_key);
         return;
     }
 
@@ -348,12 +439,15 @@ static void extract_object(struct extract_context *context,
         die_fatal("s3ar: incomplete object in archive", bucket, key);
     }
     if (context->config->verbose) { log_s3_name(stderr, bucket, key); }
+    free(header_bucket);
+    free(header_key);
 }
 
 static void extract_entry(struct extract_context *context,
                           struct archive_entry *entry) {
-    const char *pathname = archive_entry_pathname_utf8(entry);
-    if (pathname == NULL) { pathname = archive_entry_pathname(entry); }
+    /* Archive path names are diagnostic only.  Read their stored bytes
+     * directly; S3 identity comes from the URL-encoded PAX headers. */
+    const char *pathname = archive_entry_pathname(entry);
     if (pathname == NULL || pathname[0] == '\0') {
         errno = 0;
         die_fatal("s3ar: archive member has no name", NULL, NULL);
@@ -367,8 +461,8 @@ static void extract_entry(struct extract_context *context,
         die_fatal("s3ar: archive links are not supported", path, NULL);
     }
     mode_t type = archive_entry_filetype(entry);
-    if (type == AE_IFDIR) { extract_bucket(context, entry, path); }
-    else if (type == AE_IFREG) { extract_object(context, entry, path); }
+    if (type == AE_IFDIR) { extract_bucket(context, entry); }
+    else if (type == AE_IFREG) { extract_object(context, entry); }
     else {
         errno = 0;
         die_fatal("s3ar: unsupported archive member type", path, NULL);

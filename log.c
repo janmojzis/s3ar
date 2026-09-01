@@ -5,13 +5,42 @@
 
 #include <errno.h>
 #include <inttypes.h>
+#include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 static bool url_safe(unsigned char value) {
     return (value >= 'A' && value <= 'Z') ||
            (value >= 'a' && value <= 'z') ||
            (value >= '0' && value <= '9') || value == '-' || value == '.' ||
            value == '_' || value == '~' || value == '/';
+}
+
+char *url_encode_name(const char *name) {
+    static const char hex[] = "0123456789ABCDEF";
+    size_t input_size = strlen(name);
+    if (input_size > (SIZE_MAX - 1) / 3) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    char *encoded = malloc(input_size * 3 + 1);
+    if (encoded == NULL) { return NULL; }
+
+    char *output = encoded;
+    const unsigned char *input = (const unsigned char *) name;
+    for (; *input != '\0'; ++input) {
+        if (url_safe(*input)) {
+            *output++ = (char) *input;
+        }
+        else {
+            *output++ = '%';
+            *output++ = hex[*input >> 4];
+            *output++ = hex[*input & 15];
+        }
+    }
+    *output = '\0';
+    return encoded;
 }
 
 int log_url_encoded_name(FILE *stream, const char *name) {

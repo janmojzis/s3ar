@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <stdio.h>
 
+char *url_encode_name(const char *name);
 int log_url_encoded_name(FILE *stream, const char *name);
 void log_s3_name(FILE *stream, const char *bucket, const char *key);
 void log_s3_bucket(const struct s3_bucket *bucket, bool verbose);

@@ -186,7 +186,17 @@ def test_create_single_bucket_with_full_path_and_metadata(
         == "private"
     )
     assert bucket.pax_headers["SCHILY.xattr.user.s3ar.format"] == "1"
+    assert (
+        bucket.pax_headers["SCHILY.xattr.user.s3ar.bucket"]
+        == "create-single"
+    )
+    assert "SCHILY.xattr.user.s3ar.key" not in bucket.pax_headers
     assert item.size == len(b"object data")
+    assert item.pax_headers["SCHILY.xattr.user.s3ar.bucket"] == "create-single"
+    assert (
+        item.pax_headers["SCHILY.xattr.user.s3ar.key"]
+        == "folder/object.txt"
+    )
     assert "SCHILY.xattr.bucket" not in item.pax_headers
     assert (
         item.pax_headers["SCHILY.xattr.user.s3ar.metadata.source"]
@@ -205,6 +215,8 @@ def test_create_single_bucket_with_full_path_and_metadata(
     assert b"LIBARCHIVE.xattr." not in object_pax
     assert b"SCHILY.xattr.bucket=" not in object_pax
     assert b"SCHILY.xattr.user.s3ar.format=1\n" in object_pax
+    assert b"SCHILY.xattr.user.s3ar.bucket=create-single\n" in object_pax
+    assert b"SCHILY.xattr.user.s3ar.key=folder/object.txt\n" in object_pax
     assert b"SCHILY.xattr.user.s3ar.metadata.source=create-test\n" in object_pax
     object_header = next(
         name for name, kind, _payload in raw if kind == b"0" and name == b"create-single/folder/object.txt"
@@ -648,7 +660,7 @@ def test_create_rejects_s3_tarfile(executable):
     assert "TARFILE must be a local filesystem path or '-'" in result.stderr
 
 
-def test_unicode_keys_round_trip(
+def test_unicode_keys_round_trip_is_locale_independent(
     executable, s3_server, s3_environment, tmp_path
 ):
     _endpoint, client = s3_server
@@ -658,39 +670,99 @@ def test_unicode_keys_round_trip(
         "日本語/写真.jpg": "日本語の内容".encode(),
         "العربية/ملف.txt": "محتوى عربي".encode(),
         "emoji/🌍-🚀.bin": b"emoji",
+        "special/a b+%?#.txt": b"special characters",
     }
     client.create_bucket(Bucket=source_bucket)
     for key, body in objects.items():
         client.put_object(Bucket=source_bucket, Key=key, Body=body)
-    archive_path = tmp_path / "unicode.tar"
 
-    created = run(
-        executable,
-        "-c",
-        "-f",
-        str(archive_path),
-        f"s3://{source_bucket}/",
-        env=s3_environment,
+    locale_path = tmp_path / "locale"
+    locale_path.mkdir()
+    generated = subprocess.run(
+        [
+            "localedef",
+            "--no-archive",
+            "-i",
+            "tr_TR",
+            "-f",
+            "ISO-8859-9",
+            str(locale_path / "tr_TR.ISO-8859-9"),
+        ],
+        capture_output=True,
+        check=False,
     )
-    assert created.returncode == 0, created.stderr
+    locales = [
+        {"LC_ALL": "C"},
+        {"LC_ALL": "C.UTF-8"},
+        {"LC_ALL": "s3ar-test-invalid-locale"},
+    ]
+    if generated.returncode == 0:
+        locales.append(
+            {
+                "LC_ALL": "tr_TR.ISO-8859-9",
+                "LOCPATH": str(locale_path),
+            }
+        )
 
+    archives = []
+    for index, locale in enumerate(locales):
+        archive_path = tmp_path / f"unicode-{index}.tar"
+        created = run(
+            executable,
+            "-c",
+            "-f",
+            str(archive_path),
+            f"s3://{source_bucket}/",
+            env={**s3_environment, **locale},
+        )
+        assert created.returncode == 0, created.stderr
+        assert created.stdout == ""
+        assert created.stderr == ""
+        archives.append(archive_path)
+
+    expected_archive = archives[0].read_bytes()
+    assert all(path.read_bytes() == expected_archive for path in archives[1:])
+
+    with tarfile.open(archives[0], "r:") as archive:
+        members = {member.name: member for member in archive.getmembers()}
+    bucket_member = members[source_bucket]
+    assert (
+        bucket_member.pax_headers["SCHILY.xattr.user.s3ar.bucket"]
+        == source_bucket
+    )
+    assert "SCHILY.xattr.user.s3ar.key" not in bucket_member.pax_headers
     for key in objects:
-        client.delete_object(Bucket=source_bucket, Key=key)
+        member = members[f"{source_bucket}/{key}"]
+        assert (
+            member.pax_headers["SCHILY.xattr.user.s3ar.bucket"]
+            == source_bucket
+        )
+        assert member.pax_headers["SCHILY.xattr.user.s3ar.key"] == urllib.parse.quote(
+            key, safe="/-._~"
+        )
 
-    extracted = run(
-        executable,
-        "-x",
-        "-f",
-        str(archive_path),
-        f"s3://{source_bucket}/",
-        env=s3_environment,
-    )
-    assert extracted.returncode == 0, extracted.stderr
-    restored = client.list_objects_v2(Bucket=source_bucket).get("Contents", [])
-    assert {item["Key"] for item in restored} == set(objects)
-    for key, body in objects.items():
-        response = client.get_object(Bucket=source_bucket, Key=key)
-        assert response["Body"].read() == body
+    for archive_path, locale in zip(archives, locales):
+        for key in objects:
+            client.delete_object(Bucket=source_bucket, Key=key)
+
+        extracted = run(
+            executable,
+            "-x",
+            "-f",
+            str(archive_path),
+            f"s3://{source_bucket}/",
+            env={**s3_environment, **locale},
+        )
+        assert extracted.returncode == 0, extracted.stderr
+        assert extracted.stdout == ""
+        assert extracted.stderr == ""
+        restored = client.list_objects_v2(Bucket=source_bucket).get(
+            "Contents", []
+        )
+        assert {item["Key"] for item in restored} == set(objects)
+        for key, body in objects.items():
+            response = client.get_object(Bucket=source_bucket, Key=key)
+            assert response["Body"].read() == body
 
 
 def test_create_continues_after_first_list_page(

@@ -18,7 +18,6 @@
 
 #include <errno.h>
 #include <getopt.h>
-#include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -67,15 +66,6 @@ int main(int argc, char **argv) {
     struct s3_config s3_config;
     struct s3_error s3_error;
     enum s3_result s3_result;
-    if (setlocale(LC_CTYPE, "") == NULL) {
-        fputs("s3ar: warning: unable to initialize character locale; "
-              "using C locale\n",
-              stderr);
-        if (setlocale(LC_CTYPE, "C") == NULL) {
-            errno = 0;
-            die_fatal("s3ar: unable to initialize C locale", NULL, NULL);
-        }
-    }
     /* parse options */
     opterr = 0;
     for (;;) {

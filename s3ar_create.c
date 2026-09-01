@@ -5,6 +5,7 @@
  *
  * S3 metadata is stored in PAX SCHILY extended attributes:
  * SCHILY.xattr.user.s3ar.format identifies the namespaced layout,
+ * SCHILY.xattr.user.s3ar.bucket and .key preserve URL-encoded S3 names,
  * SCHILY.xattr.user.s3ar.bucket-acl records a bucket ACL summary,
  * and SCHILY.xattr.user.s3ar.metadata.NAME preserves S3 user metadata for
  * later extraction. Unsafe object keys are rejected.
@@ -102,6 +103,17 @@ static char *object_path(const char *bucket, const char *key) {
     return path;
 }
 
+static void add_encoded_name(struct archive_entry *entry, const char *xattr,
+                             const char *name) {
+    char *encoded = url_encode_name(name);
+    if (encoded == NULL) {
+        archive_entry_free(entry);
+        die_fatal("s3ar: out of memory", NULL, NULL);
+    }
+    archive_entry_xattr_add_entry(entry, xattr, encoded, strlen(encoded));
+    free(encoded);
+}
+
 static bool write_bucket_acl(void *callback_data,
                              const struct s3_bucket *bucket) {
     struct create_context *context = callback_data;
@@ -120,7 +132,9 @@ static bool write_bucket_acl(void *callback_data,
     memcpy(path, bucket->name, length);
     path[length] = '/';
     path[length + 1] = '\0';
-    archive_entry_set_pathname_utf8(entry, path);
+    /* Path names are UTF-8 bytes; the writer's BINARY header charset keeps
+     * libarchive from converting them through the process locale. */
+    archive_entry_set_pathname(entry, path);
     archive_entry_set_filetype(entry, AE_IFDIR);
     archive_entry_set_perm(entry, 0700);
     archive_entry_set_uid(entry, 0);
@@ -129,6 +143,7 @@ static bool write_bucket_acl(void *callback_data,
     archive_entry_set_mtime(entry, 0, 0);
     const char *acl = bucket->acl != NULL ? bucket->acl : "unavailable";
     archive_entry_xattr_add_entry(entry, "user.s3ar.format", "1", 1);
+    add_encoded_name(entry, "user.s3ar.bucket", bucket->name);
     archive_entry_xattr_add_entry(entry, "user.s3ar.bucket-acl", acl,
                                   strlen(acl));
     if (archive_write_header(context->archive, entry) != ARCHIVE_OK) {
@@ -175,7 +190,7 @@ static bool write_object_header(
         free(path);
         die_fatal("s3ar: out of memory", NULL, NULL);
     }
-    archive_entry_set_pathname_utf8(entry, path);
+    archive_entry_set_pathname(entry, path);
     archive_entry_set_filetype(entry, AE_IFREG);
     archive_entry_set_perm(entry, 0600);
     archive_entry_set_uid(entry, 0);
@@ -187,6 +202,8 @@ static bool write_object_header(
                                 : (time_t) 0,
                             0);
     archive_entry_xattr_add_entry(entry, "user.s3ar.format", "1", 1);
+    add_encoded_name(entry, "user.s3ar.bucket", get->bucket);
+    add_encoded_name(entry, "user.s3ar.key", get->key);
     for (size_t i = 0; i < object->metadata_count; ++i) {
         const char *name = object->metadata[i].name;
         const char *value = object->metadata[i].value;
@@ -366,7 +383,10 @@ void s3ar_create(const struct s3ar_config *config) {
     struct archive *archive = archive_write_new();
     if (archive == NULL) { die_fatal("s3ar: out of memory", NULL, NULL); }
     if (archive_write_set_format_pax_restricted(archive) != ARCHIVE_OK ||
-        archive_write_set_options(archive, "xattrheader=SCHILY") !=
+        /* S3 names are already UTF-8.  Preserve their bytes without a
+         * locale-dependent character-set conversion. */
+        archive_write_set_options(
+            archive, "xattrheader=SCHILY,hdrcharset=BINARY") !=
             ARCHIVE_OK ||
         (config->zstd &&
          archive_write_add_filter_zstd(archive) != ARCHIVE_OK) ||

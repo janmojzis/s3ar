@@ -1,11 +1,17 @@
 /* SPDX-License-Identifier: MIT-0 */
 #include "s3_internal.h"
 
-#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 
 enum { S3_HEADER_LIMIT = 256 * 1024, S3_METADATA_LIMIT = 128 };
+
+static unsigned char ascii_lower(unsigned char value) {
+    if (value >= 'A' && value <= 'Z') {
+        return (unsigned char) (value + ('a' - 'A'));
+    }
+    return value;
+}
 
 static int compare_metadata(const void *left, const void *right) {
     const struct s3_metadata *a = left;
@@ -58,8 +64,8 @@ static bool name_is(const char *line, size_t name_size, const char *name) {
     size_t expected = strlen(name);
     if (name_size != expected) return false;
     for (size_t i = 0; i < expected; ++i)
-        if (tolower((unsigned char) line[i]) !=
-            tolower((unsigned char) name[i]))
+        if (ascii_lower((unsigned char) line[i]) !=
+            ascii_lower((unsigned char) name[i]))
             return false;
     return true;
 }
@@ -99,7 +105,7 @@ static bool append_metadata(struct s3_response *response, const char *name,
         return false;
     }
     for (size_t i = 0; i < name_size; ++i)
-        name_copy[i] = (char) tolower((unsigned char) name[i]);
+        name_copy[i] = (char) ascii_lower((unsigned char) name[i]);
     name_copy[name_size] = '\0';
     memcpy(value_copy, first, value_size);
     value_copy[value_size] = '\0';

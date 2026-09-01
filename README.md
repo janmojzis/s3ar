@@ -193,15 +193,22 @@ S3-specific information is stored in namespaced SCHILY extended attributes:
 
 ```text
 SCHILY.xattr.user.s3ar.format=1
+SCHILY.xattr.user.s3ar.bucket=BUCKET
+SCHILY.xattr.user.s3ar.key=URL-ENCODED-KEY
 SCHILY.xattr.user.s3ar.bucket-acl=public-read,custom
 SCHILY.xattr.user.s3ar.metadata.NAME=VALUE
 ```
 
-Every bucket and object carries the format marker. This prevents metadata from
+Every bucket and object carries the format marker and URL-encoded bucket name.
+Object entries also carry their URL-encoded key; `/` remains a path separator,
+while all other bytes outside the RFC 3986 unreserved set are percent-encoded
+with uppercase hexadecimal digits. These identity attributes supplement the
+authoritative tar member path. The format marker prevents metadata from
 older archives whose name begins with `s3ar.` from being mistaken for part of
-the current format. On a filesystem, the attributes are
-`user.s3ar.format` and `user.s3ar.bucket-acl` for bucket directories, plus
-`user.s3ar.metadata.NAME` for objects.
+the current format. On a filesystem, the attributes are `user.s3ar.format`,
+`user.s3ar.bucket`, and `user.s3ar.bucket-acl` for bucket directories, plus
+`user.s3ar.bucket`, `user.s3ar.key`, and `user.s3ar.metadata.NAME` for
+objects.
 
 Standard HTTP properties such as `Content-Type`, `Content-Encoding`, and
 `Cache-Control` are not stored in the archive and are not restored.
@@ -254,6 +261,9 @@ Without `-f`, the archive is read from standard input:
 cat media.tar | ./s3ar -x s3://photos/2026
 ```
 
+Extraction identifies S3 destinations exclusively through the URL-encoded
+`user.s3ar.bucket` and `user.s3ar.key` attributes. The tar pathname is only a
+filesystem extraction name and is never interpreted as an S3 destination.
 Bucket entries create buckets that do not exist yet. Object data is streamed
 from libarchive into S3 PUT requests, overwriting objects with the same keys.
 

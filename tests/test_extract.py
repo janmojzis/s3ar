@@ -2,6 +2,7 @@ import io
 import shutil
 import subprocess
 import tarfile
+import urllib.parse
 
 import botocore.exceptions
 import pytest
@@ -38,6 +39,9 @@ def archive_bytes(buckets):
             entry.type = tarfile.DIRTYPE
             entry.pax_headers = {
                 "SCHILY.xattr.user.s3ar.format": "1",
+                "SCHILY.xattr.user.s3ar.bucket": urllib.parse.quote(
+                    bucket, safe="/-._~"
+                ),
                 "SCHILY.xattr.user.s3ar.bucket-acl": "private",
             }
             archive.addfile(entry)
@@ -46,6 +50,12 @@ def archive_bytes(buckets):
                 entry.size = len(data)
                 entry.pax_headers = {
                     "SCHILY.xattr.user.s3ar.format": "1",
+                    "SCHILY.xattr.user.s3ar.bucket": urllib.parse.quote(
+                        bucket, safe="/-._~"
+                    ),
+                    "SCHILY.xattr.user.s3ar.key": urllib.parse.quote(
+                        key, safe="/-._~"
+                    ),
                     "SCHILY.xattr.user.s3ar.metadata.origin": "archive",
                 }
                 archive.addfile(entry, io.BytesIO(data))
@@ -91,6 +101,75 @@ def test_create_extract_round_trip_into_original_bucket(
     assert restored["Metadata"] == {"owner": "s3ar"}
 
 
+def test_extract_prefers_url_encoded_identity_headers_over_path(
+    executable, s3_server, s3_environment, tmp_path
+):
+    _endpoint, client = s3_server
+    archive = tmp_path / "identity-headers.tar"
+    bucket_name = "identity-header-target"
+    key = "folder/a b+%?#-ž"
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        bucket = tarfile.TarInfo("path-placeholder")
+        bucket.type = tarfile.DIRTYPE
+        bucket.pax_headers = {
+            "SCHILY.xattr.user.s3ar.format": "1",
+            "SCHILY.xattr.user.s3ar.bucket": bucket_name,
+        }
+        tar.addfile(bucket)
+        entry = tarfile.TarInfo("path-placeholder/wrong-key")
+        entry.size = 4
+        entry.pax_headers = {
+            "SCHILY.xattr.user.s3ar.format": "1",
+            "SCHILY.xattr.user.s3ar.bucket": bucket_name,
+            "SCHILY.xattr.user.s3ar.key": urllib.parse.quote(
+                key, safe="/-._~"
+            ),
+        }
+        tar.addfile(entry, io.BytesIO(b"data"))
+    archive.write_bytes(data.getvalue())
+
+    result = run(
+        executable,
+        "-x",
+        "-f",
+        str(archive),
+        f"s3://{bucket_name}/",
+        env=s3_environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+    restored = client.get_object(Bucket=bucket_name, Key=key)
+    assert restored["Body"].read() == b"data"
+    with pytest.raises(botocore.exceptions.ClientError):
+        client.head_bucket(Bucket="path-placeholder")
+
+
+def test_extract_rejects_path_without_identity_headers(
+    executable, s3_server, s3_environment, tmp_path
+):
+    _endpoint, client = s3_server
+    archive = tmp_path / "path-only.tar"
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
+        bucket = tarfile.TarInfo("path-only-bucket")
+        bucket.type = tarfile.DIRTYPE
+        tar.addfile(bucket)
+        entry = tarfile.TarInfo("path-only-bucket/object")
+        entry.size = 1
+        tar.addfile(entry, io.BytesIO(b"x"))
+    archive.write_bytes(data.getvalue())
+
+    result = run(
+        executable, "-x", "-f", str(archive), "s3://", env=s3_environment
+    )
+
+    assert result.returncode != 0
+    assert "S3 identity PAX headers" in result.stderr
+    with pytest.raises(botocore.exceptions.ClientError):
+        client.head_bucket(Bucket="path-only-bucket")
+
+
 def test_extract_accepts_legacy_user_metadata_namespace(
     executable, s3_server, s3_environment, tmp_path
 ):
@@ -100,10 +179,15 @@ def test_extract_accepts_legacy_user_metadata_namespace(
     with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
         bucket = tarfile.TarInfo("legacy-metadata")
         bucket.type = tarfile.DIRTYPE
+        bucket.pax_headers = {
+            "SCHILY.xattr.user.s3ar.bucket": "legacy-metadata"
+        }
         tar.addfile(bucket)
         entry = tarfile.TarInfo("legacy-metadata/object")
         entry.size = 1
         entry.pax_headers = {
+            "SCHILY.xattr.user.s3ar.bucket": "legacy-metadata",
+            "SCHILY.xattr.user.s3ar.key": "object",
             "SCHILY.xattr.user.origin": "legacy-archive",
             "SCHILY.xattr.user.s3ar.metadata.original": "legacy-prefixed",
         }
@@ -131,10 +215,17 @@ def test_extract_rejects_unknown_metadata_format(
     with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
         bucket = tarfile.TarInfo("unknown-metadata-format")
         bucket.type = tarfile.DIRTYPE
+        bucket.pax_headers = {
+            "SCHILY.xattr.user.s3ar.bucket": "unknown-metadata-format"
+        }
         tar.addfile(bucket)
         entry = tarfile.TarInfo("unknown-metadata-format/object")
         entry.size = 1
-        entry.pax_headers = {"SCHILY.xattr.user.s3ar.format": "2"}
+        entry.pax_headers = {
+            "SCHILY.xattr.user.s3ar.format": "2",
+            "SCHILY.xattr.user.s3ar.bucket": "unknown-metadata-format",
+            "SCHILY.xattr.user.s3ar.key": "object",
+        }
         tar.addfile(entry, io.BytesIO(b"x"))
     archive.write_bytes(data.getvalue())
 
@@ -262,9 +353,16 @@ def test_extract_rejects_object_before_bucket_member(
     with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
         entry = tarfile.TarInfo("object-before-bucket/item")
         entry.size = 1
+        entry.pax_headers = {
+            "SCHILY.xattr.user.s3ar.bucket": "object-before-bucket",
+            "SCHILY.xattr.user.s3ar.key": "item",
+        }
         tar.addfile(entry, io.BytesIO(b"x"))
         bucket = tarfile.TarInfo("object-before-bucket")
         bucket.type = tarfile.DIRTYPE
+        bucket.pax_headers = {
+            "SCHILY.xattr.user.s3ar.bucket": "object-before-bucket"
+        }
         tar.addfile(bucket)
     archive.write_bytes(data.getvalue())
 
@@ -336,10 +434,17 @@ def test_extract_rejects_metadata_with_http_line_breaks(
     with tarfile.open(fileobj=data, mode="w", format=tarfile.PAX_FORMAT) as tar:
         bucket = tarfile.TarInfo("header-injection")
         bucket.type = tarfile.DIRTYPE
+        bucket.pax_headers = {
+            "SCHILY.xattr.user.s3ar.bucket": "header-injection"
+        }
         tar.addfile(bucket)
         entry = tarfile.TarInfo("header-injection/object")
         entry.size = 1
-        entry.pax_headers = {pax_key: "archive\r\nx-amz-acl: public-read"}
+        entry.pax_headers = {
+            "SCHILY.xattr.user.s3ar.bucket": "header-injection",
+            "SCHILY.xattr.user.s3ar.key": "object",
+            pax_key: "archive\r\nx-amz-acl: public-read",
+        }
         if namespaced:
             entry.pax_headers["SCHILY.xattr.user.s3ar.format"] = "1"
         tar.addfile(entry, io.BytesIO(b"x"))

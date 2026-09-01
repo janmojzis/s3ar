@@ -266,7 +266,7 @@ def test_gnu_tar_help_alias(executable):
     assert long.stderr == ""
 
 
-def test_invalid_locale_falls_back_to_c(executable):
+def test_invalid_locale_does_not_affect_help(executable):
     result = run(
         executable,
         "--help",
@@ -275,10 +275,7 @@ def test_invalid_locale_falls_back_to_c(executable):
 
     assert result.returncode == 0
     assert result.stdout.startswith("Usage: s3ar ")
-    assert result.stderr == (
-        "s3ar: warning: unable to initialize character locale; "
-        "using C locale\n"
-    )
+    assert result.stderr == ""
 
 
 def test_short_list_options_are_not_supported(executable):
