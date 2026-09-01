@@ -13,6 +13,7 @@
  */
 
 #include "die.h"
+#include "fsyncfile.h"
 #include "log.h"
 #include "s3.h"
 #include "s3ar.h"
@@ -26,7 +27,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
 #include <unistd.h>
 
 struct bucket_names {
@@ -404,7 +404,7 @@ void s3ar_create(const struct s3ar_config *config) {
         errno = 0;
         die_fatal("s3ar: cannot free archive writer", NULL, NULL);
     }
-    if (close_fd && fsync(fd) != 0) {
+    if (close_fd && fsyncfile(fd) != 0) {
         die_fatal("s3ar: cannot sync archive", config->archive_path, NULL);
     }
     if (close_fd && close(fd) != 0) {

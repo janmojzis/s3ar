@@ -11,13 +11,13 @@ S3_SOURCES = s3_client.c s3_error.c s3_request.c s3_url.c s3_headers.c \
 	s3_config.c s3_uri.c
 S3_HEADERS = s3.h s3_internal.h
 S3AR_SOURCES = s3ar.c s3ar_create.c s3ar_extract.c s3ar_list.c \
-	s3ar_selection.c die.c log.c
+	s3ar_selection.c die.c fsyncfile.c log.c
 
 .PHONY: all clean test
 
 all: s3ar
 
-s3ar: $(S3AR_SOURCES) s3ar.h die.h log.h $(S3_SOURCES) $(S3_HEADERS)
+s3ar: $(S3AR_SOURCES) s3ar.h die.h fsyncfile.h log.h $(S3_SOURCES) $(S3_HEADERS)
 	$(CC) $(CPPFLAGS) $(CFLAGS) $(LDFLAGS) -o $@ $(S3AR_SOURCES) $(S3_SOURCES) $(LDLIBS)
 
 test: s3ar

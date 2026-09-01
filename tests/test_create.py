@@ -4,6 +4,7 @@ import shutil
 import stat
 import subprocess
 import tarfile
+import threading
 
 import pytest
 
@@ -251,6 +252,57 @@ def test_create_new_archive_respects_umask(
 
     assert result.returncode == 0, result.stderr
     assert stat.S_IMODE(target.stat().st_mode) == expected_mode
+
+
+def test_create_to_device_does_not_require_fsync(
+    executable, s3_server, s3_environment
+):
+    _endpoint, client = s3_server
+    client.create_bucket(Bucket="create-device")
+    client.put_object(Bucket="create-device", Key="object", Body=b"data")
+
+    result = run(
+        executable,
+        "-c",
+        "-f",
+        os.devnull,
+        "s3://create-device/",
+        env=s3_environment,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
+def test_create_to_fifo_does_not_require_fsync(
+    executable, s3_server, s3_environment, tmp_path
+):
+    _endpoint, client = s3_server
+    client.create_bucket(Bucket="create-fifo")
+    client.put_object(Bucket="create-fifo", Key="object", Body=b"data")
+    target = tmp_path / "archive.fifo"
+    os.mkfifo(target)
+    received = bytearray()
+
+    def drain_fifo():
+        with target.open("rb") as stream:
+            while data := stream.read(65536):
+                received.extend(data)
+
+    reader = threading.Thread(target=drain_fifo)
+    reader.start()
+    result = run(
+        executable,
+        "-c",
+        "-f",
+        str(target),
+        "s3://create-fifo/",
+        env=s3_environment,
+    )
+    reader.join(timeout=5)
+
+    assert result.returncode == 0, result.stderr
+    assert not reader.is_alive()
+    assert received
 
 
 def test_create_bucket_prefix_keeps_full_key(
