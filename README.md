@@ -13,7 +13,7 @@ resources and implements only the options described here.
 Install the dependencies and build `s3ar`:
 
 ```sh
-apt install build-essential libs3-dev libarchive-dev
+apt install build-essential libarchive-dev libcurl4-gnutls-dev libxml2-dev pkgconf
 make
 ```
 
@@ -29,21 +29,19 @@ export S3AR_SECRET_KEY='secret-key'
 export S3AR_ENDPOINT='https://s3.example.net'
 export S3AR_URI_STYLE='path'
 export S3AR_REGION='us-east-1'
+export S3AR_SESSION_TOKEN='temporary-session-token' # optional
 ```
 
-`S3AR_ENDPOINT` may contain a host and port, but not a URL path. Both `http://`
-and `https://` are accepted; without a scheme, `s3ar` uses HTTPS. A single
-trailing slash is harmless.
+`S3AR_ENDPOINT` must use `http://` or `https://` and may contain a host and
+port, but not a URL path or trailing slash.
 
 `S3AR_URI_STYLE` accepts `path` or `virtual` and defaults to `path`.
 
-`S3AR_REGION` sets the location constraint used when creating a bucket that
-does not already exist. It defaults to `us-east-1`; for that value, `s3ar`
-omits the location constraint. The variable does not select a region for
-requests involving existing buckets.
+`S3AR_REGION` selects the SigV4 signing region and the location constraint used
+when creating a bucket that does not already exist. It defaults to
+`us-east-1`; for that value, `s3ar` omits the location constraint.
 
-The bundled `libs3` interface does not support temporary session credentials,
-so `S3AR_SESSION_TOKEN` is not available.
+`S3AR_SESSION_TOKEN` supplies an optional token for temporary credentials.
 
 ## Quick start
 

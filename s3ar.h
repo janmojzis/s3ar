@@ -20,7 +20,7 @@ struct s3ar_config {
     int operand_count;
     char **operands;
     const char *archive_path;
-    struct s3 s3;
+    struct s3_client *s3;
 };
 
 struct s3ar_selection {

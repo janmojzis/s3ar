@@ -43,7 +43,7 @@ def test_list_buckets_writes_bare_names(
     assert all("/" not in name for name in names)
 
 
-def test_list_buckets_uses_english_http_date(executable, tmp_path):
+def test_list_buckets_uses_sigv4_date_and_session_token(executable, tmp_path):
     locale_path = tmp_path / "locale"
     locale_path.mkdir()
     generated = subprocess.run(
@@ -70,13 +70,16 @@ def test_list_buckets_uses_english_http_date(executable, tmp_path):
 
         def do_GET(self):
             type(self).date = self.headers.get("x-amz-date")
-            english_date = re.fullmatch(
-                r"(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), [0-9]{2} "
-                r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) "
-                r"[0-9]{4} [0-9]{2}:[0-9]{2}:[0-9]{2} GMT",
-                type(self).date or "",
+            signed = self.headers.get("Authorization", "").startswith(
+                "AWS4-HMAC-SHA256 "
             )
-            if english_date:
+            sigv4_date = re.fullmatch(
+                r"[0-9]{8}T[0-9]{6}Z", type(self).date or ""
+            )
+            session_token = (
+                self.headers.get("x-amz-security-token") == "test-token"
+            )
+            if signed and sigv4_date and session_token:
                 status = 200
                 body = b"<ListAllMyBucketsResult><Buckets/>"
                 body += b"</ListAllMyBucketsResult>"
@@ -102,6 +105,7 @@ def test_list_buckets_uses_english_http_date(executable, tmp_path):
                 "S3AR_ENDPOINT": f"http://127.0.0.1:{server.server_port}",
                 "S3AR_ACCESS_KEY": "test-access",
                 "S3AR_SECRET_KEY": "test-secret",
+                "S3AR_SESSION_TOKEN": "test-token",
             }
         )
         result = run(executable, "--list-buckets", env=environment)
@@ -140,7 +144,7 @@ def test_verbose_list_buckets_includes_acl(
     result = run(executable, "--list-buckets", "-v", env=s3_environment)
 
     assert result.returncode == 0, result.stderr
-    assert "list-buckets-verbose\tacl=unavailable" in result.stdout.splitlines()
+    assert "list-buckets-verbose\tacl=private" in result.stdout.splitlines()
 
 
 def test_list_multiple_live_s3_operands(

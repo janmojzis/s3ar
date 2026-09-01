@@ -87,7 +87,13 @@ static void free_buckets(struct bucket_names *buckets) {
 
 static void ensure_bucket(struct extract_context *context, const char *bucket) {
     if (bucket_known(&context->ready_buckets, bucket)) { return; }
-    s3_bucket_ensure(&context->config->s3, bucket);
+    struct s3_error error;
+    enum s3_result result =
+        s3_bucket_ensure(context->config->s3, &error, bucket);
+    if (result != S3_RESULT_OK) {
+        die_s3fatal("s3ar: unable to initialize bucket", bucket, NULL, result,
+                    &error);
+    }
     remember_bucket(&context->ready_buckets, bucket);
 }
 
@@ -253,11 +259,15 @@ static void free_metadata(struct s3_metadata *metadata, size_t count) {
     free(metadata);
 }
 
-static int read_object_data(int size, char *data, void *callback_data) {
+static enum s3_read_result read_object_data(void *callback_data,
+                                            unsigned char *data,
+                                            size_t capacity, size_t *size) {
     struct put_context *put = callback_data;
-    if (size <= 0 || put->remaining == 0) { return 0; }
-    size_t wanted = (uint64_t) size < put->remaining ? (size_t) size
-                                                     : (size_t) put->remaining;
+    *size = 0;
+    if (put->remaining == 0) { return S3_READ_EOF; }
+    size_t wanted = (uint64_t) capacity < put->remaining
+                        ? capacity
+                        : (size_t) put->remaining;
     la_ssize_t amount = archive_read_data(put->archive, data, wanted);
     if (amount < 0) {
         archive_fatal(put->archive, "s3ar: cannot read object data");
@@ -267,7 +277,8 @@ static int read_object_data(int size, char *data, void *callback_data) {
         die_fatal("s3ar: truncated object in archive", NULL, NULL);
     }
     put->remaining -= (uint64_t) amount;
-    return (int) amount;
+    *size = (size_t) amount;
+    return S3_READ_DATA;
 }
 
 static void extract_bucket(struct extract_context *context,
@@ -319,9 +330,19 @@ static void extract_object(struct extract_context *context,
         .archive = context->archive,
         .remaining = (uint64_t) archive_size,
     };
-    s3_object_put(&context->config->s3, bucket, key, (uint64_t) archive_size,
-                  metadata, metadata_count, read_object_data, &put);
+    struct s3_object_properties properties = {
+        .metadata = metadata,
+        .metadata_count = metadata_count,
+    };
+    struct s3_error error;
+    enum s3_result result = s3_object_put(
+        context->config->s3, &error, bucket, key, (uint64_t) archive_size,
+        &properties, read_object_data, &put);
     free_metadata(metadata, metadata_count);
+    if (result != S3_RESULT_OK) {
+        die_s3fatal("s3ar: unable to write object", bucket, key, result,
+                    &error);
+    }
     if (put.remaining != 0) {
         errno = 0;
         die_fatal("s3ar: incomplete object in archive", bucket, key);

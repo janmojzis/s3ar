@@ -22,7 +22,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 static void usage(FILE *stream) {
     fprintf(stream, "Usage: s3ar (-c | --create) [-v | --verbose] "
@@ -49,78 +48,6 @@ static void usage(FILE *stream) {
     fflush(stream);
 }
 
-static void parse_s3_environment(struct s3 *s3) {
-    const char *x;
-
-    /* S3AR_REGION */
-    s3->region = "us-east-1";
-    x = getenv("S3AR_REGION");
-    if (x) {
-        s3->region = x;
-    }
-
-    /* S3AR_URI_STYLE */
-    s3->uri_style = S3UriStylePath;
-    x = getenv("S3AR_URI_STYLE");
-    if (x) {
-        if (strcmp(x, "virtual") == 0) {
-            s3->uri_style = S3UriStyleVirtualHost;
-        }
-        else if (strcmp(x, "path") != 0) {
-            errno = 0;
-            die_fatal("s3ar: $S3AR_URI_STYLE must be 'path' or 'virtual'",
-                      NULL, NULL);
-        }
-    }
-
-    /* access key */
-    x = getenv("S3AR_ACCESS_KEY");
-    if (!x) {
-        errno = 0;
-        die_fatal("s3ar: $S3AR_ACCESS_KEY not set", NULL, NULL);
-    }
-    s3->access_key = x;
-
-    /* secret key */
-    x = getenv("S3AR_SECRET_KEY");
-    if (!x) {
-        errno = 0;
-        die_fatal("s3ar: $S3AR_SECRET_KEY not set", NULL, NULL);
-    }
-    s3->secret_key = x;
-
-    /* endpoint */
-    x = getenv("S3AR_ENDPOINT");
-    if (!x) {
-        errno = 0;
-        die_fatal("s3ar: $S3AR_ENDPOINT not set", NULL, NULL);
-    }
-
-    /* http/https protocol */
-    s3->protocol = S3ProtocolHTTPS;
-    if (strncmp(x, "http://", 7) == 0) {
-        s3->protocol = S3ProtocolHTTP;
-        x += 7;
-    }
-    else if (strncmp(x, "https://", 8) == 0) {
-        x += 8;
-    }
-
-    /* host */
-    s3->host = strdup(x);
-    if (s3->host == NULL) { die_fatal("s3ar: out of memory", NULL, NULL); }
-    size_t length = strlen(s3->host);
-    if (length > 0 && s3->host[length - 1] == '/') {
-        s3->host[--length] = '\0';
-    }
-    if (length == 0 || strchr(s3->host, '/') != NULL) {
-        errno = 0;
-        die_fatal("s3ar: S3AR_ENDPOINT must contain a host and no path", NULL,
-                  NULL);
-    }
-
-}
-
 static const struct option long_options[] = {
     {"create", no_argument, NULL, 'c'},
     {"extract", no_argument, NULL, 'x'},
@@ -137,6 +64,9 @@ static const struct option long_options[] = {
 static struct s3ar_config config;
 
 int main(int argc, char **argv) {
+    struct s3_config s3_config;
+    struct s3_error s3_error;
+    enum s3_result s3_result;
     if (setlocale(LC_CTYPE, "") == NULL) {
         fputs("s3ar: warning: unable to initialize character locale; "
               "using C locale\n",
@@ -146,21 +76,6 @@ int main(int argc, char **argv) {
             die_fatal("s3ar: unable to initialize C locale", NULL, NULL);
         }
     }
-    /* libs3 formats the signed x-amz-date header with strftime(3), but HTTP
-     * dates always require English day and month names.  Only LC_CTYPE needs
-     * the user-selected locale; keep libs3's dates independent of LC_TIME. */
-    if (setlocale(LC_TIME, "C") == NULL) {
-        errno = 0;
-        die_fatal("s3ar: unable to initialize time locale", NULL, NULL);
-    }
-    /* libs3 parses S3's UTC timestamps with mktime(3).  Set TZ before
-     * reading any environment-backed configuration pointers so those
-     * timestamps remain UTC and setenv(3) cannot invalidate the pointers. */
-    if (setenv("TZ", "UTC0", 1) != 0) {
-        die_fatal("s3ar: unable to set UTC timezone", NULL, NULL);
-    }
-    tzset();
-
     /* parse options */
     opterr = 0;
     for (;;) {
@@ -279,9 +194,18 @@ int main(int argc, char **argv) {
     config.operand_count = argc - optind;
     config.operands = &argv[optind];
 
-    /* parse environment and connect to S3 */
-    parse_s3_environment(&config.s3);
-    s3_open(&config.s3);
+    /* Parse environment and connect to S3. */
+    s3_result = s3_config_from_env(&s3_config, &s3_error);
+    if (s3_result != S3_RESULT_OK) {
+        die_s3fatal("s3ar: invalid S3 configuration", NULL, NULL, s3_result,
+                    &s3_error);
+    }
+    s3_result = s3_client_open(&config.s3, &s3_error, &s3_config.client);
+    if (s3_result != S3_RESULT_OK) {
+        s3_config_free(&s3_config);
+        die_s3fatal("s3ar: unable to initialize S3 client", NULL, NULL,
+                    s3_result, &s3_error);
+    }
 
     /* run commands */
     switch (config.command) {
@@ -300,8 +224,8 @@ int main(int argc, char **argv) {
         case S3AR_COMMAND_NONE:
             break;
     }
-    s3_close();
-    free(config.s3.host);
+    s3_client_close(config.s3);
+    s3_config_free(&s3_config);
 
     if (fflush(stdout) == EOF) {
         die_fatal("s3ar: unable to flush standard output", NULL, NULL);

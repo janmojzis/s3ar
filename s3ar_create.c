@@ -102,8 +102,8 @@ static char *object_path(const char *bucket, const char *key) {
     return path;
 }
 
-static void write_bucket_acl(const struct s3_bucket *bucket,
-                             void *callback_data) {
+static bool write_bucket_acl(void *callback_data,
+                             const struct s3_bucket *bucket) {
     struct create_context *context = callback_data;
     size_t length = strlen(bucket->name);
     if (length == SIZE_MAX) {
@@ -146,17 +146,29 @@ static void write_bucket_acl(const struct s3_bucket *bucket,
     if (context->config->verbose) {
         log_s3_name(stderr, bucket->name, NULL);
     }
+    return true;
 }
 
 static void ensure_bucket(struct create_context *context, const char *bucket) {
     if (bucket_written(&context->buckets, bucket)) { return; }
-    s3_bucket_check(&context->config->s3, bucket);
-    s3_bucket_acl(&context->config->s3, bucket, write_bucket_acl, context);
+    struct s3_error error;
+    enum s3_result result =
+        s3_bucket_head(context->config->s3, &error, bucket);
+    if (result != S3_RESULT_OK) {
+        die_s3fatal("s3ar: unable to access bucket", bucket, NULL, result,
+                    &error);
+    }
+    result = s3_bucket_acl(context->config->s3, &error, bucket,
+                           write_bucket_acl, context);
+    if (result != S3_RESULT_OK) {
+        die_s3fatal("s3ar: unable to read bucket ACL", bucket, NULL, result,
+                    &error);
+    }
     remember_bucket(&context->buckets, bucket);
 }
 
-static S3Status write_object_header(const struct s3_object *object,
-                                    void *callback_data) {
+static bool write_object_header(
+    void *callback_data, const struct s3_object_properties *object) {
     struct get_context *get = callback_data;
     if (object->size > INT64_MAX) {
         errno = 0;
@@ -215,24 +227,23 @@ static S3Status write_object_header(const struct s3_object *object,
     free(path);
     get->expected = object->size;
     get->header_written = true;
-    return S3StatusOK;
+    return true;
 }
 
-static S3Status write_object_data(int size, const char *data,
-                                  void *callback_data) {
+static bool write_object_data(void *callback_data,
+                              const unsigned char *data, size_t size) {
     struct get_context *get = callback_data;
-    if (!get->header_written || size < 0 ||
-        (uint64_t) size > get->expected - get->written) {
-        return S3StatusAbortedByCallback;
+    if (!get->header_written || (uint64_t) size > get->expected - get->written) {
+        errno = EIO;
+        return false;
     }
-    la_ssize_t written = archive_write_data(get->create->archive, data,
-                                            (size_t) size);
-    if (written < 0 || written != size) {
+    la_ssize_t written = archive_write_data(get->create->archive, data, size);
+    if (written < 0 || (size_t) written != size) {
         archive_fatal(get->create->archive,
                       "s3ar: cannot write object data");
     }
     get->written += (uint64_t) size;
-    return S3StatusOK;
+    return true;
 }
 
 static void write_object(struct create_context *context, const char *bucket,
@@ -246,8 +257,14 @@ static void write_object(struct create_context *context, const char *bucket,
         .bucket = bucket,
         .key = key,
     };
-    s3_object_get(&context->config->s3, bucket, key, write_object_header,
-                  write_object_data, &get);
+    struct s3_error error;
+    enum s3_result result = s3_object_get(
+        context->config->s3, &error, write_object_header, write_object_data,
+        &get, bucket, key);
+    if (result != S3_RESULT_OK) {
+        die_s3fatal("s3ar: unable to read object", bucket, key, result,
+                    &error);
+    }
     if (!get.header_written || get.written != get.expected) {
         errno = 0;
         die_fatal("s3ar: incomplete S3 object", bucket, key);
@@ -258,30 +275,39 @@ static void write_object(struct create_context *context, const char *bucket,
     if (context->config->verbose) { log_s3_name(stderr, bucket, key); }
 }
 
-static void write_listed_object(const struct s3_object *object,
-                                void *callback_data) {
+static bool write_listed_object(void *callback_data,
+                                const struct s3_object *object) {
     struct create_context *context = callback_data;
     write_object(context, object->bucket, object->key);
+    return true;
 }
 
-static void write_exact_object(const struct s3_object *object,
-                               void *callback_data) {
-    write_listed_object(object, callback_data);
-}
-
-static void write_all_bucket(const struct s3_bucket *bucket,
-                             void *callback_data) {
+static bool write_all_bucket(void *callback_data,
+                             const struct s3_bucket *bucket) {
     struct create_context *context = callback_data;
     ensure_bucket(context, bucket->name);
-    s3_object_list_prefix(&context->config->s3, bucket->name, NULL,
-                          write_listed_object, context);
+    struct s3_error error;
+    enum s3_result result = s3_object_list(
+        context->config->s3, &error, bucket->name, NULL, write_listed_object,
+        context, NULL);
+    if (result != S3_RESULT_OK) {
+        die_s3fatal("s3ar: unable to list objects", bucket->name, NULL,
+                    result, &error);
+    }
+    return true;
 }
 
 static void write_selection(struct create_context *context,
                             const struct s3ar_selection *selection) {
-    const struct s3 *s3 = &context->config->s3;
+    struct s3_client *s3 = context->config->s3;
+    struct s3_error error;
+    enum s3_result result;
     if (selection->bucket == NULL) {
-        s3_bucket_list(s3, write_all_bucket, context);
+        result = s3_bucket_list(s3, &error, write_all_bucket, context);
+        if (result != S3_RESULT_OK) {
+            die_s3fatal("s3ar: unable to list buckets", NULL, NULL, result,
+                        &error);
+        }
         return;
     }
     if (selection->key != NULL && !s3ar_key_is_safe(selection->key)) {
@@ -291,13 +317,27 @@ static void write_selection(struct create_context *context,
     }
     ensure_bucket(context, selection->bucket);
     if (selection->key == NULL) {
-        s3_object_list_prefix(s3, selection->bucket, NULL,
-                              write_listed_object, context);
+        result = s3_object_list(s3, &error, selection->bucket, NULL,
+                                write_listed_object, context, NULL);
+        if (result != S3_RESULT_OK) {
+            die_s3fatal("s3ar: unable to list objects", selection->bucket,
+                        NULL, result, &error);
+        }
         return;
     }
 
-    bool found = s3_object_head(s3, selection->bucket, selection->key,
-                                write_exact_object, context);
+    struct s3_object_properties properties = {0};
+    result = s3_object_head(s3, &error, &properties, selection->bucket,
+                            selection->key);
+    bool found = result == S3_RESULT_OK;
+    if (found) {
+        s3_object_properties_free(&properties);
+        write_object(context, selection->bucket, selection->key);
+    }
+    else if (result != S3_RESULT_NOT_FOUND) {
+        die_s3fatal("s3ar: unable to inspect object", selection->bucket,
+                    selection->key, result, &error);
+    }
     size_t length = strlen(selection->key);
     if (length > SIZE_MAX - 2) {
         errno = ENOMEM;
@@ -308,9 +348,14 @@ static void write_selection(struct create_context *context,
     memcpy(prefix, selection->key, length);
     prefix[length] = '/';
     prefix[length + 1] = '\0';
-    size_t descendants = s3_object_list_prefix(
-        s3, selection->bucket, prefix, write_listed_object, context);
+    size_t descendants = 0;
+    result = s3_object_list(s3, &error, selection->bucket, prefix,
+                            write_listed_object, context, &descendants);
     free(prefix);
+    if (result != S3_RESULT_OK) {
+        die_s3fatal("s3ar: unable to list objects", selection->bucket, NULL,
+                    result, &error);
+    }
     if (!found && descendants == 0) {
         errno = 0;
         die_fatal("s3ar: not found", selection->uri, NULL);

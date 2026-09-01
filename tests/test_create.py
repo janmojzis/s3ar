@@ -95,7 +95,7 @@ def test_create_single_bucket_with_full_path_and_metadata(
     assert bucket.isdir()
     assert (
         bucket.pax_headers["SCHILY.xattr.user.s3ar.bucket-acl"]
-        == "unavailable"
+        == "private"
     )
     assert bucket.pax_headers["SCHILY.xattr.user.s3ar.format"] == "1"
     assert item.size == len(b"object data")
@@ -167,7 +167,7 @@ def test_created_metadata_can_be_restored_as_filesystem_xattrs(
     )
     assert extracted.returncode == 0, extracted.stderr
     bucket = destination / "create-filesystem-xattrs"
-    assert os.getxattr(bucket, "user.s3ar.bucket-acl") == b"unavailable"
+    assert os.getxattr(bucket, "user.s3ar.bucket-acl") == b"private"
     assert os.getxattr(bucket, "user.s3ar.format") == b"1"
     assert (
         os.getxattr(bucket / "object", "user.s3ar.metadata.source")
