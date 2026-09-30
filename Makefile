@@ -104,8 +104,10 @@ test-put-cancel: $(TEST_PUT_CANCEL_OBJECTS) libs3.a liblog.a
 %.o: %.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c -o $@ $<
 
+TEST_PROGRAMS ?= all
+
 test: CFLAGS += -Werror
-test: all test-error test-get-retry test-headers-alloc test-uri-encode test-log-signal test-delete-batch test-signal-io test-put-cancel test-transform test-transform-restore
+test: $(TEST_PROGRAMS) test-error test-get-retry test-headers-alloc test-uri-encode test-log-signal test-delete-batch test-signal-io test-put-cancel test-transform test-transform-restore
 	./test-error
 	./test-headers-alloc
 	./test-uri-encode
