@@ -20,14 +20,16 @@ and
 .B s3://BUCKET/
 select one entire bucket.
 .B s3://BUCKET/KEY
-selects only the exact object key.
-.B s3://BUCKET/PREFIX/
-selects keys beginning with PREFIX/ and keeps the bucket.
-For example, 
+and
+.B s3://BUCKET/KEY/
+select the exact KEY object and all objects below KEY/, keeping the bucket.
+A trailing slash does not change the selection, as with
+.BR s3ar (1).
+Matches stop at path boundaries. For example,
 .B s3://photos/photo
-does not select photo1 or photo/a, while
+and
 .B s3://photos/photo/
-selects photo/a but not photo or photo1.
+select photo, photo/, and photo/a, but not photo1 or photo-old.
 .PP
 Deletion stops on the first S3 error. Objects protected by retention or legal
 hold cannot be deleted until their protection is removed. Objects added while

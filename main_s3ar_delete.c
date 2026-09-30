@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT-0 */
 #include "main.h"
 #include "s3ar_config.h"
+#include "s3ar.h"
 #include "log.h"
 #include "s3ar_log.h"
 #include "sig.h"
@@ -19,18 +20,10 @@ struct bucket_names {
     size_t capacity;
 };
 
-struct selection {
-    char bucket_storage[256];
-    char key_storage[1025];
-    const char *bucket;
-    const char *key;
-    bool prefix;
-};
-
 struct operation {
     struct s3_client *client;
     struct s3_error error;
-    const struct selection *selection;
+    const struct s3ar_selection *selection;
     bool dry_run;
     bool error_diagnosed;
     size_t versions;
@@ -42,36 +35,8 @@ static void usage(FILE *out) {
     log_usage(
         out,
         "Usage: s3ar-delete [-v|-vv|-vvv] [--dry-run] s3://[BUCKET[/KEY]]\n"
-        "KEY deletes one object; KEY/ deletes everything below that prefix.\n");
-}
-
-static bool parse_selection(const char *text, struct selection *selection) {
-    const char *slash;
-    size_t length;
-    memset(selection, 0, sizeof(*selection));
-    if (strncmp(text, "s3://", 5) != 0) return false;
-    if (text[5] == '\0') return true;
-    if (text[5] == '/') return false;
-    slash = strchr(text + 5, '/');
-    length = slash != NULL ? (size_t) (slash - (text + 5)) : strlen(text + 5);
-    if (length >= sizeof(selection->bucket_storage)) return false;
-    memcpy(selection->bucket_storage, text + 5, length);
-    selection->bucket_storage[length] = '\0';
-    selection->bucket = selection->bucket_storage;
-    if (slash == NULL || slash[1] == '\0') return true;
-    length = strlen(slash + 1);
-    if (length >= sizeof(selection->key_storage)) return false;
-    memcpy(selection->key_storage, slash + 1, length + 1);
-    selection->key = selection->key_storage;
-    selection->prefix = selection->key_storage[length - 1] == '/';
-    return true;
-}
-
-static bool matches(const struct selection *selection, const char *key) {
-    if (selection->key == NULL) return true;
-    if (selection->prefix)
-        return strncmp(key, selection->key, strlen(selection->key)) == 0;
-    return strcmp(key, selection->key) == 0;
+        "KEY selects the exact key and objects below KEY/.\n"
+        "A trailing slash does not change the selection.\n");
 }
 
 static enum s3_result fetch_page(struct operation *op, const char *bucket,
@@ -142,16 +107,15 @@ static enum s3_result scan_targets(struct operation *op, const char *bucket,
         struct s3_listing_page page = {0};
         const struct s3_listing_item *batch[S3_DELETE_BATCH_LIMIT];
         size_t matched = 0;
-        result =
-            fetch_page(op, bucket, uploads, op->dry_run ? marker_key : NULL,
-                       op->dry_run ? marker_id : NULL, &page);
+        result = fetch_page(op, bucket, uploads, marker_key, marker_id, &page);
         if (result != S3_RESULT_OK) {
             s3_listing_page_free(&page);
             break;
         }
         for (size_t i = 0; i < page.count; ++i) {
             const struct s3_listing_item *target = &page.items[i];
-            if (!matches(op->selection, target->key)) continue;
+            if (!s3ar_selection_matches(op->selection, bucket, target->key))
+                continue;
             ++matched;
             if (!op->dry_run && !uploads) {
                 batch[matched - 1] = target;
@@ -186,7 +150,10 @@ static enum s3_result scan_targets(struct operation *op, const char *bucket,
         }
         if (result == S3_RESULT_OK && !op->dry_run && !uploads && matched != 0)
             result = delete_batch(op, bucket, batch, matched);
-        if (result == S3_RESULT_OK && op->dry_run && page.truncated) {
+        /* A server-side prefix can include neighbors outside the selection.
+         * Continue past such pages even when there was nothing to delete. */
+        bool advance = page.truncated && (op->dry_run || matched == 0);
+        if (result == S3_RESULT_OK && advance) {
             if (marker_key != NULL && strcmp(marker_key, page.next_key) == 0 &&
                 ((marker_id == NULL && page.next_id == NULL) ||
                  (marker_id != NULL && page.next_id != NULL &&
@@ -204,8 +171,14 @@ static enum s3_result scan_targets(struct operation *op, const char *bucket,
                 page.next_key = page.next_id = NULL;
             }
         }
+        if (!op->dry_run && matched != 0) {
+            /* Rescan after deletion because the listing has changed. */
+            free(marker_key);
+            free(marker_id);
+            marker_key = marker_id = NULL;
+        }
         bool again = result == S3_RESULT_OK &&
-                     (op->dry_run ? page.truncated : matched != 0);
+                     (op->dry_run ? page.truncated : matched != 0 || advance);
         if (again && !op->dry_run)
             log_d2("rescanning after deletion in ",
                    s3_log_uri("s3", bucket, NULL));
@@ -258,13 +231,14 @@ static void free_buckets(struct bucket_names *names) {
     free(names->items);
 }
 
-static struct selection selection;
+static struct s3ar_selection selection;
 static struct s3ar_config_env config;
 static struct s3_client *client;
 static struct bucket_names names;
 
 static _Noreturn void die(int status) {
     free_buckets(&names);
+    s3ar_selection_free(&selection);
     s3_client_close(client);
     s3ar_config_free(&config);
     exit(status);
@@ -312,7 +286,11 @@ int main_s3ar_delete(int argc, char **argv) {
         }
     }
     if (argc - optind != 1 ||
-        !parse_selection(argc - optind == 1 ? argv[optind] : "", &selection)) {
+        s3ar_selection_parse(&selection, argv[optind]) != 0) {
+        if (argc - optind == 1 && errno == ENOMEM) {
+            log_f1("out of memory");
+            die(2);
+        }
         usage(stderr);
         die(2);
     }

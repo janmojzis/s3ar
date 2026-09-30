@@ -178,7 +178,7 @@ def test_batch_delete_falls_back_for_xml_incompatible_keys(
     encoded_version = quote(version, safe="")
     close = (("Connection", "close"),)
     prefix = "/bucket?"
-    suffix = "&encoding-type=url&prefix=folder%2F"
+    suffix = "&encoding-type=url&prefix=folder"
     empty_uploads = (
         b"<ListMultipartUploadsResult><EncodingType>url</EncodingType>"
         b"<IsTruncated>false</IsTruncated></ListMultipartUploadsResult>"
@@ -293,34 +293,38 @@ def test_trace_redacts_delete_query_values(s3_environment):
     assert all("private-upload-id" not in line for line in traces)
 
 
-def test_exact_key_dry_run_and_delete(s3_server, s3_environment):
+@pytest.mark.parametrize("trailing_slash", ["", "/"])
+def test_key_and_descendants_dry_run_and_delete(
+    s3_server, s3_environment, trailing_slash
+):
     _, client = s3_server
     bucket = "delete-exact-key"
+    selection_uri = f"s3://{bucket}/photo{trailing_slash}"
     client.create_bucket(Bucket=bucket)
     for key in ("photo", "photo1", "photo/a"):
         client.put_object(Bucket=bucket, Key=key, Body=b"data")
 
-    summary = run("--dry-run", f"s3://{bucket}/photo", env=s3_environment)
+    summary = run("--dry-run", selection_uri, env=s3_environment)
     assert summary.returncode == 0, summary.stderr
-    assert "success: 1 versions, 0 uploads, 0 buckets" in summary.stderr
+    assert "success: 2 versions, 0 uploads, 0 buckets" in summary.stderr
     assert "info:" not in summary.stderr
 
-    preview = run("-v", "--dry-run", f"s3://{bucket}/photo", env=s3_environment)
+    preview = run("-v", "--dry-run", selection_uri, env=s3_environment)
     assert preview.returncode == 0, preview.stderr
     assert "info: s3://delete-exact-key/photo would delete version=" in preview.stderr
     assert "debug:" not in preview.stderr
     assert "trace:" not in preview.stderr
     assert " deleted\n" not in preview.stderr
     assert "s3://delete-exact-key/photo1" not in preview.stderr
-    assert "s3://delete-exact-key/photo/a" not in preview.stderr
+    assert "info: s3://delete-exact-key/photo/a would delete version=" in preview.stderr
     assert keys(client, bucket) == ["photo", "photo/a", "photo1"]
 
-    debug = run("-vv", "--dry-run", f"s3://{bucket}/photo", env=s3_environment)
+    debug = run("-vv", "--dry-run", selection_uri, env=s3_environment)
     assert debug.returncode == 0, debug.stderr
     assert "debug: (argument) selection = '" in debug.stderr
     assert "trace:" not in debug.stderr
 
-    traced = run("-vvv", "--dry-run", f"s3://{bucket}/photo", env=s3_environment)
+    traced = run("-vvv", "--dry-run", selection_uri, env=s3_environment)
     assert traced.returncode == 0, traced.stderr
     assert any(
         " GET /delete-exact-key?" in line
@@ -328,12 +332,13 @@ def test_exact_key_dry_run_and_delete(s3_server, s3_environment):
         if ": trace: http id=" in line
     )
 
-    deleted = run("-v", f"s3://{bucket}/photo", env=s3_environment)
+    deleted = run("-v", selection_uri, env=s3_environment)
     assert deleted.returncode == 0, deleted.stderr
     assert "would delete" not in deleted.stderr
     assert "info: s3://delete-exact-key/photo deleted version=" in deleted.stderr
-    assert keys(client, bucket) == ["photo/a", "photo1"]
+    assert keys(client, bucket) == ["photo1"]
 
+    client.put_object(Bucket=bucket, Key="photo/a", Body=b"data")
     second = run(f"s3://{bucket}/photo/a", env=s3_environment)
     assert second.returncode == 0, second.stderr
     assert "success: 1 versions, 0 uploads, 0 buckets" in second.stderr
@@ -362,20 +367,20 @@ def test_delete_encodes_selection_and_object_names(s3_server, s3_environment):
     assert keys(client, bucket) == []
 
 
-def test_slash_prefix_only_and_keeps_bucket(s3_server, s3_environment):
+def test_slash_selection_includes_exact_key_and_keeps_bucket(s3_server, s3_environment):
     _, client = s3_server
     bucket = "delete-slash-prefix"
     client.create_bucket(Bucket=bucket)
-    for key in ("photo", "photo1", "photo/a", "photo/b"):
+    for key in ("photo", "photo/", "photo1", "photo-old", "photo/a", "photo/b"):
         client.put_object(Bucket=bucket, Key=key, Body=b"data")
 
     result = run(f"s3://{bucket}/photo/", env=s3_environment)
     assert result.returncode == 0, result.stderr
-    assert keys(client, bucket) == ["photo", "photo1"]
+    assert keys(client, bucket) == ["photo-old", "photo1"]
     client.head_bucket(Bucket=bucket)
 
 
-def test_exact_key_removes_all_versions_without_neighbors(s3_server, s3_environment):
+def test_key_and_descendants_remove_all_versions_without_neighbors(s3_server, s3_environment):
     _, client = s3_server
     bucket = "delete-exact-versions"
     client.create_bucket(Bucket=bucket)
@@ -385,7 +390,7 @@ def test_exact_key_removes_all_versions_without_neighbors(s3_server, s3_environm
     for body in (b"first", b"second"):
         client.put_object(Bucket=bucket, Key="photo", Body=body)
     client.delete_object(Bucket=bucket, Key="photo")
-    client.put_object(Bucket=bucket, Key="photo/a", Body=b"keep")
+    client.put_object(Bucket=bucket, Key="photo/a", Body=b"delete")
     client.put_object(Bucket=bucket, Key="photo1", Body=b"keep")
 
     result = run(f"s3://{bucket}/photo", env=s3_environment)
@@ -397,7 +402,7 @@ def test_exact_key_removes_all_versions_without_neighbors(s3_server, s3_environm
         for kind in ("Versions", "DeleteMarkers")
         for item in response.get(kind, [])
     }
-    assert remaining == {"photo/a", "photo1"}
+    assert remaining == {"photo1"}
 
 
 def test_delete_crosses_version_listing_pages(s3_server, s3_environment):
@@ -482,3 +487,95 @@ def test_all_buckets_delete():
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+@pytest.mark.parametrize("trailing_slash", ["", "/"])
+def test_key_selection_aborts_matching_uploads_only(
+    s3_server, s3_environment, trailing_slash
+):
+    _, client = s3_server
+    bucket = "delete-selected-uploads"
+    client.create_bucket(Bucket=bucket)
+    selected = ("photo", "photo/", "photo/a")
+    neighbors = ("photo1", "photo-old")
+    for key in (*selected, *neighbors):
+        client.create_multipart_upload(Bucket=bucket, Key=key)
+    uri = f"s3://{bucket}/photo{trailing_slash}"
+
+    preview = run("-v", "--dry-run", uri, env=s3_environment)
+    assert preview.returncode == 0, preview.stderr
+    assert "success: 0 versions, 3 uploads, 0 buckets" in preview.stderr
+    for key in selected:
+        assert f"s3://{bucket}/{key} would abort upload=" in preview.stderr
+    for key in neighbors:
+        assert f"s3://{bucket}/{key} would abort upload=" not in preview.stderr
+    assert len(client.list_multipart_uploads(Bucket=bucket)["Uploads"]) == 5
+
+    deleted = run(uri, env=s3_environment)
+    assert deleted.returncode == 0, deleted.stderr
+    assert "success: 0 versions, 3 uploads, 0 buckets" in deleted.stderr
+    assert {item["Key"] for item in client.list_multipart_uploads(Bucket=bucket)["Uploads"]} == set(neighbors)
+    for item in client.list_multipart_uploads(Bucket=bucket)["Uploads"]:
+        client.abort_multipart_upload(Bucket=bucket, Key=item["Key"], UploadId=item["UploadId"])
+
+
+@pytest.mark.parametrize("uploads", [False, True])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_selection_crosses_page_without_matches(s3_environment, uploads, dry_run):
+    root = "ListMultipartUploadsResult" if uploads else "ListVersionsResult"
+    item = "Upload" if uploads else "Version"
+    identifier = "UploadId" if uploads else "VersionId"
+    next_identifier = "NextUploadIdMarker" if uploads else "NextVersionIdMarker"
+    query = "uploads&max-uploads=1000" if uploads else "versions&max-keys=1000"
+    path = f"/bucket?{query}&encoding-type=url&prefix=photo"
+    marker = "upload-id-marker" if uploads else "version-id-marker"
+
+    def listing(key=None, truncated=False):
+        entries = (
+            f"<{item}><Key>{key}</Key><{identifier}>id1</{identifier}></{item}>"
+            if key else ""
+        )
+        continuation = (
+            f"<NextKeyMarker>{key}</NextKeyMarker>"
+            f"<{next_identifier}>id1</{next_identifier}>" if truncated else ""
+        )
+        return (
+            f"<{root}><EncodingType>url</EncodingType>"
+            f"<IsTruncated>{str(truncated).lower()}</IsTruncated>"
+            f"{entries}{continuation}</{root}>"
+        ).encode()
+
+    empty_uploads = (
+        b"<ListMultipartUploadsResult><EncodingType>url</EncodingType>"
+        b"<IsTruncated>false</IsTruncated></ListMultipartUploadsResult>"
+    )
+    empty_versions = (
+        b"<ListVersionsResult><EncodingType>url</EncodingType>"
+        b"<IsTruncated>false</IsTruncated></ListVersionsResult>"
+    )
+    steps = []
+    if not uploads:
+        steps.append(ResponseStep("GET", "/bucket?uploads&max-uploads=1000&encoding-type=url&prefix=photo", 200, empty_uploads))
+    steps += [
+        ResponseStep("GET", path, 200, listing("photo-old", True)),
+        ResponseStep("GET", path + f"&key-marker=photo-old&{marker}=id1", 200, listing("photo/a")),
+    ]
+    if not dry_run:
+        if uploads:
+            steps.append(ResponseStep("DELETE", "/bucket/photo/a?uploadId=id1", 204))
+        else:
+            steps.append(ResponseStep("POST", "/bucket?delete", 200,
+                                      b"<DeleteResult><Deleted><Key>photo/a</Key><VersionId>id1</VersionId></Deleted></DeleteResult>",
+                                      (("Connection", "close"),)))
+        steps += [
+            ResponseStep("GET", path, 200, listing("photo-old", True)),
+            ResponseStep("GET", path + f"&key-marker=photo-old&{marker}=id1", 200, listing()),
+        ]
+    if uploads:
+        steps.append(ResponseStep("GET", "/bucket?versions&max-keys=1000&encoding-type=url&prefix=photo", 200, empty_versions))
+    with FaultServer(steps) as server:
+        env = {**s3_environment, "S3AR_ENDPOINT": server.endpoint}
+        args = ["--dry-run"] if dry_run else []
+        result = run(*args, "s3://bucket/photo/", env=env)
+        assert result.returncode == 0, result.stderr
+    assert f"success: {0 if uploads else 1} versions, {1 if uploads else 0} uploads, 0 buckets" in result.stderr
