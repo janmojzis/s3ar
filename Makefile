@@ -43,7 +43,7 @@ C_SOURCES = $(S3_SOURCES) $(S3AR_SOURCES) main.c main_s3ar_put.c main_s3ar_get.c
 	tests/test_error.c tests/get_retry_probe.c tests/test_headers_alloc.c \
 	tests/test_uri_encode.c tests/test_log_signal.c tests/test_delete_batch.c \
 	tests/test_signal_io.c tests/test_put_cancel.c tests/test_transform.c \
-	tests/transform_restore_probe.c examples/s3_client.c
+	tests/transform_restore_probe.c
 PUBLIC_HEADERS = s3.h s3_log.h log.h
 
 .PHONY: all clean format-check install test install-libs
