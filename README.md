@@ -4,9 +4,13 @@
 them back to S3. It preserves S3 user metadata and records informational
 bucket ACL summaries in PAX headers.
 
-Its command line follows the familiar `tar` style, including `-c`, `-x`, `-f`,
-and `-v`. It is not a general replacement for `tar`: it works with live S3
-resources and implements only the options described here.
+Its command line follows the familiar `tar` style, including `-c`, `-x`, `-t`,
+`-f` and `-v`. It is not a general replacement for `tar`.
+
+If S3 keys use safe relative paths without file/directory conflicts, archives
+can also be extracted to a local filesystem using GNU tar. With --xattrs
+enabled, the S3 metadata stored in PAX headers is restored as extended
+attributes on filesystems that support them.
 
 ## Installation
 
