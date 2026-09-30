@@ -19,7 +19,4 @@
 /test-uri-encode
 /libs3.a
 /liblog.a
-/s3ar-s3.pc
-/s3ar-log.pc
-/.library-check/
 /tests/__pycache__/

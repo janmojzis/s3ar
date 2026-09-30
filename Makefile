@@ -1,17 +1,15 @@
 CC ?= cc
 .DEFAULT_GOAL := all
 AR ?= ar
-PKG_CONFIG ?= pkg-config
 PREFIX ?= /usr/local
 LIBDIR ?= $(PREFIX)/lib
-PKGCONFIGDIR ?= $(LIBDIR)/pkgconfig
 
-CPPFLAGS += -D_POSIX_C_SOURCE=200809L -I. \
-	$(shell $(PKG_CONFIG) --cflags libcurl libxml-2.0 libarchive libcrypto)
+LIBXML_CPPFLAGS ?= -I/usr/include/libxml2
+CPPFLAGS += -D_POSIX_C_SOURCE=200809L -I. $(LIBXML_CPPFLAGS)
 CFLAGS ?= -O2 -g
 CFLAGS += -std=c17 -Wall -Wextra -Wpedantic
-S3_LIBS = $(shell $(PKG_CONFIG) --libs libcurl libxml-2.0 libcrypto) -lrandombytes
-ARCHIVE_LIBS = $(shell $(PKG_CONFIG) --libs libarchive)
+S3_LIBS ?= -lcurl -lxml2 -lcrypto -lrandombytes
+ARCHIVE_LIBS ?= -larchive
 
 S3_SOURCES = s3_client.c s3_config.c s3_error.c s3_log.c s3_result.c s3_memory.c s3_request.c s3_response.c s3_object_properties.c s3_url.c s3_uri_encode.c \
 	s3_headers.c s3_xml.c s3_retry.c s3_trace.c s3_bucket.c s3_bucket_list.c s3_bucket_acl.c \
@@ -48,9 +46,7 @@ C_SOURCES = $(S3_SOURCES) $(S3AR_SOURCES) main.c main_s3ar_put.c main_s3ar_get.c
 	tests/transform_restore_probe.c examples/s3_client.c
 PUBLIC_HEADERS = s3.h s3_log.h log.h
 
-.PHONY: all clean format-check install test check-library install-libs check-symbols FORCE
-
-FORCE:
+.PHONY: all clean format-check install test install-libs
 
 all: s3ar libs3.a liblog.a $(LINKS)
 
@@ -105,50 +101,11 @@ test-put-cancel: $(TEST_PUT_CANCEL_OBJECTS) libs3.a liblog.a
 		-Wl,--wrap=malloc -o $@ \
 		$(TEST_PUT_CANCEL_OBJECTS) libs3.a liblog.a $(S3_LIBS)
 
-s3ar-log.pc: FORCE
-	printf '%s\n' \
-		'prefix=$(PREFIX)' \
-		'libdir=$(LIBDIR)' \
-		'includedir=$${prefix}/include' \
-		'archivedir=$${libdir}/s3ar' \
-		'' 'Name: s3ar-log' \
-		'Description: logging support for s3ar libraries' \
-		'Version: 0.1' \
-		'Libs: $${archivedir}/liblog.a' \
-		'Cflags: -I$${includedir}' > $@
-
-s3ar-s3.pc: FORCE
-	printf '%s\n' \
-		'prefix=$(PREFIX)' \
-		'libdir=$(LIBDIR)' \
-		'includedir=$${prefix}/include' \
-		'archivedir=$${libdir}/s3ar' \
-		'' 'Name: s3ar-s3' \
-		'Description: S3 client library used by s3ar' \
-		'Version: 0.1' \
-		'Requires.private: s3ar-log libcurl >= 8.19.0 libxml-2.0 libcrypto' \
-		'Libs: $${archivedir}/libs3.a' \
-		'Libs.private: -lrandombytes' \
-		'Cflags: -I$${includedir}' > $@
-
-check-symbols: libs3.a liblog.a
-	python3 tests/check_archive_symbols.py libs3.a liblog.a
-
-check-library: libs3.a liblog.a s3ar-s3.pc s3ar-log.pc
-	$(MAKE) install-libs DESTDIR=$(CURDIR)/.library-check
-	$(CC) $(CFLAGS) -o .library-check/s3-client examples/s3_client.c \
-		$$(PKG_CONFIG_PATH=$(CURDIR)/.library-check$(PKGCONFIGDIR) \
-		$(PKG_CONFIG) --define-variable=prefix=$(CURDIR)/.library-check$(PREFIX) \
-		--define-variable=libdir=$(CURDIR)/.library-check$(LIBDIR) \
-		--static --cflags --libs s3ar-s3)
-	./.library-check/s3-client
-	$(MAKE) check-symbols
-
 %.o: %.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c -o $@ $<
 
 test: CFLAGS += -Werror
-test: all test-error test-get-retry test-headers-alloc test-uri-encode test-log-signal test-delete-batch test-signal-io test-put-cancel test-transform test-transform-restore check-library
+test: all test-error test-get-retry test-headers-alloc test-uri-encode test-log-signal test-delete-batch test-signal-io test-put-cancel test-transform test-transform-restore
 	./test-error
 	./test-headers-alloc
 	./test-uri-encode
@@ -164,11 +121,10 @@ format-check:
 		s3_internal.h s3_xml.h s3ar.h s3ar_io.h s3ar_config.h \
 		s3ar_log.h s3ar_interrupt.h s3ar_transform.h fsyncfile.h main.h sig.h
 
-install-libs: libs3.a liblog.a s3ar-s3.pc s3ar-log.pc
-	install -d $(DESTDIR)$(LIBDIR)/s3ar $(DESTDIR)$(PKGCONFIGDIR) \
+install-libs: libs3.a liblog.a
+	install -d $(DESTDIR)$(LIBDIR)/s3ar \
 		$(DESTDIR)$(PREFIX)/include/s3ar
 	install -m 0644 libs3.a liblog.a $(DESTDIR)$(LIBDIR)/s3ar/
-	install -m 0644 s3ar-s3.pc s3ar-log.pc $(DESTDIR)$(PKGCONFIGDIR)/
 	install -m 0644 $(PUBLIC_HEADERS) $(DESTDIR)$(PREFIX)/include/s3ar/
 
 install: all install-libs
@@ -181,9 +137,8 @@ install: all install-libs
 		$(DESTDIR)$(PREFIX)/share/man/man1/
 
 clean:
-	rm -f -- s3ar $(LINKS) libs3.a liblog.a s3ar-s3.pc s3ar-log.pc test-error test-get-retry test-headers-alloc test-uri-encode test-log-signal test-delete-batch test-signal-io test-put-cancel test-transform test-transform-restore $(OBJECTS) \
+	rm -f -- s3ar $(LINKS) libs3.a liblog.a test-error test-get-retry test-headers-alloc test-uri-encode test-log-signal test-delete-batch test-signal-io test-put-cancel test-transform test-transform-restore $(OBJECTS) \
 		$(DEPENDENCIES)
 	rm -rf -- __pycache__ tests/__pycache__ .pytest_cache
-	rm -rf -- .library-check
 
 -include $(DEPENDENCIES)

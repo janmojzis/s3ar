@@ -15,7 +15,7 @@ libcurl 8.19.0 or newer is required; use `make install PREFIX=/path` to
 choose another installation directory.
 
 ```sh
-sudo apt install build-essential libarchive-dev libcurl4-openssl-dev librandombytes-dev libssl-dev libxml2-dev pkgconf
+sudo apt install build-essential libarchive-dev libcurl4-openssl-dev librandombytes-dev libssl-dev libxml2-dev
 make
 sudo make install
 ```
