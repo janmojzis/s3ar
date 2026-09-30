@@ -1,0 +1,61 @@
+.TH S3AR-DELETE 1 "September 2026" "s3ar" "User Commands"
+.SH NAME
+s3ar-delete \- delete S3 objects and buckets
+.SH SYNOPSIS
+.B s3ar-delete
+.RB [ \-v | \-vv | \-vvv ]
+.RB [ \-n | \-\-dry-run ]
+.I s3://[BUCKET[/KEY]]
+.SH DESCRIPTION
+.B s3ar-delete
+lists and deletes matching resources in one pass, without prompting for
+confirmation.
+It permanently removes object versions and delete markers, aborts matching
+multipart uploads, and removes selected buckets after they are empty.
+.PP
+.B s3://
+selects every bucket visible to the configured credentials.
+.B s3://BUCKET
+and
+.B s3://BUCKET/
+select one entire bucket.
+.B s3://BUCKET/KEY
+selects only the exact object key.
+.B s3://BUCKET/PREFIX/
+selects keys beginning with PREFIX/ and keeps the bucket.
+For example, 
+.B s3://photos/photo
+does not select photo1 or photo/a, while
+.B s3://photos/photo/
+selects photo/a but not photo or photo1.
+.PP
+Deletion stops on the first S3 error. Objects protected by retention or legal
+hold cannot be deleted until their protection is removed. Objects added while
+the command runs may remain, so the operation is not an atomic snapshot.
+.SH OPTIONS
+.TP
+.BR \-v ", " \-\-verbose
+Show each matching resource. Repeat twice for debug messages or three times
+for S3 request tracing. A summary is printed without verbosity. Send
+.B SIGUSR1
+to increase verbosity while running, or
+.B SIGUSR2
+to decrease it.
+.TP
+.BR \-n ", " \-\-dry-run
+List resources that would be deleted without changing S3.
+.TP
+.BR \-h ", " \-\-help
+Display command usage and exit.
+.SH EXIT STATUS
+.TP
+.B 0
+Completed successfully, or dry run completed.
+.TP
+.B 2
+A fatal error occurred, including invalid arguments, a configuration error,
+or an S3 failure.
+.SH SEE ALSO
+.BR s3ar (1),
+.BR s3ar-get (1),
+.BR s3ar-put (1)

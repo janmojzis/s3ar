@@ -1,0 +1,41 @@
+.TH S3AR-LIST 1 "September 2026" "S3 Archiver" "User Commands"
+.SH NAME
+s3ar-list \- list live S3 buckets and objects
+.SH SYNOPSIS
+.B s3ar-list
+.RB [ \-v ]
+.I s3://[BUCKET[/KEY]]...
+.br
+.B s3ar-list
+.B \-b
+.RB [ \-v ]
+.B s3://
+.SH DESCRIPTION
+.B s3ar-list
+lists live S3 objects selected by one or more S3 URIs. The URI
+.B s3://
+selects all buckets and their objects. A bucket URI selects that bucket and
+its objects; a key URI selects the exact key and keys below that prefix.
+.PP
+With
+.BR \-b ,
+list bucket names only. This mode requires exactly
+.BR s3:// .
+.PP
+Listing results are written to standard output; diagnostics go to standard
+error.
+.SH OPTIONS
+.TP
+.BR \-b , " " \-\-buckets
+List buckets only.
+.TP
+.BR \-v , " " \-\-verbose
+Include object size, modification time and ETag, or bucket ACL information.
+The option may be repeated to increase diagnostic verbosity.
+.TP
+.BR \-h , " " \-\-help
+Show usage on standard error.
+.SH SEE ALSO
+.BR s3ar (1),
+.BR s3ar-get (1),
+.BR s3ar-put (1)

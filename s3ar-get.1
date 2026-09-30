@@ -1,0 +1,107 @@
+.TH S3AR-GET 1 "September 2026" "s3ar" "User Commands"
+.SH NAME
+s3ar-get \- download an S3 object
+.SH SYNOPSIS
+.B s3ar-get
+.RB [ \-v | \-vv ]
+.RB [ \-f " FILE" " [" \-t " TEMP]" ]
+.I s3://BUCKET/KEY
+.SH DESCRIPTION
+.B s3ar-get
+downloads an object to standard output, or to
+.I FILE
+when
+.B \-f
+is specified. Standard output is synchronized when it is a regular file and
+closed before success is reported. FILE is replaced atomically only after the
+download succeeds.
+Without
+.BR \-t ,
+a temporary file is created beside FILE using
+.BR mkstemp (3).
+.PP
+When an existing regular FILE has matching
+.BR user.s3ar.format ,
+.BR user.s3ar.bucket ,
+.BR user.s3ar.key ,
+and a valid
+.B user.s3ar.etag
+extended attribute, the first GET sends
+.B If-None-Match
+with that ETag. Bucket and key use the same URL encoding as the attributes in
+archives created by
+.BR s3ar (1).
+An HTTP 304 response leaves FILE unchanged. A downloaded replacement receives
+these attributes when the filesystem supports them; otherwise future calls
+download normally. The attributes do not verify local file contents.
+Successful downloads and HTTP 304 responses are reported on standard error
+as downloaded or not modified, respectively.
+.PP
+An interrupted download resumes from the first byte not yet written, using
+.B Range
+and
+.B If-Match
+to stay on the object selected by the initial response. Object properties and
+S3 user metadata must remain identical on every resumed response. A mismatch
+is deliberately treated as a protocol error instead of switching the
+in-progress download to a newer object. This conservative \(dqbetter safe than
+sorry\(dq policy prevents responses with uncertain snapshot identity from being
+combined. An existing regular
+.I FILE
+remains unchanged after such a failure. Standard output can already contain
+bytes written before the failure.
+.PP
+.B \-f \-
+selects standard output explicitly.
+.SH OPTIONS
+.TP
+.BI \-f " FILE"
+Write data to FILE instead of standard output.
+.IP
+FILE is replaced atomically after a successful download. The new file uses
+mode 0600 modified by the current umask. An existing FILE must be a regular
+file; devices, directories, and symbolic links are rejected.
+.TP
+.BI \-t " TEMP"
+Use TEMP as the temporary file when writing to FILE. TEMP must not exist and
+must be on the same filesystem as FILE. On success, TEMP replaces FILE
+atomically. TEMP is removed if the download fails.
+.TP
+.BR \-v , " \-vv" , " \-vvv" , " \-\-verbose"
+Increase diagnostic verbosity to info, debug, or HTTP trace. Further repetitions of
+.B \-v
+have no effect. Fatal errors are shown at every level.
+.TP
+.B \-h
+Display command usage and exit.
+.SH SIGNALS
+.TP
+.B SIGUSR1
+Increase diagnostic verbosity by one level, up to trace.
+.TP
+.B SIGUSR2
+Decrease diagnostic verbosity by one level, down to fatal.
+.SH ENVIRONMENT
+.BR S3AR_ENDPOINT ,
+.BR S3AR_REGION ,
+.BR S3AR_URI_STYLE ,
+.BR S3AR_ACCESS_KEY ,
+.BR S3AR_SECRET_KEY ,
+and
+.B S3AR_SESSION_TOKEN
+configure the S3 connection in the same way as for
+.BR s3ar (1).
+.SH EXIT STATUS
+.TP
+.B 0
+The download or help completed successfully.
+.TP
+.B 2
+A fatal error occurred, including an invalid command line, S3 configuration,
+download failure, or output-file failure.
+.PP
+When an S3 operation fails after a retry, the diagnostic includes the number
+of attempts.
+.SH SEE ALSO
+.BR s3ar-put (1),
+.BR s3ar (1)
