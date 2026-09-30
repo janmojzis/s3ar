@@ -15,7 +15,7 @@ s3ar \- create tar archives from S3 and extract them back to S3
 .RB [ \-\-zstd ]
 .RB [ \-\-transform " EXPR" ]
 .RB [ \-f " TARFILE" ]
-.RI [ S3... ]
+.I S3...
 .br
 .B s3ar
 .RB ( \-t | \-\-list )
@@ -124,9 +124,10 @@ an object more than once, it is stored once for each match. Each operand also
 stores its bucket directory entry, including repeated bucket entries.
 .TP
 .BR \-x ", " \-\-extract ", " \-\-get
-Restore a tar archive to S3. With no S3 URI, the whole archive is restored.
-One or more URIs limit extraction to matching entries; overlapping matches do
-not upload an entry more than once.
+Restore a tar archive to S3. At least one S3 URI is required. Use
+.B s3://
+to restore the whole archive. Other URIs limit extraction to matching entries;
+overlapping matches do not upload an entry more than once.
 .TP
 .BR \-t ", " \-\-list
 List archived objects without connecting to S3. With no S3 URI, all objects
@@ -204,7 +205,7 @@ For example:
 .PP
 .nf
 s3ar \-tf archive.tar \-\-transform='s|^uploads/|test/|'
-s3ar \-xvf archive.tar \-\-transform='s|^uploads/|test/|'
+s3ar \-xvf archive.tar s3://test \-\-transform='s|^uploads/|test/|'
 .fi
 .TP
 .BR \-v ", " \-\-verbose
@@ -452,12 +453,14 @@ can collide with a prefix such as
 .BR a/b .
 Use s3ar to restore archives to S3.
 .SH EXTRACTING ARCHIVES
-Without an S3 URI,
-.B \-\-extract
-restores the whole archive:
+At least one S3 URI is required for
+.BR \-\-extract ;
+use
+.B s3://
+to restore the whole archive:
 .PP
 .nf
-s3ar \-x \-f media.tar
+s3ar \-x \-f media.tar s3://
 .fi
 .PP
 To restore only part of the archive, use the URI syntax described in

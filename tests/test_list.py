@@ -17,16 +17,28 @@ def run(executable, *arguments, cwd=None, env=None):
 
 
 def test_gnu_tar_operation_aliases_are_recognized(executable):
-    for option in ("--create",):
+    for option in ("--create", "--extract", "--get"):
         result = run(executable, option)
         assert result.returncode == 2
         assert "requires at least one S3 operand" in result.stderr
         assert "unknown option" not in result.stderr
 
-    for option in ("--extract", "--get"):
-        result = run(executable, option)
-        assert result.returncode == 2
-        assert "unknown option" not in result.stderr
+
+@pytest.mark.parametrize("option", ["-x", "--extract", "--get"])
+@pytest.mark.parametrize(
+    "archive_args", [[], ["-f", "/missing/archive.tar"], ["-f", "-"]]
+)
+def test_extract_requires_selection_before_reading_archive(
+    executable, option, archive_args
+):
+    result = subprocess.run(
+        [str(executable), option, *archive_args],
+        env={}, input="", text=True, capture_output=True, timeout=5,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert result.stderr == "s3ar: fatal: command requires at least one S3 operand\n"
 
 
 def test_gnu_tar_help_alias(executable):

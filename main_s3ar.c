@@ -33,7 +33,7 @@ static void usage(void) {
               "Usage: s3ar (-c | --create) [-v | --verbose] "
               "[--zstd] [-f TARFILE] S3...\n"
               "       s3ar (-x | --extract) [-v | --verbose] "
-              "[--zstd] [--transform EXPR] [-f TARFILE] [S3...]\n"
+              "[--zstd] [--transform EXPR] [-f TARFILE] S3...\n"
               "       s3ar (-t | --list) [-v | --verbose] "
               "[--zstd] [--transform EXPR] [-f TARFILE] [S3...]\n"
               "\n"
@@ -209,7 +209,9 @@ int main_s3ar(int argc, char **argv) {
         log_f1("TARFILE must be a local filesystem path or '-'");
         s3ar_die(2);
     }
-    if (config.command == S3AR_COMMAND_CREATE && argc - optind < 1) {
+    if ((config.command == S3AR_COMMAND_CREATE ||
+         config.command == S3AR_COMMAND_EXTRACT) &&
+        argc - optind < 1) {
         log_f1("command requires at least one S3 operand");
         s3ar_die(2);
     }

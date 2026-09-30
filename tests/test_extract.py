@@ -87,7 +87,7 @@ def test_extract_retries_multipart_completion(
     ]
     with FaultServer(steps) as server:
         environment = {**s3_environment, "S3AR_ENDPOINT": server.endpoint}
-        result = run(executable, "-xf", str(archive), env=environment)
+        result = run(executable, "-xf", str(archive), "s3://", env=environment)
 
     assert result.returncode == 0, result.stderr
 
@@ -150,7 +150,7 @@ def test_empty_metadata_survives_round_trip(
             "SCHILY.xattr.user.s3ar.metadata.empty"
         ] == ""
     client.delete_object(Bucket=bucket, Key="object")
-    restored = run(executable, "-x", "-f", str(archive), env=s3_environment)
+    restored = run(executable, "-x", "-f", str(archive), "s3://", env=s3_environment)
     assert restored.returncode == 0, restored.stderr
     result = client.get_object(Bucket=bucket, Key="object")
     assert result["Body"].read() == body
@@ -492,6 +492,7 @@ def test_extract_zstd_option_rejects_plain_archive(
         "--zstd",
         "-f",
         str(archive),
+        "s3://",
         env=s3_environment,
     )
 
@@ -873,7 +874,7 @@ def test_extract_multiple_filters_deduplicate_overlaps(
     assert {item["Key"] for item in second} == {"selected/c"}
 
 
-def test_extract_without_filters_restores_all_members(
+def test_extract_explicit_all_selection_restores_all_members(
     executable, s3_server, s3_environment, tmp_path
 ):
     _endpoint, client = s3_server
@@ -891,6 +892,7 @@ def test_extract_without_filters_restores_all_members(
         executable,
         "-xf",
         str(archive),
+        "s3://",
         env=s3_environment,
     )
 
