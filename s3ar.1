@@ -276,33 +276,20 @@ operation always needs an S3 URI. To select everything, pass
 .B s3://
 explicitly; omitting the operand is an error.
 .PP
-Back up everything in S3:
+Select all resources, named buckets, or prefixes:
 .PP
 .nf
+# All buckets and objects
 s3ar \-c \-f media.tar s3://
-.fi
-.PP
-The same backup, with both buckets named explicitly:
-.PP
-.nf
+
+# Two buckets
 s3ar \-c \-f media.tar s3://photos s3://videos
-.fi
-.PP
-Back up one bucket:
-.PP
-.nf
+
+# One bucket
 s3ar \-c \-f photos.tar s3://photos
-.fi
-.PP
-Back up one prefix:
-.PP
-.nf
+
+# One or two prefixes
 s3ar \-c \-f photos-2026.tar s3://photos/2026
-.fi
-.PP
-Back up two prefixes:
-.PP
-.nf
 s3ar \-c \-f media-2026.tar s3://photos/2026 s3://videos/2026
 .fi
 .PP
@@ -417,44 +404,30 @@ can collide with a prefix such as
 Use s3ar to restore archives to S3.
 .SH EXTRACTING ARCHIVES
 At least one S3 URI is required for
-.BR \-\-extract ;
-use
+.BR \-\-extract .
+Use
 .B s3://
-to restore the whole archive:
+to restore the whole archive, or select buckets and prefixes as described in
+.BR "SELECTING S3 RESOURCES" :
 .PP
 .nf
+# Whole archive
 s3ar \-x \-f media.tar s3://
-.fi
-.PP
-To restore only part of the archive, use the URI syntax described in
-.BR "SELECTING S3 RESOURCES" .
-Restore the
-.B photos
-bucket:
-.PP
-.nf
+
+# One bucket
 s3ar \-x \-f media.tar s3://photos
-.fi
-.PP
-Restore one prefix:
-.PP
-.nf
+
+# One or two prefixes
 s3ar \-x \-f media.tar s3://photos/2026
-.fi
-.PP
-Restore two prefixes:
-.PP
-.nf
 s3ar \-x \-f media.tar s3://photos/2026 s3://videos/2026
 .fi
 .PP
 Without
 .BR \-f ,
-the archive is read from standard input. Selection URIs work the same way as
-with an archive file:
+the archive is read from standard input; selection works the same way:
 .PP
 .nf
-cat media.tar | s3ar \-x s3://photos/2026
+s3ar \-x s3://photos/2026 <media.tar
 .fi
 .PP
 Bucket entries create buckets that do not exist yet. Object data is streamed
