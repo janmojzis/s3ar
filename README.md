@@ -302,38 +302,23 @@ buckets remain visible.
 
 All use the same S3 configuration as `s3ar`.
 
-Create a local tar archive from one S3 storage, then upload it to another only
-if archive creation succeeds. The local filesystem needs space for the whole
-archive:
+For example, back up the `photos` bucket as a tarball stored in S3 without
+writing an intermediate file to the local filesystem:
 
-```sh
+```bash
+set -o pipefail
+export S3AR_ACCESS_KEY='access-key2'
+export S3AR_SECRET_KEY='secret-key2'
+export S3AR_ENDPOINT='https://backup.example.net'
+
 (
   export S3AR_ACCESS_KEY='access-key1'
   export S3AR_SECRET_KEY='secret-key1'
   export S3AR_ENDPOINT='https://source.example.net'
-  s3ar -c -f photos.tar s3://photos
-) && (
-  export S3AR_ACCESS_KEY='access-key2'
-  export S3AR_SECRET_KEY='secret-key2'
-  export S3AR_ENDPOINT='https://backup.example.net'
-  s3ar-put -f photos.tar s3://backups/photos.tar
-)
-```
-
-Restore it by streaming the stored archive back into the source storage:
-
-```sh
-(
-  export S3AR_ACCESS_KEY='access-key2'
-  export S3AR_SECRET_KEY='secret-key2'
-  export S3AR_ENDPOINT='https://backup.example.net'
-  s3ar-get s3://backups/photos.tar
-) | (
-  export S3AR_ACCESS_KEY='access-key1'
-  export S3AR_SECRET_KEY='secret-key1'
-  export S3AR_ENDPOINT='https://source.example.net'
-  s3ar -x s3://photos
-)
+  s3ar -c s3://photos
+) | s3ar-put s3://backups/photos.tar.tmp &&
+s3ar-copy s3://backups/photos.tar.tmp s3://backups/photos.tar &&
+s3ar-delete s3://backups/photos.tar.tmp
 ```
 
 ## Testing with the local S3 server
