@@ -18,10 +18,10 @@ S3AR_SOURCES = main_s3ar.c s3ar_log.c s3ar_config.c s3ar_interrupt.c s3ar_create
 	s3ar_transform.c fsyncfile.c
 S3_OBJECTS = $(S3_SOURCES:.c=.o)
 S3AR_OBJECTS = $(S3AR_SOURCES:.c=.o)
-TOOL_OBJECTS = main_s3ar_put.o main_s3ar_get.o main_s3ar_delete.o main_s3ar_list.o \
+TOOL_OBJECTS = main_s3ar_put.o main_s3ar_get.o main_s3ar_delete.o main_s3ar_list.o main_s3ar_copy.o \
 	s3ar_io.o
 PROGRAM_OBJECTS = main.o $(S3AR_OBJECTS) $(TOOL_OBJECTS) sig.o
-LINKS = s3ar-put s3ar-get s3ar-delete s3ar-list
+LINKS = s3ar-put s3ar-get s3ar-delete s3ar-list s3ar-copy
 TEST_ERROR_OBJECTS = tests/test_error.o
 TEST_GET_RETRY_OBJECTS = tests/get_retry_probe.o
 TEST_HEADERS_ALLOC_OBJECTS = tests/test_headers_alloc.o
@@ -39,7 +39,7 @@ TEST_OBJECTS = $(TEST_ERROR_OBJECTS) $(TEST_GET_RETRY_OBJECTS) \
 OBJECTS = $(PROGRAM_OBJECTS) $(S3_OBJECTS) log.o $(TEST_OBJECTS)
 DEPENDENCIES = $(OBJECTS:.o=.d)
 C_SOURCES = $(S3_SOURCES) $(S3AR_SOURCES) main.c main_s3ar_put.c main_s3ar_get.c \
-	s3ar_io.c log.c sig.c main_s3ar_delete.c main_s3ar_list.c \
+	s3ar_io.c log.c sig.c main_s3ar_delete.c main_s3ar_list.c main_s3ar_copy.c \
 	tests/test_error.c tests/get_retry_probe.c tests/test_headers_alloc.c \
 	tests/test_uri_encode.c tests/test_log_signal.c tests/test_delete_batch.c \
 	tests/test_signal_io.c tests/test_put_cancel.c tests/test_transform.c \
@@ -135,7 +135,7 @@ install: all install-libs
 	for link in $(LINKS); do \
 		ln -sfn s3ar $(DESTDIR)$(PREFIX)/bin/$$link; \
 	done
-	install -m 0644 s3ar.1 s3ar-put.1 s3ar-get.1 s3ar-delete.1 s3ar-list.1 \
+	install -m 0644 s3ar.1 s3ar-put.1 s3ar-get.1 s3ar-delete.1 s3ar-list.1 s3ar-copy.1 \
 		$(DESTDIR)$(PREFIX)/share/man/man1/
 
 clean:

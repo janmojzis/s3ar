@@ -15,5 +15,6 @@ int main(int argc, char **argv) {
     if (strcmp(name, "s3ar-get") == 0) return main_s3ar_get(argc, argv);
     if (strcmp(name, "s3ar-delete") == 0) return main_s3ar_delete(argc, argv);
     if (strcmp(name, "s3ar-list") == 0) return main_s3ar_list(argc, argv);
+    if (strcmp(name, "s3ar-copy") == 0) return main_s3ar_copy(argc, argv);
     return main_s3ar(argc, argv);
 }

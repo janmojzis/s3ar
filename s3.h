@@ -297,6 +297,12 @@ s3_object_put_stream(struct s3_client *client, struct s3_error *error,
                      const struct s3_object_properties *properties,
                      s3_read_callback read_callback, void *data);
 
+/* Server-side copy. Nonempty objects use multipart UploadPartCopy. */
+enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
+                              const char *source_bucket, const char *source_key,
+                              const char *destination_bucket,
+                              const char *destination_key, size_t part_size);
+
 /* Releases metadata and HTTP properties allocated by s3_object_head(). Call
  * only for a HEAD output, never for caller-provided PUT properties. Safe for
  * a zero-initialized object or an unsuccessful HEAD output. */

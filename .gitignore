@@ -7,6 +7,7 @@
 /s3ar-put
 /s3ar-delete
 /s3ar-list
+/s3ar-copy
 /test-error
 /test-get-retry
 /test-headers-alloc

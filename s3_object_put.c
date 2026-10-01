@@ -3,6 +3,7 @@
 #include "s3_xml.h"
 
 #include <errno.h>
+#include <inttypes.h>
 #include <libxml/xmlwriter.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -87,12 +88,19 @@ add_properties_headers(struct curl_slist **headers,
     return S3_RESULT_OK;
 }
 
-static enum s3_result
-memory_request(struct s3_client *client, struct s3_error *error,
-               const char *url, const char *method, const unsigned char *body,
-               size_t body_size, const struct s3_object_properties *properties,
-               enum request_retry_mode retry_mode, bool *completion_uncertain,
-               struct s3_memory_response *output) {
+struct copy_request {
+    const char *source;
+    const char *etag;
+    const char *range;
+    const char *result_root;
+};
+
+static enum s3_result memory_request_ex(
+    struct s3_client *client, struct s3_error *error, const char *url,
+    const char *method, const unsigned char *body, size_t body_size,
+    const struct s3_object_properties *properties,
+    enum request_retry_mode retry_mode, bool *completion_uncertain,
+    struct s3_memory_response *output, const struct copy_request *copy) {
     enum s3_result result = S3_RESULT_ERROR;
     unsigned attempts = retry_mode == REQUEST_ONCE ? 1 : client->max_attempts;
     if (completion_uncertain != NULL) *completion_uncertain = false;
@@ -108,6 +116,18 @@ memory_request(struct s3_client *client, struct s3_error *error,
         if (result != S3_RESULT_OK) {
             curl_slist_free_all(headers);
             return result;
+        }
+        if (copy != NULL &&
+            (!s3_headers_add(&headers, "x-amz-copy-source", copy->source) ||
+             (copy->etag != NULL &&
+              !s3_headers_add(&headers, "x-amz-copy-source-if-match",
+                              copy->etag)) ||
+             (copy->range != NULL &&
+              !s3_headers_add(&headers, "x-amz-copy-source-range",
+                              copy->range)))) {
+            curl_slist_free_all(headers);
+            return s3_error_set(error, S3_RESULT_ERROR,
+                                "cannot prepare copy headers");
         }
         (void) snprintf(length, sizeof(length), "%zu", body_size);
         if (!s3_headers_add(&headers, "Content-Length", length)) {
@@ -152,11 +172,14 @@ memory_request(struct s3_client *client, struct s3_error *error,
         error->http_status = output->response.status;
         s3_error_parse_xml(output->response.error_body,
                            output->response.error_body_size, error);
-        if (retry_mode == REQUEST_COMPLETE && code == CURLE_OK &&
-            output->response.status >= 200 && output->response.status < 300 &&
+        if ((retry_mode == REQUEST_COMPLETE || copy != NULL) &&
+            code == CURLE_OK && output->response.status >= 200 &&
+            output->response.status < 300 &&
             output->body_error == S3_RESULT_OK) {
-            completion_succeeded = xml_has_root(
-                output->body, output->size, "CompleteMultipartUploadResult");
+            completion_succeeded =
+                xml_has_root(output->body, output->size,
+                             copy != NULL ? copy->result_root
+                                          : "CompleteMultipartUploadResult");
             if (!completion_succeeded)
                 s3_error_parse_xml(output->body, output->size, error);
         }
@@ -172,13 +195,16 @@ memory_request(struct s3_client *client, struct s3_error *error,
         }
         if (code == CURLE_OK && output->response.status >= 200 &&
             output->response.status < 300) {
-            if (retry_mode != REQUEST_COMPLETE || completion_succeeded)
+            if ((retry_mode != REQUEST_COMPLETE && copy == NULL) ||
+                completion_succeeded)
                 return S3_RESULT_OK;
             /* S3 may return an Error XML document with HTTP 200. */
             if (error->s3_code[0] == '\0') {
                 if (completion_uncertain != NULL) *completion_uncertain = true;
-                result = s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
-                                      "invalid CompleteMultipartUpload XML");
+                result = s3_error_set(
+                    error, S3_RESULT_PROTOCOL_ERROR,
+                    copy != NULL ? "invalid S3 copy response XML"
+                                 : "invalid CompleteMultipartUpload XML");
                 break;
             }
             if (!s3_retry_allowed(code, output->response.status,
@@ -188,8 +214,10 @@ memory_request(struct s3_client *client, struct s3_error *error,
                     result = S3_RESULT_PROTOCOL_ERROR;
                 }
                 else
-                    result = s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
-                                          "S3 multipart completion failed");
+                    result = s3_error_set(
+                        error, S3_RESULT_PROTOCOL_ERROR,
+                        copy != NULL ? "S3 copy failed"
+                                     : "S3 multipart completion failed");
                 break;
             }
         }
@@ -214,6 +242,17 @@ memory_request(struct s3_client *client, struct s3_error *error,
                        error);
     }
     return result;
+}
+
+static enum s3_result
+memory_request(struct s3_client *client, struct s3_error *error,
+               const char *url, const char *method, const unsigned char *body,
+               size_t body_size, const struct s3_object_properties *properties,
+               enum request_retry_mode retry_mode, bool *completion_uncertain,
+               struct s3_memory_response *output) {
+    return memory_request_ex(client, error, url, method, body, body_size,
+                             properties, retry_mode, completion_uncertain,
+                             output, NULL);
 }
 
 static enum s3_result complete_upload(struct s3_client *client,
@@ -714,5 +753,189 @@ done:
     free(encoded_upload_id);
     free(complete);
     put_response_free(&response);
+    return result;
+}
+
+enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
+                              const char *source_bucket, const char *source_key,
+                              const char *destination_bucket,
+                              const char *destination_key, size_t part_size) {
+    struct s3_object_properties properties = {0};
+    struct s3_memory_response response = {0};
+    struct copy_request copy = {0};
+    char *encoded_key = NULL, *source = NULL, *url = NULL;
+    char *upload_id = NULL, *encoded_upload_id = NULL, *complete = NULL;
+    char **etags = NULL;
+    size_t part_count = 0, complete_size = 0;
+    bool completion_uncertain = false;
+    enum s3_result result;
+
+    s3_error_clear(error);
+    if (client == NULL || error == NULL || part_size < MIN_PART_SIZE ||
+        (uint64_t) part_size > S3_MULTIPART_MAX_PART_SIZE ||
+        source_bucket == NULL || source_key == NULL ||
+        destination_bucket == NULL || destination_key == NULL)
+        return s3_error_set(error, S3_RESULT_CONFIGURATION_ERROR,
+                            "invalid CopyObject arguments");
+    result =
+        s3_url_validate_object_name(client, source_bucket, source_key, error);
+    if (result != S3_RESULT_OK) return result;
+    result = s3_url_validate_object_name(client, destination_bucket,
+                                         destination_key, error);
+    if (result != S3_RESULT_OK) return result;
+    if (strcmp(source_bucket, destination_bucket) == 0 &&
+        strcmp(source_key, destination_key) == 0)
+        return s3_error_set(error, S3_RESULT_CONFIGURATION_ERROR,
+                            "source and destination are identical");
+
+    result =
+        s3_object_head(client, error, &properties, source_bucket, source_key);
+    if (result != S3_RESULT_OK) goto done;
+    if (properties.etag[0] == '\0') {
+        result = s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
+                              "source HEAD response lacks ETag");
+        goto done;
+    }
+    if (properties.size != 0) {
+        uint64_t count =
+            properties.size / part_size + (properties.size % part_size != 0);
+        if (count > 10000) {
+            result = s3_error_set(
+                error, S3_RESULT_CONFIGURATION_ERROR,
+                "object exceeds 10000 parts; increase --multipart-size");
+            goto done;
+        }
+        part_count = (size_t) count;
+    }
+    encoded_key = s3_uri_encode_alloc(source_key, true);
+    if (encoded_key == NULL) {
+        result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
+        goto done;
+    }
+    source = malloc(strlen(source_bucket) + strlen(encoded_key) + 3);
+    if (source == NULL) {
+        result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
+        goto done;
+    }
+    (void) sprintf(source, "/%s/%s", source_bucket, encoded_key);
+    copy.source = source;
+    copy.etag = properties.etag;
+
+    if (properties.size == 0) {
+        copy.result_root = "CopyObjectResult";
+        result = s3_url_build_object(client, destination_bucket,
+                                     destination_key, NULL, &url, error);
+        if (result == S3_RESULT_OK)
+            result = memory_request_ex(client, error, url, "PUT",
+                                       (const unsigned char *) "", 0, NULL,
+                                       REQUEST_RETRY, NULL, &response, &copy);
+        goto done;
+    }
+
+    etags = calloc(part_count, sizeof(*etags));
+    if (etags == NULL) {
+        result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
+        goto done;
+    }
+    result = s3_url_build_object(client, destination_bucket, destination_key,
+                                 "uploads", &url, error);
+    if (result != S3_RESULT_OK) goto done;
+    result =
+        memory_request(client, error, url, "POST", (const unsigned char *) "",
+                       0, &properties, REQUEST_ONCE, NULL, &response);
+    if (result != S3_RESULT_OK) goto done;
+    upload_id = xml_value(response.body, response.size,
+                          "InitiateMultipartUploadResult", "UploadId");
+    if (upload_id == NULL) {
+        result = s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
+                              "invalid InitiateMultipartUpload XML");
+        goto done;
+    }
+    encoded_upload_id = s3_uri_encode_alloc(upload_id, false);
+    if (encoded_upload_id == NULL) {
+        result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
+        goto done;
+    }
+    copy.result_root = "CopyPartResult";
+    for (size_t part = 0; part < part_count; ++part) {
+        uint64_t first = (uint64_t) part * part_size;
+        uint64_t last = properties.size - first < part_size
+                            ? properties.size - 1
+                            : first + part_size - 1;
+        char range[80], query[1024];
+        (void) snprintf(range, sizeof(range), "bytes=%" PRIu64 "-%" PRIu64,
+                        first, last);
+        copy.range = properties.size > 5 * UINT64_C(1024) * 1024 ? range : NULL;
+        if (snprintf(query, sizeof(query), "partNumber=%zu&uploadId=%s",
+                     part + 1, encoded_upload_id) >= (int) sizeof(query)) {
+            result = s3_error_set(error, S3_RESULT_ERROR,
+                                  "multipart upload ID is too long");
+            goto done;
+        }
+        free(url);
+        url = NULL;
+        result = s3_url_build_object(client, destination_bucket,
+                                     destination_key, query, &url, error);
+        if (result != S3_RESULT_OK) goto done;
+        put_response_free(&response);
+        result = memory_request_ex(client, error, url, "PUT",
+                                   (const unsigned char *) "", 0, NULL,
+                                   REQUEST_RETRY, NULL, &response, &copy);
+        if (result != S3_RESULT_OK) goto done;
+        etags[part] =
+            xml_value(response.body, response.size, "CopyPartResult", "ETag");
+        if (etags[part] == NULL) {
+            result = s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
+                                  "CopyPartResult lacks ETag");
+            goto done;
+        }
+    }
+    result =
+        build_complete_xml(etags, part_count, &complete, &complete_size, error);
+    if (result != S3_RESULT_OK) goto done;
+    free(url);
+    url = NULL;
+    {
+        size_t query_size = strlen(encoded_upload_id) + 10;
+        char *query = malloc(query_size);
+        if (query == NULL) {
+            result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
+            goto done;
+        }
+        (void) snprintf(query, query_size, "uploadId=%s", encoded_upload_id);
+        result = s3_url_build_object(client, destination_bucket,
+                                     destination_key, query, &url, error);
+        free(query);
+    }
+    if (result != S3_RESULT_OK) goto done;
+    put_response_free(&response);
+    result = complete_upload(client, error, url, complete, complete_size,
+                             &completion_uncertain, &response);
+
+done:
+    if (result == S3_RESULT_PRECONDITION_FAILED)
+        (void) snprintf(error->message, sizeof(error->message),
+                        "source object changed during copy");
+    if (result != S3_RESULT_OK && encoded_upload_id != NULL &&
+        !completion_uncertain) {
+        struct s3_error saved = *error, abort_error = {0};
+        enum s3_result abort_result =
+            abort_upload(client, &abort_error, destination_bucket,
+                         destination_key, encoded_upload_id);
+        *error = saved;
+        if (abort_result != S3_RESULT_OK)
+            record_abort_failure(error, abort_result, &abort_error);
+    }
+    for (size_t i = 0; i < part_count; ++i)
+        free(etags != NULL ? etags[i] : NULL);
+    free(etags);
+    free(encoded_key);
+    free(source);
+    free(upload_id);
+    free(encoded_upload_id);
+    free(complete);
+    free(url);
+    put_response_free(&response);
+    s3_object_properties_free(&properties);
     return result;
 }

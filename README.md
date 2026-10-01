@@ -50,6 +50,16 @@ when creating a bucket that does not already exist. It defaults to
 
 ## Quick start
 
+Copy one object between buckets without downloading its data:
+
+```sh
+./s3ar-copy s3://photos/original.jpg s3://backup/original.jpg
+```
+
+The command uses multipart server-side copy for nonempty objects. Set
+`--multipart-size 64M` for large objects when the default 16M would exceed
+10,000 parts.
+
 Back up the `photos` bucket and restore it later:
 
 ```sh
@@ -286,6 +296,7 @@ buckets remain visible.
 
 - `s3ar-get`: download an object to a file or standard output.
 - `s3ar-put`: upload a file or standard input.
+- `s3ar-copy`: copy one object between buckets on the same S3 endpoint.
 - `s3ar-delete`: remove objects or buckets.
 - `s3ar-list`: list live buckets and objects.
 

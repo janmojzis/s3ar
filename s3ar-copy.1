@@ -1,0 +1,67 @@
+.TH S3AR-COPY 1 "September 2026" "s3ar" "User Commands"
+.SH NAME
+s3ar-copy \- copy one S3 object on the server
+.SH SYNOPSIS
+.B s3ar-copy
+.RB [ \-v | \-vv | \-vvv ]
+.RB [ \-\-create-bucket ]
+.RB [ \-\-multipart-size " SIZE" ]
+.I s3://SOURCE_BUCKET/SOURCE_KEY s3://DESTINATION_BUCKET/DESTINATION_KEY
+.SH DESCRIPTION
+.B s3ar-copy
+copies one object using S3 multipart copy. Object data does not pass through
+the client. An empty object uses CopyObject. An existing destination key is
+overwritten. Source and destination must differ.
+.PP
+The source is checked with HEAD. Each copied part uses the source ETag as a
+condition; if the source changes, copying stops. User metadata, content type,
+content encoding, and cache control are applied to the destination. ACL and
+server-side encryption settings are determined by the destination bucket.
+.PP
+Keys are literal, not URL-decoded. A trailing slash is part of a key. Quote
+operands containing spaces or shell metacharacters.
+.SH OPTIONS
+.TP
+.B \-\-create-bucket
+Create the destination bucket if it does not exist.
+.TP
+.BI \-\-multipart-size " SIZE"
+Set the part size. SIZE must be between 5M and 5G, inclusive, with binary
+suffix M or G. The default is 16M. At most 10,000 parts are allowed.
+.TP
+.BR \-v ", " \-\-verbose
+Increase verbosity. Repeat twice for debug messages or three times for HTTP
+trace. Further repetitions have no effect.
+.TP
+.BR \-h ", " \-\-help
+Display command usage on standard output and exit successfully.
+.SH SIGNALS
+.TP
+.B SIGUSR1
+Increase diagnostic verbosity by one level.
+.TP
+.B SIGUSR2
+Decrease diagnostic verbosity by one level.
+.SH ENVIRONMENT
+.BR S3AR_ENDPOINT ,
+.BR S3AR_REGION ,
+.BR S3AR_URI_STYLE ,
+.BR S3AR_ACCESS_KEY ,
+.BR S3AR_SECRET_KEY ,
+and
+.B S3AR_SESSION_TOKEN
+configure the S3 connection as for
+.BR s3ar (1).
+.SH EXIT STATUS
+.TP
+.B 0
+The copy or help completed successfully.
+.TP
+.B 2
+Invalid arguments, configuration error, or S3 failure.
+.SH SEE ALSO
+.BR s3ar (1),
+.BR s3ar-delete (1),
+.BR s3ar-get (1),
+.BR s3ar-list (1),
+.BR s3ar-put (1)
