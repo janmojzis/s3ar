@@ -13,7 +13,7 @@
  */
 
 #include "log.h"
-#include "s3ar_log.h"
+#include "s3_log.h"
 #include "s3.h"
 #include "s3ar.h"
 #include "main.h"
@@ -100,8 +100,6 @@ _Noreturn void s3ar_die(int status) {
 int main_s3ar(int argc, char **argv) {
     int verbosity = 0;
     log_set_name("s3ar");
-    struct s3_error s3_error;
-    enum s3_result s3_result;
     sig_ignore(SIGPIPE);
 
     /* adjust verbosity using signals */
@@ -236,16 +234,7 @@ int main_s3ar(int argc, char **argv) {
     }
 
     /* Parse environment and connect to S3. */
-    s3_result = s3ar_config_from_env(&s3_config, &s3_error);
-    if (s3_result != S3_RESULT_OK) {
-        log_f2("invalid configuration: ", s3ar_log_error(&s3_error));
-        s3ar_die(2);
-    }
-    s3_result = s3_client_open(&config.s3, &s3_error, &s3_config.client);
-    if (s3_result != S3_RESULT_OK) {
-        log_f2("unable to initialize S3 client: ", s3ar_log_error(&s3_error));
-        s3ar_die(2);
-    }
+    if (s3ar_client_open(&config.s3, &s3_config) != 0) s3ar_die(2);
 
     /* run commands */
     switch (config.command) {

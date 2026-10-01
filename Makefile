@@ -66,11 +66,11 @@ s3ar: $(PROGRAM_OBJECTS) libs3.a liblog.a
 $(LINKS): s3ar
 	ln -sfn s3ar $@
 
-test-error: $(TEST_ERROR_OBJECTS) libs3.a liblog.a s3ar_config.o
-	$(CC) $(LDFLAGS) -o $@ $(TEST_ERROR_OBJECTS) s3ar_config.o libs3.a liblog.a $(S3_LIBS)
+test-error: $(TEST_ERROR_OBJECTS) libs3.a liblog.a s3ar_config.o s3ar_log.o
+	$(CC) $(LDFLAGS) -o $@ $(TEST_ERROR_OBJECTS) s3ar_config.o s3ar_log.o libs3.a liblog.a $(S3_LIBS)
 
-test-get-retry: $(TEST_GET_RETRY_OBJECTS) libs3.a liblog.a s3ar_config.o
-	$(CC) $(LDFLAGS) -o $@ $(TEST_GET_RETRY_OBJECTS) s3ar_config.o libs3.a liblog.a \
+test-get-retry: $(TEST_GET_RETRY_OBJECTS) libs3.a liblog.a s3ar_config.o s3ar_log.o
+	$(CC) $(LDFLAGS) -o $@ $(TEST_GET_RETRY_OBJECTS) s3ar_config.o s3ar_log.o libs3.a liblog.a \
 		$(S3_LIBS)
 
 test-headers-alloc: $(TEST_HEADERS_ALLOC_OBJECTS) s3_headers.o s3_response.o s3_object_properties.o

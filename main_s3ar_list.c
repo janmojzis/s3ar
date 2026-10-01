@@ -18,8 +18,6 @@
 static struct s3ar_config list_config;
 static struct s3ar_selection_set selections;
 static struct s3ar_config_env config;
-static struct s3_error error = {0};
-static enum s3_result result;
 static int buckets;
 static int option;
 
@@ -235,16 +233,8 @@ int main_s3ar_list(int argc, char **argv) {
                "'");
 
     /* configure S3 client */
-    result = s3ar_config_from_env(&config, &error);
-    if (result != S3_RESULT_OK) {
-        log_f2("invalid configuration: ", s3ar_log_error(&error));
-        s3ar_list_exit(2);
-    }
-    result = s3_client_open(&list_config.s3, &error, &config.client);
-    if (result != S3_RESULT_OK) {
-        log_f2("unable to initialize S3 client: ", s3ar_log_error(&error));
-        s3ar_list_exit(1);
-    }
+    int status = s3ar_client_open(&list_config.s3, &config);
+    if (status != 0) s3ar_list_exit(status);
 
     /* list matching resources */
     if (buckets)

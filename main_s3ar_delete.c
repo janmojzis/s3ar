@@ -304,16 +304,7 @@ int main_s3ar_delete(int argc, char **argv) {
            s3_log_uri("s3", selection.bucket, selection.key), "'");
 
     /* configure S3 client */
-    result = s3ar_config_from_env(&config, &error);
-    if (result != S3_RESULT_OK) {
-        log_f2("invalid configuration: ", s3ar_log_error(&error));
-        die(2);
-    }
-    result = s3_client_open(&client, &error, &config.client);
-    if (result != S3_RESULT_OK) {
-        log_f2("unable to initialize S3 client: ", s3ar_log_error(&error));
-        die(2);
-    }
+    if (s3ar_client_open(&client, &config) != 0) die(2);
 
     /* collect selected buckets */
     result = s3ar_selection_buckets(client, &error, &selection, collect_bucket,

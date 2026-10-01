@@ -346,16 +346,7 @@ int main_s3ar_get(int argc, char **argv) {
     log_d3("(argument) source = '", s3_log_uri("s3", uri.bucket, uri.key), "'");
 
     /* configure S3 client */
-    result = s3ar_config_from_env(&config, &error);
-    if (result != S3_RESULT_OK) {
-        log_f2("invalid configuration: ", s3ar_log_error(&error));
-        die(2);
-    }
-    result = s3_client_open(&client, &error, &config.client);
-    if (result != S3_RESULT_OK) {
-        log_f2("unable to initialize S3 client: ", s3ar_log_error(&error));
-        die(2);
-    }
+    if (s3ar_client_open(&client, &config) != 0) die(2);
     s3ar_interrupt_bind(client, &interrupted_signal);
     result = s3_url_validate_object_name(client, uri.bucket, uri.key, &error);
     if (result != S3_RESULT_OK) {
