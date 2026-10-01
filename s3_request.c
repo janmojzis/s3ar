@@ -85,7 +85,8 @@ enum s3_result s3_request_url(struct s3_client *client, struct s3_error *error,
                               const char *request_body, char **response_body,
                               size_t *response_size) {
     struct s3_memory_response context = {0};
-    enum s3_result result;
+    enum s3_result result =
+        s3_error_set(error, S3_RESULT_ERROR, "unreachable S3 request state");
     if (response_body != NULL) *response_body = NULL;
     if (response_size != NULL) *response_size = 0;
     for (unsigned attempt = 1; attempt <= client->max_attempts; ++attempt) {
@@ -155,7 +156,9 @@ enum s3_result s3_request_url(struct s3_client *client, struct s3_error *error,
                              &context.response, error);
         if (context.body_error != S3_RESULT_OK) {
             result = s3_error_set(error, context.body_error,
-                                  "S3 XML response is too large");
+                                  context.body_error == S3_RESULT_ERROR
+                                      ? "out of memory"
+                                      : "S3 XML response is too large");
             break;
         }
         if (code == CURLE_OK && context.response.status >= 200 &&

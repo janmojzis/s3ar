@@ -420,7 +420,7 @@ static void test_bucket_list_sets_unreachable_state_error(void) {
     assert(s3_bucket_list(client, &error, accept_bucket, NULL) ==
            S3_RESULT_ERROR);
     assert(error.result == S3_RESULT_ERROR);
-    assert(strcmp(error.message, "unreachable ListBuckets state") == 0);
+    assert(strcmp(error.message, "unreachable S3 request state") == 0);
     s3_client_close(client);
 }
 

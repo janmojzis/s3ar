@@ -756,3 +756,44 @@ def test_list_live_s3_continues_after_first_page(
         f"s3://{bucket}",
         *(f"s3://{bucket}/{key}" for key in keys),
     ]
+
+
+@pytest.mark.parametrize("buckets", [False, True])
+@pytest.mark.parametrize("response", ["retry", "denied", "invalid_xml", "too_large"])
+def test_listing_http_responses(s3_environment, buckets, response):
+    from fault_server import FaultServer, ResponseStep
+
+    path = (
+        "/?max-buckets=10000" if buckets
+        else "/bucket?list-type=2&max-keys=1000&encoding-type=url"
+    )
+    valid = (
+        b"<ListAllMyBucketsResult><Buckets/></ListAllMyBucketsResult>" if buckets
+        else b"<ListBucketResult><EncodingType>url</EncodingType>"
+             b"<IsTruncated>false</IsTruncated></ListBucketResult>"
+    )
+    if response == "retry":
+        steps = [
+            ResponseStep("GET", path, 503, b"<Error><Code>SlowDown</Code></Error>"),
+            ResponseStep("GET", path, 200, valid),
+        ]
+        expected = None
+    else:
+        status, body, expected = {
+            "denied": (403, b"<Error><Code>AccessDenied</Code></Error>", "AccessDenied"),
+            "invalid_xml": (200, b"<WrongRoot/>", "invalid ListBuckets XML" if buckets
+                            else "invalid ListObjectsV2 XML"),
+            "too_large": (200, b"x" * (16 * 1024 * 1024 + 1),
+                          "S3 XML response is too large"),
+        }[response]
+        steps = [ResponseStep("GET", path, status, body)]
+    with FaultServer(steps) as server:
+        environment = {**s3_environment, "S3AR_ENDPOINT": server.endpoint}
+        arguments = ["-b", "s3://"] if buckets else ["s3://bucket"]
+        result = run(*arguments, env=environment)
+    assert result.returncode == (0 if expected is None else 2), result.stderr
+    if expected is not None:
+        assert expected in result.stderr
+    else:
+        assert result.stdout == ("" if buckets else "s3://bucket\n")
+    assert len(server.requests) == len(steps)

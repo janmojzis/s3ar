@@ -122,73 +122,14 @@ static enum s3_result fetch_bucket_page(struct s3_client *client,
                                         struct s3_error *error, const char *url,
                                         struct bucket_array *buckets,
                                         char **continuation_token) {
-    struct s3_memory_response context = {0};
+    char *body = NULL;
+    size_t size = 0;
     enum s3_result result =
-        s3_error_set(error, S3_RESULT_ERROR, "unreachable ListBuckets state");
-    for (unsigned attempt = 1; attempt <= client->max_attempts; ++attempt) {
-        struct curl_slist *headers = NULL;
-        CURLcode code;
-        char curl_error[CURL_ERROR_SIZE] = {0};
-        bool retryable;
-        s3_response_memory_reset(&context, S3_XML_BODY_LIMIT);
-        result = s3_request_prepare(client, url, &headers, error);
-        if (result != S3_RESULT_OK) {
-            curl_slist_free_all(headers);
-            break;
-        }
-        (void) curl_easy_setopt(client->curl, CURLOPT_HTTPGET, 1L);
-        (void) curl_easy_setopt(client->curl, CURLOPT_HEADERFUNCTION,
-                                s3_headers_callback);
-        (void) curl_easy_setopt(client->curl, CURLOPT_HEADERDATA,
-                                &context.response);
-        (void) curl_easy_setopt(client->curl, CURLOPT_WRITEFUNCTION,
-                                s3_response_memory_collect);
-        (void) curl_easy_setopt(client->curl, CURLOPT_WRITEDATA, &context);
-        (void) curl_easy_setopt(client->curl, CURLOPT_ERRORBUFFER, curl_error);
-        s3_trace_perform_start(client, attempt, client->max_attempts);
-        code = curl_easy_perform(client->curl);
-        (void) curl_easy_getinfo(client->curl, CURLINFO_RESPONSE_CODE,
-                                 &context.response.status);
-        curl_slist_free_all(headers);
-        s3_error_clear(error);
-        error->attempts = attempt;
-        error->http_status = context.response.status;
-        s3_error_parse_xml(context.response.error_body,
-                           context.response.error_body_size, error);
-        s3_trace_perform_end(client, attempt, client->max_attempts, code,
-                             &context.response, error);
-        if (context.body_error != S3_RESULT_OK) {
-            result = s3_error_set(error, context.body_error,
-                                  context.body_error == S3_RESULT_ERROR
-                                      ? "out of memory"
-                                      : "ListBuckets response is too large");
-            break;
-        }
-        if (code == CURLE_OK && context.response.status >= 200 &&
-            context.response.status < 300) {
-            result = parse_bucket_page(context.body, context.size, buckets,
-                                       continuation_token, error);
-            break;
-        }
-        retryable =
-            s3_retry_allowed(code, context.response.status, error->s3_code);
-        if (!retryable) {
-            result =
-                s3_result_from_response(code, &context.response, false, error);
-            if (code != CURLE_OK && curl_error[0] != '\0')
-                (void) snprintf(error->message, sizeof(error->message), "%s",
-                                curl_error);
-            break;
-        }
-        if (attempt == client->max_attempts) {
-            result = s3_error_set(error, S3_RESULT_RETRY_EXHAUSTED,
-                                  "S3 ListBuckets retry limit exhausted");
-            break;
-        }
-        s3_retry_delay(client, attempt, client->max_attempts, code,
-                       &context.response, error);
-    }
-    s3_response_memory_cleanup(&context);
+        s3_request_url(client, error, url, "GET", NULL, &body, &size);
+    if (result == S3_RESULT_OK)
+        result =
+            parse_bucket_page(body, size, buckets, continuation_token, error);
+    free(body);
     return result;
 }
 

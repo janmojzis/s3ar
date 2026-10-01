@@ -250,9 +250,9 @@ static enum s3_result fetch_page(struct s3_client *client,
                                  struct s3_error *error, const char *bucket,
                                  const char *prefix, const char *token,
                                  struct list_page *page) {
-    char *encoded_prefix = NULL, *encoded_token = NULL, *query = NULL,
-         *url = NULL;
-    struct s3_memory_response transfer = {0};
+    char *encoded_prefix = NULL, *encoded_token = NULL, *query = NULL;
+    char *body = NULL;
+    size_t size = 0;
     enum s3_result result;
     size_t query_size;
     if (prefix != NULL && prefix[0] != '\0')
@@ -276,71 +276,14 @@ static enum s3_result fetch_page(struct s3_client *client,
                     encoded_prefix != NULL ? encoded_prefix : "",
                     encoded_token != NULL ? "&continuation-token=" : "",
                     encoded_token != NULL ? encoded_token : "");
-    result = s3_url_build_bucket(client, bucket, query, &url, error);
-    if (result != S3_RESULT_OK) goto done;
-    for (unsigned attempt = 1; attempt <= client->max_attempts; ++attempt) {
-        struct curl_slist *headers = NULL;
-        CURLcode code;
-        char curl_error[CURL_ERROR_SIZE] = {0};
-        s3_response_memory_reset(&transfer, S3_XML_BODY_LIMIT);
-        result = s3_request_prepare(client, url, &headers, error);
-        if (result != S3_RESULT_OK) {
-            curl_slist_free_all(headers);
-            break;
-        }
-        (void) curl_easy_setopt(client->curl, CURLOPT_HTTPGET, 1L);
-        (void) curl_easy_setopt(client->curl, CURLOPT_HEADERFUNCTION,
-                                s3_headers_callback);
-        (void) curl_easy_setopt(client->curl, CURLOPT_HEADERDATA,
-                                &transfer.response);
-        (void) curl_easy_setopt(client->curl, CURLOPT_WRITEFUNCTION,
-                                s3_response_memory_collect);
-        (void) curl_easy_setopt(client->curl, CURLOPT_WRITEDATA, &transfer);
-        (void) curl_easy_setopt(client->curl, CURLOPT_ERRORBUFFER, curl_error);
-        s3_trace_perform_start(client, attempt, client->max_attempts);
-        code = curl_easy_perform(client->curl);
-        (void) curl_easy_getinfo(client->curl, CURLINFO_RESPONSE_CODE,
-                                 &transfer.response.status);
-        curl_slist_free_all(headers);
-        s3_error_clear(error);
-        error->attempts = attempt;
-        error->http_status = transfer.response.status;
-        s3_error_parse_xml(transfer.response.error_body,
-                           transfer.response.error_body_size, error);
-        s3_trace_perform_end(client, attempt, client->max_attempts, code,
-                             &transfer.response, error);
-        if (transfer.body_error != S3_RESULT_OK) {
-            result = s3_error_set(error, transfer.body_error,
-                                  "ListObjectsV2 response is too large");
-            break;
-        }
-        if (code == CURLE_OK && transfer.response.status >= 200 &&
-            transfer.response.status < 300) {
-            result = parse_page(transfer.body, transfer.size, page, error);
-            break;
-        }
-        if (!s3_retry_allowed(code, transfer.response.status, error->s3_code)) {
-            result =
-                s3_result_from_response(code, &transfer.response, false, error);
-            if (code != CURLE_OK && curl_error[0] != '\0')
-                (void) snprintf(error->message, sizeof(error->message), "%s",
-                                curl_error);
-            break;
-        }
-        if (attempt == client->max_attempts) {
-            result = s3_error_set(error, S3_RESULT_RETRY_EXHAUSTED,
-                                  "S3 ListObjectsV2 retry limit exhausted");
-            break;
-        }
-        s3_retry_delay(client, attempt, client->max_attempts, code,
-                       &transfer.response, error);
-    }
+    result = s3_request_bucket(client, error, bucket, query, "GET", NULL, &body,
+                               &size);
+    if (result == S3_RESULT_OK) result = parse_page(body, size, page, error);
 done:
     free(encoded_prefix);
     free(encoded_token);
     free(query);
-    free(url);
-    s3_response_memory_cleanup(&transfer);
+    free(body);
     return result;
 }
 
