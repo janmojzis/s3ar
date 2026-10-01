@@ -291,19 +291,21 @@ buckets remain visible.
 
 All use the same S3 configuration as `s3ar`.
 
-Stream a tar archive from one S3 storage directly into an object on another:
+Create a local tar archive from one S3 storage, then upload it to another only
+if archive creation succeeds. The local filesystem needs space for the whole
+archive:
 
 ```sh
 (
   export S3AR_ACCESS_KEY='access-key1'
   export S3AR_SECRET_KEY='secret-key1'
   export S3AR_ENDPOINT='https://source.example.net'
-  s3ar -c s3://photos
-) | (
+  s3ar -c -f photos.tar s3://photos
+) && (
   export S3AR_ACCESS_KEY='access-key2'
   export S3AR_SECRET_KEY='secret-key2'
   export S3AR_ENDPOINT='https://backup.example.net'
-  s3ar-put s3://backups/photos.tar
+  s3ar-put -f photos.tar s3://backups/photos.tar
 )
 ```
 
