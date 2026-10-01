@@ -36,6 +36,40 @@ def test_copy_object(s3_server, s3_environment, size):
     assert response["Metadata"] == {"origin": "test"}
 
 
+@pytest.mark.parametrize("size", [0, 3])
+def test_copy_encodes_source_bucket(s3_environment, size):
+    source = "/copy%252Fsource%20%3F%23/folder/a%20b%25%3F"
+    base = "/copy-destination/key"
+    copy_headers = (("x-amz-copy-source", source),
+                    ("x-amz-copy-source-if-match", '"source"'))
+    steps = [
+        ResponseStep("HEAD", source, 200,
+                     headers=(("Content-Length", str(size)),
+                              ("ETag", '"source"'))),
+    ]
+    if size == 0:
+        steps.append(ResponseStep("PUT", base, 200, b"<CopyObjectResult/>",
+                                  expected_headers=copy_headers))
+    else:
+        steps.extend([
+            ResponseStep("POST", base + "?uploads", 200,
+                         b"<InitiateMultipartUploadResult><UploadId>test-upload"
+                         b"</UploadId></InitiateMultipartUploadResult>"),
+            ResponseStep("PUT", base + "?partNumber=1&uploadId=test-upload",
+                         200, b'<CopyPartResult><ETag>"part"</ETag></CopyPartResult>',
+                         expected_headers=copy_headers),
+            ResponseStep("POST", base + "?uploadId=test-upload", 200,
+                         b"<CompleteMultipartUploadResult/>"),
+        ])
+    with FaultServer(steps) as server:
+        result = run_copy(
+            {**s3_environment, "S3AR_ENDPOINT": server.endpoint,
+             "S3AR_URI_STYLE": "path"},
+            source="s3://copy%2Fsource ?#/folder/a b%?",
+        )
+        assert result.returncode == 0, result.stderr.decode()
+
+
 def test_copy_rejects_same_identity_before_network(s3_environment):
     result = run_copy(s3_environment, destination="s3://copy-source/key")
     assert result.returncode == 2

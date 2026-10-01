@@ -763,7 +763,8 @@ enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
     struct s3_object_properties properties = {0};
     struct s3_memory_response response = {0};
     struct copy_request copy = {0};
-    char *encoded_key = NULL, *source = NULL, *url = NULL;
+    char *encoded_bucket = NULL, *encoded_key = NULL;
+    char *source = NULL, *url = NULL;
     char *upload_id = NULL, *encoded_upload_id = NULL, *complete = NULL;
     char **etags = NULL;
     size_t part_count = 0, complete_size = 0;
@@ -807,17 +808,18 @@ enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
         }
         part_count = (size_t) count;
     }
+    encoded_bucket = s3_uri_encode_alloc(source_bucket, false);
     encoded_key = s3_uri_encode_alloc(source_key, true);
-    if (encoded_key == NULL) {
+    if (encoded_bucket == NULL || encoded_key == NULL) {
         result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
         goto done;
     }
-    source = malloc(strlen(source_bucket) + strlen(encoded_key) + 3);
+    source = malloc(strlen(encoded_bucket) + strlen(encoded_key) + 3);
     if (source == NULL) {
         result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
         goto done;
     }
-    (void) sprintf(source, "/%s/%s", source_bucket, encoded_key);
+    (void) sprintf(source, "/%s/%s", encoded_bucket, encoded_key);
     copy.source = source;
     copy.etag = properties.etag;
 
@@ -929,6 +931,7 @@ done:
     for (size_t i = 0; i < part_count; ++i)
         free(etags != NULL ? etags[i] : NULL);
     free(etags);
+    free(encoded_bucket);
     free(encoded_key);
     free(source);
     free(upload_id);
