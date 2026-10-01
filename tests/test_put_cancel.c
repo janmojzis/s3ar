@@ -13,7 +13,7 @@ static struct {
     struct s3_memory_response *response;
     bool cancelled;
     bool during_transfer;
-    bool abort_fails;
+    unsigned abort_status;
     unsigned reads;
     unsigned requests;
     unsigned aborts;
@@ -85,8 +85,8 @@ CURLcode __wrap_curl_easy_perform(CURL *curl) {
         assert(scenario.cancelled);
         assert(scenario.client->cancel_callback == NULL);
         ++scenario.aborts;
-        response->response.status = scenario.abort_fails ? 403 : 204;
-        if (scenario.abort_fails) {
+        response->response.status = scenario.abort_status;
+        if (scenario.abort_status == 403) {
             const char *body = "<Error><Code>AccessDenied</Code>"
                                "<Message>Abort denied.</Message></Error>";
             assert(s3_response_memory_collect((char *) body, 1, strlen(body),
@@ -114,10 +114,10 @@ static enum s3_read_result read_input(void *data, unsigned char *buffer,
 }
 
 static void test_cancelled_put(bool stream, bool during_transfer,
-                               bool abort_fails) {
+                               unsigned abort_status) {
     memset(&scenario, 0, sizeof(scenario));
     scenario.during_transfer = during_transfer;
-    scenario.abort_fails = abort_fails;
+    scenario.abort_status = abort_status;
     struct s3_client_config config;
     struct s3_error error = {0};
     s3_config_init(&config);
@@ -142,8 +142,8 @@ static void test_cancelled_put(bool stream, bool during_transfer,
     if (!during_transfer) assert(error.callback_errno == EINTR);
     assert(scenario.aborts == 1 && scenario.requests == 3);
     assert((strstr(error.message, "multipart abort failed") != NULL) ==
-           abort_fails);
-    if (abort_fails)
+           (abort_status == 403));
+    if (abort_status == 403)
         assert(strstr(error.message, "Abort denied.") != NULL);
     else if (!during_transfer)
         assert(strcmp(error.message, "input callback failed") == 0);
@@ -197,9 +197,12 @@ static void test_put_size_limit(void) {
 
 int main(void) {
     test_put_size_limit();
+    const unsigned abort_statuses[] = {204, 404, 403};
     for (unsigned stream = 0; stream < 2; ++stream)
         for (unsigned transfer = 0; transfer < 2; ++transfer)
-            for (unsigned failure = 0; failure < 2; ++failure)
-                test_cancelled_put(stream != 0, transfer != 0, failure != 0);
+            for (size_t i = 0;
+                 i < sizeof(abort_statuses) / sizeof(abort_statuses[0]); ++i)
+                test_cancelled_put(stream != 0, transfer != 0,
+                                   abort_statuses[i]);
     return 0;
 }

@@ -248,7 +248,12 @@ def test_copy_small_object_omits_range(s3_environment):
         assert result.returncode == 0, result.stderr.decode()
 
 
-def test_copy_source_change_aborts(s3_environment):
+@pytest.mark.parametrize("abort_status,abort_body", [
+    (204, b""),
+    (404, b"<Error><Code>NoSuchUpload</Code></Error>"),
+    (403, b"<Error><Code>AccessDenied</Code><Message>Abort denied.</Message></Error>"),
+])
+def test_copy_source_change_aborts(s3_environment, abort_status, abort_body):
     initiate = (b"<InitiateMultipartUploadResult><UploadId>test-upload"
                 b"</UploadId></InitiateMultipartUploadResult>")
     steps = [
@@ -258,12 +263,16 @@ def test_copy_source_change_aborts(s3_environment):
         ResponseStep("POST", "/copy-destination/key?uploads", 200, initiate),
         ResponseStep("PUT", "/copy-destination/key?partNumber=1&uploadId=test-upload",
                      412, b"<Error><Code>PreconditionFailed</Code></Error>"),
-        ResponseStep("DELETE", "/copy-destination/key?uploadId=test-upload", 204),
+        ResponseStep("DELETE", "/copy-destination/key?uploadId=test-upload",
+                     abort_status, abort_body),
     ]
     with FaultServer(steps) as server:
         result = run_copy({**s3_environment, "S3AR_ENDPOINT": server.endpoint})
         assert result.returncode == 2
         assert b"source object changed" in result.stderr
+        assert (b"multipart abort failed" in result.stderr) == (abort_status == 403)
+        if abort_status == 403:
+            assert b"Abort denied." in result.stderr
 
 
 def test_copy_rejects_more_than_10000_parts_before_upload(s3_environment):

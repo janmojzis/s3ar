@@ -564,17 +564,27 @@ static enum s3_result abort_upload(struct s3_client *client,
     return result;
 }
 
-static void record_abort_failure(struct s3_error *error,
-                                 enum s3_result abort_result,
-                                 const struct s3_error *abort_error) {
+static void cleanup_failed_upload(struct s3_client *client,
+                                  struct s3_error *error, const char *bucket,
+                                  const char *key,
+                                  const char *encoded_upload_id,
+                                  enum s3_result result,
+                                  bool completion_uncertain) {
+    if (result == S3_RESULT_OK || encoded_upload_id == NULL ||
+        completion_uncertain)
+        return;
+    struct s3_error abort_error = {0};
+    enum s3_result abort_result =
+        abort_upload(client, &abort_error, bucket, key, encoded_upload_id);
+    if (abort_result == S3_RESULT_OK) return;
     char original[sizeof(error->message)];
     (void) snprintf(original, sizeof(original), "%s", error->message);
     (void) snprintf(error->message, sizeof(error->message),
                     "multipart abort failed: %.32s%s%.80s; original error: "
                     "%.80s",
                     s3_result_name(abort_result),
-                    abort_error->message[0] != '\0' ? ": " : "",
-                    abort_error->message, original);
+                    abort_error.message[0] != '\0' ? ": " : "",
+                    abort_error.message, original);
 }
 
 enum s3_result s3_object_put(struct s3_client *client, struct s3_error *error,
@@ -646,16 +656,8 @@ enum s3_result s3_object_put(struct s3_client *client, struct s3_error *error,
         result = complete_upload(client, error, bucket, key, encoded_upload_id,
                                  etags, part_count, &completion_uncertain);
     multipart_done:
-        if (result != S3_RESULT_OK && encoded_upload_id != NULL &&
-            !completion_uncertain) {
-            struct s3_error saved = *error;
-            struct s3_error abort_error = {0};
-            enum s3_result abort_result = abort_upload(
-                client, &abort_error, bucket, key, encoded_upload_id);
-            *error = saved;
-            if (abort_result != S3_RESULT_OK)
-                record_abort_failure(error, abort_result, &abort_error);
-        }
+        cleanup_failed_upload(client, error, bucket, key, encoded_upload_id,
+                              result, completion_uncertain);
         for (size_t i = 0; i < part_count; ++i)
             free(etags != NULL ? etags[i] : NULL);
         free(etags);
@@ -719,16 +721,8 @@ s3_object_put_stream(struct s3_client *client, struct s3_error *error,
                              etags, etag_count, &completion_uncertain);
 
 done:
-    if (result != S3_RESULT_OK && encoded_upload_id != NULL &&
-        !completion_uncertain) {
-        struct s3_error saved = *error;
-        struct s3_error abort_error = {0};
-        enum s3_result abort_result =
-            abort_upload(client, &abort_error, bucket, key, encoded_upload_id);
-        *error = saved;
-        if (abort_result != S3_RESULT_OK)
-            record_abort_failure(error, abort_result, &abort_error);
-    }
+    cleanup_failed_upload(client, error, bucket, key, encoded_upload_id, result,
+                          completion_uncertain);
     for (size_t i = 0; i < etag_count; ++i) free(etags[i]);
     free(etags);
     free(buffer);
@@ -922,16 +916,8 @@ done:
     if (result == S3_RESULT_PRECONDITION_FAILED)
         (void) snprintf(error->message, sizeof(error->message),
                         "source object changed during copy");
-    if (result != S3_RESULT_OK && encoded_upload_id != NULL &&
-        !completion_uncertain) {
-        struct s3_error saved = *error, abort_error = {0};
-        enum s3_result abort_result =
-            abort_upload(client, &abort_error, destination_bucket,
-                         destination_key, encoded_upload_id);
-        *error = saved;
-        if (abort_result != S3_RESULT_OK)
-            record_abort_failure(error, abort_result, &abort_error);
-    }
+    cleanup_failed_upload(client, error, destination_bucket, destination_key,
+                          encoded_upload_id, result, completion_uncertain);
     for (size_t i = 0; i < part_count; ++i)
         free(etags != NULL ? etags[i] : NULL);
     free(etags);
