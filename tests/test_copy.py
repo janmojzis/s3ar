@@ -271,3 +271,44 @@ def test_copy_rejects_more_than_10000_parts_before_upload(s3_environment):
                           "--multipart-size", "5M")
         assert result.returncode == 2
         assert b"increase --multipart-size" in result.stderr
+
+
+@pytest.mark.parametrize("outcome", ["success", "denied", "uncertain"])
+def test_copy_multipart_completion_with_encoded_upload_id(s3_environment, outcome):
+    close = (("Connection", "close"),)
+    base = "/copy-destination/key"
+    upload_path = base + "?uploadId=copy%2B%2F%25%3D%26id"
+    steps = [
+        ResponseStep("HEAD", "/copy-source/key", 200,
+                     headers=close + (("Content-Length", "3"), ("ETag", '"source"'))),
+        empty_tags_step(),
+        ResponseStep("POST", base + "?uploads", 200,
+                     b"<InitiateMultipartUploadResult><UploadId>copy+/%=&amp;id"
+                     b"</UploadId></InitiateMultipartUploadResult>", close),
+        ResponseStep("PUT", base + "?partNumber=1&uploadId=copy%2B%2F%25%3D%26id",
+                     200, b'<CopyPartResult><ETag>"part"</ETag></CopyPartResult>', close),
+    ]
+    if outcome == "uncertain":
+        steps.extend([
+            ResponseStep("POST", upload_path, 200,
+                         b"<CompleteMultipartUploadResult/>", close, disconnect_after=0),
+            ResponseStep("POST", upload_path, 404,
+                         b"<Error><Code>NoSuchUpload</Code></Error>", close),
+        ])
+    elif outcome == "denied":
+        steps.extend([
+            ResponseStep("POST", upload_path, 200,
+                         b"<Error><Code>AccessDenied</Code></Error>", close),
+            ResponseStep("DELETE", upload_path, 204, headers=close),
+        ])
+    else:
+        steps.append(ResponseStep("POST", upload_path, 200,
+                                  b"<CompleteMultipartUploadResult/>", close))
+    with FaultServer(steps) as server:
+        result = run_copy({**s3_environment, "S3AR_ENDPOINT": server.endpoint})
+
+    assert result.returncode == (0 if outcome == "success" else 2), result.stderr
+    if outcome == "uncertain":
+        assert b"completion outcome uncertain" in result.stderr
+    elif outcome == "denied":
+        assert b"AccessDenied" in result.stderr

@@ -273,21 +273,6 @@ memory_request(struct s3_client *client, struct s3_error *error,
                              output, NULL, NULL);
 }
 
-static enum s3_result complete_upload(struct s3_client *client,
-                                      struct s3_error *error, const char *url,
-                                      const char *body, size_t body_size,
-                                      bool *uncertain,
-                                      struct s3_memory_response *response) {
-    enum s3_result result = memory_request(
-        client, error, url, "POST", (const unsigned char *) body, body_size,
-        &xml_properties, REQUEST_COMPLETE, uncertain, response);
-    if (result != S3_RESULT_OK && *uncertain)
-        return s3_error_set(error, S3_RESULT_ERROR,
-                            "multipart completion outcome uncertain; object "
-                            "may have been created");
-    return result;
-}
-
 static enum s3_result fill_buffer(unsigned char *buffer, size_t wanted,
                                   s3_read_callback callback, void *data,
                                   struct s3_error *error) {
@@ -440,6 +425,74 @@ static void put_response_free(struct s3_memory_response *response) {
     s3_response_memory_cleanup(response);
 }
 
+static enum s3_result
+initiate_upload(struct s3_client *client, struct s3_error *error,
+                const char *bucket, const char *key,
+                const struct s3_object_properties *properties,
+                const char *tagging, char **encoded_upload_id) {
+    char *url = NULL, *upload_id = NULL;
+    struct s3_memory_response response = {0};
+    enum s3_result result =
+        s3_url_build_object(client, bucket, key, "uploads", &url, error);
+    *encoded_upload_id = NULL;
+    if (result != S3_RESULT_OK) goto done;
+    result = memory_request_ex(client, error, url, "POST",
+                               (const unsigned char *) "", 0, properties,
+                               REQUEST_ONCE, NULL, &response, NULL, tagging);
+    if (result != S3_RESULT_OK) goto done;
+    upload_id = xml_value(response.body, response.size,
+                          "InitiateMultipartUploadResult", "UploadId");
+    if (upload_id == NULL) {
+        result = s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
+                              "invalid InitiateMultipartUpload XML");
+        goto done;
+    }
+    *encoded_upload_id = s3_uri_encode_alloc(upload_id, false);
+    if (*encoded_upload_id == NULL)
+        result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
+done:
+    free(upload_id);
+    free(url);
+    put_response_free(&response);
+    return result;
+}
+
+static enum s3_result complete_upload(struct s3_client *client,
+                                      struct s3_error *error,
+                                      const char *bucket, const char *key,
+                                      const char *encoded_upload_id,
+                                      char *const *etags, size_t count,
+                                      bool *uncertain) {
+    char *body = NULL, *query = NULL, *url = NULL;
+    size_t body_size = 0;
+    struct s3_memory_response response = {0};
+    enum s3_result result =
+        build_complete_xml(etags, count, &body, &body_size, error);
+    if (result != S3_RESULT_OK) goto done;
+    size_t query_size = strlen(encoded_upload_id) + sizeof("uploadId=");
+    query = malloc(query_size);
+    if (query == NULL) {
+        result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
+        goto done;
+    }
+    (void) snprintf(query, query_size, "uploadId=%s", encoded_upload_id);
+    result = s3_url_build_object(client, bucket, key, query, &url, error);
+    if (result != S3_RESULT_OK) goto done;
+    result = memory_request(
+        client, error, url, "POST", (const unsigned char *) body, body_size,
+        &xml_properties, REQUEST_COMPLETE, uncertain, &response);
+    if (result != S3_RESULT_OK && *uncertain)
+        result = s3_error_set(error, S3_RESULT_ERROR,
+                              "multipart completion outcome uncertain; object "
+                              "may have been created");
+done:
+    free(body);
+    free(query);
+    free(url);
+    put_response_free(&response);
+    return result;
+}
+
 static enum s3_result abort_upload(struct s3_client *client,
                                    struct s3_error *error, const char *bucket,
                                    const char *key,
@@ -523,37 +576,19 @@ enum s3_result s3_object_put(struct s3_client *client, struct s3_error *error,
     }
     {
         char **etags = NULL;
-        char *upload_id = NULL, *encoded_upload_id = NULL;
+        char *encoded_upload_id = NULL;
         size_t part_count =
             (size_t) (size / part_size + (size % part_size != 0));
         uint64_t remaining = size;
-        char *complete = NULL;
-        size_t complete_size = 0;
         bool completion_uncertain = false;
         etags = calloc(part_count, sizeof(*etags));
         if (etags == NULL) {
             result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
             goto multipart_done;
         }
-        result =
-            s3_url_build_object(client, bucket, key, "uploads", &url, error);
+        result = initiate_upload(client, error, bucket, key, properties, NULL,
+                                 &encoded_upload_id);
         if (result != S3_RESULT_OK) goto multipart_done;
-        result = memory_request(client, error, url, "POST",
-                                (const unsigned char *) "", 0, properties,
-                                REQUEST_ONCE, NULL, &response);
-        if (result != S3_RESULT_OK) goto multipart_done;
-        upload_id = xml_value(response.body, response.size,
-                              "InitiateMultipartUploadResult", "UploadId");
-        if (upload_id == NULL) {
-            result = s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
-                                  "invalid InitiateMultipartUpload XML");
-            goto multipart_done;
-        }
-        encoded_upload_id = s3_uri_encode_alloc(upload_id, false);
-        if (encoded_upload_id == NULL) {
-            result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-            goto multipart_done;
-        }
         for (size_t part = 0; part < part_count; ++part) {
             size_t amount =
                 remaining < part_size ? (size_t) remaining : part_size;
@@ -592,28 +627,8 @@ enum s3_result s3_object_put(struct s3_client *client, struct s3_error *error,
         }
         result = expect_eof(read_callback, data, error);
         if (result != S3_RESULT_OK) goto multipart_done;
-        result = build_complete_xml(etags, part_count, &complete,
-                                    &complete_size, error);
-        if (result != S3_RESULT_OK) goto multipart_done;
-        free(url);
-        url = NULL;
-        {
-            size_t query_size = strlen(encoded_upload_id) + 10;
-            char *query = malloc(query_size);
-            if (query == NULL) {
-                result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-                goto multipart_done;
-            }
-            (void) snprintf(query, query_size, "uploadId=%s",
-                            encoded_upload_id);
-            result =
-                s3_url_build_object(client, bucket, key, query, &url, error);
-            free(query);
-        }
-        if (result != S3_RESULT_OK) goto multipart_done;
-        put_response_free(&response);
-        result = complete_upload(client, error, url, complete, complete_size,
-                                 &completion_uncertain, &response);
+        result = complete_upload(client, error, bucket, key, encoded_upload_id,
+                                 etags, part_count, &completion_uncertain);
     multipart_done:
         if (result != S3_RESULT_OK && encoded_upload_id != NULL &&
             !completion_uncertain) {
@@ -628,9 +643,7 @@ enum s3_result s3_object_put(struct s3_client *client, struct s3_error *error,
         for (size_t i = 0; i < part_count; ++i)
             free(etags != NULL ? etags[i] : NULL);
         free(etags);
-        free(upload_id);
         free(encoded_upload_id);
-        free(complete);
     }
 done:
     free(buffer);
@@ -647,8 +660,7 @@ s3_object_put_stream(struct s3_client *client, struct s3_error *error,
     unsigned char *buffer = NULL;
     char **etags = NULL;
     size_t etag_count = 0;
-    char *url = NULL, *upload_id = NULL, *encoded_upload_id = NULL;
-    char *complete = NULL;
+    char *url = NULL, *encoded_upload_id = NULL;
     struct s3_memory_response response = {0};
     enum s3_result result;
     bool completion_uncertain = false;
@@ -665,25 +677,9 @@ s3_object_put_stream(struct s3_client *client, struct s3_error *error,
         result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
         goto done;
     }
-    result = s3_url_build_object(client, bucket, key, "uploads", &url, error);
+    result = initiate_upload(client, error, bucket, key, properties, NULL,
+                             &encoded_upload_id);
     if (result != S3_RESULT_OK) goto done;
-    result =
-        memory_request(client, error, url, "POST", (const unsigned char *) "",
-                       0, properties, REQUEST_ONCE, NULL, &response);
-    if (result != S3_RESULT_OK) goto done;
-    upload_id = xml_value(response.body, response.size,
-                          "InitiateMultipartUploadResult", "UploadId");
-    if (upload_id == NULL) {
-        result = s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
-                              "invalid InitiateMultipartUpload XML");
-        goto done;
-    }
-    encoded_upload_id = s3_uri_encode_alloc(upload_id, false);
-    if (encoded_upload_id == NULL) {
-        result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-        goto done;
-    }
-
     for (;;) {
         size_t amount = 0;
         bool eof = false;
@@ -726,31 +722,8 @@ s3_object_put_stream(struct s3_client *client, struct s3_error *error,
         if (eof) break;
     }
 
-    {
-        size_t complete_size = 0;
-        result = build_complete_xml(etags, etag_count, &complete,
-                                    &complete_size, error);
-        if (result != S3_RESULT_OK) goto done;
-        free(url);
-        url = NULL;
-        {
-            size_t query_size = strlen(encoded_upload_id) + 10;
-            char *query = malloc(query_size);
-            if (query == NULL) {
-                result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-                goto done;
-            }
-            (void) snprintf(query, query_size, "uploadId=%s",
-                            encoded_upload_id);
-            result =
-                s3_url_build_object(client, bucket, key, query, &url, error);
-            free(query);
-        }
-        if (result != S3_RESULT_OK) goto done;
-        put_response_free(&response);
-        result = complete_upload(client, error, url, complete, complete_size,
-                                 &completion_uncertain, &response);
-    }
+    result = complete_upload(client, error, bucket, key, encoded_upload_id,
+                             etags, etag_count, &completion_uncertain);
 
 done:
     if (result != S3_RESULT_OK && encoded_upload_id != NULL &&
@@ -767,9 +740,7 @@ done:
     free(etags);
     free(buffer);
     free(url);
-    free(upload_id);
     free(encoded_upload_id);
-    free(complete);
     put_response_free(&response);
     return result;
 }
@@ -845,9 +816,9 @@ enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
     char *encoded_bucket = NULL, *encoded_key = NULL;
     char *source = NULL, *url = NULL;
     char *tagging = NULL, *tag_body = NULL;
-    char *upload_id = NULL, *encoded_upload_id = NULL, *complete = NULL;
+    char *encoded_upload_id = NULL;
     char **etags = NULL;
-    size_t part_count = 0, complete_size = 0;
+    size_t part_count = 0;
     bool completion_uncertain = false;
     enum s3_result result;
 
@@ -933,25 +904,9 @@ enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
         result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
         goto done;
     }
-    result = s3_url_build_object(client, destination_bucket, destination_key,
-                                 "uploads", &url, error);
+    result = initiate_upload(client, error, destination_bucket, destination_key,
+                             &properties, tagging, &encoded_upload_id);
     if (result != S3_RESULT_OK) goto done;
-    result = memory_request_ex(client, error, url, "POST",
-                               (const unsigned char *) "", 0, &properties,
-                               REQUEST_ONCE, NULL, &response, NULL, tagging);
-    if (result != S3_RESULT_OK) goto done;
-    upload_id = xml_value(response.body, response.size,
-                          "InitiateMultipartUploadResult", "UploadId");
-    if (upload_id == NULL) {
-        result = s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
-                              "invalid InitiateMultipartUpload XML");
-        goto done;
-    }
-    encoded_upload_id = s3_uri_encode_alloc(upload_id, false);
-    if (encoded_upload_id == NULL) {
-        result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-        goto done;
-    }
     copy.result_root = "CopyPartResult";
     for (size_t part = 0; part < part_count; ++part) {
         uint64_t first = (uint64_t) part * part_size;
@@ -986,27 +941,9 @@ enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
             goto done;
         }
     }
-    result =
-        build_complete_xml(etags, part_count, &complete, &complete_size, error);
-    if (result != S3_RESULT_OK) goto done;
-    free(url);
-    url = NULL;
-    {
-        size_t query_size = strlen(encoded_upload_id) + 10;
-        char *query = malloc(query_size);
-        if (query == NULL) {
-            result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-            goto done;
-        }
-        (void) snprintf(query, query_size, "uploadId=%s", encoded_upload_id);
-        result = s3_url_build_object(client, destination_bucket,
-                                     destination_key, query, &url, error);
-        free(query);
-    }
-    if (result != S3_RESULT_OK) goto done;
-    put_response_free(&response);
-    result = complete_upload(client, error, url, complete, complete_size,
-                             &completion_uncertain, &response);
+    result = complete_upload(client, error, destination_bucket, destination_key,
+                             encoded_upload_id, etags, part_count,
+                             &completion_uncertain);
 
 done:
     if (result == S3_RESULT_PRECONDITION_FAILED)
@@ -1030,9 +967,7 @@ done:
     free(tagging);
     free(tag_body);
     free(source);
-    free(upload_id);
     free(encoded_upload_id);
-    free(complete);
     free(url);
     put_response_free(&response);
     s3_object_properties_free(&properties);
