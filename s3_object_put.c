@@ -58,6 +58,16 @@ add_properties_headers(struct curl_slist **headers,
          !s3_headers_add(headers, "Cache-Control", properties->cache_control)))
         return s3_error_set(error, S3_RESULT_CONFIGURATION_ERROR,
                             "invalid object properties");
+    if ((properties->content_disposition != NULL &&
+         !s3_headers_add(headers, "Content-Disposition",
+                         properties->content_disposition)) ||
+        (properties->content_language != NULL &&
+         !s3_headers_add(headers, "Content-Language",
+                         properties->content_language)) ||
+        (properties->expires != NULL &&
+         !s3_headers_add(headers, "Expires", properties->expires)))
+        return s3_error_set(error, S3_RESULT_CONFIGURATION_ERROR,
+                            "invalid object properties");
     if (properties->metadata_count > 128 ||
         (properties->metadata_count != 0 && properties->metadata == NULL))
         return s3_error_set(error, S3_RESULT_CONFIGURATION_ERROR,
@@ -95,12 +105,14 @@ struct copy_request {
     const char *result_root;
 };
 
-static enum s3_result memory_request_ex(
-    struct s3_client *client, struct s3_error *error, const char *url,
-    const char *method, const unsigned char *body, size_t body_size,
-    const struct s3_object_properties *properties,
-    enum request_retry_mode retry_mode, bool *completion_uncertain,
-    struct s3_memory_response *output, const struct copy_request *copy) {
+static enum s3_result
+memory_request_ex(struct s3_client *client, struct s3_error *error,
+                  const char *url, const char *method,
+                  const unsigned char *body, size_t body_size,
+                  const struct s3_object_properties *properties,
+                  enum request_retry_mode retry_mode,
+                  bool *completion_uncertain, struct s3_memory_response *output,
+                  const struct copy_request *copy, const char *tagging) {
     enum s3_result result = S3_RESULT_ERROR;
     unsigned attempts = retry_mode == REQUEST_ONCE ? 1 : client->max_attempts;
     if (completion_uncertain != NULL) *completion_uncertain = false;
@@ -116,6 +128,12 @@ static enum s3_result memory_request_ex(
         if (result != S3_RESULT_OK) {
             curl_slist_free_all(headers);
             return result;
+        }
+        if (tagging != NULL && tagging[0] != '\0' &&
+            !s3_headers_add(&headers, "x-amz-tagging", tagging)) {
+            curl_slist_free_all(headers);
+            return s3_error_set(error, S3_RESULT_ERROR,
+                                "cannot prepare object tags");
         }
         if (copy != NULL &&
             (!s3_headers_add(&headers, "x-amz-copy-source", copy->source) ||
@@ -252,7 +270,7 @@ memory_request(struct s3_client *client, struct s3_error *error,
                struct s3_memory_response *output) {
     return memory_request_ex(client, error, url, method, body, body_size,
                              properties, retry_mode, completion_uncertain,
-                             output, NULL);
+                             output, NULL, NULL);
 }
 
 static enum s3_result complete_upload(struct s3_client *client,
@@ -756,6 +774,67 @@ done:
     return result;
 }
 
+static enum s3_result encode_copy_tags(const char *body, size_t size,
+                                       char **tagging, struct s3_error *error) {
+    xmlDoc *doc = s3_xml_read(body, size, PUT_RESPONSE_LIMIT, "s3-tags.xml");
+    xmlNode *root = doc != NULL ? xmlDocGetRootElement(doc) : NULL;
+    xmlNode *set = s3_xml_child(root, "TagSet");
+    xmlBuffer *buffer = NULL;
+    enum s3_result result = S3_RESULT_PROTOCOL_ERROR;
+    unsigned count = 0;
+    *tagging = NULL;
+    if (!s3_xml_name(root, "Tagging") || set == NULL) goto done;
+    buffer = xmlBufferCreate();
+    if (buffer == NULL) {
+        result = S3_RESULT_ERROR;
+        goto done;
+    }
+    for (xmlNode *tag = set->children; tag != NULL; tag = tag->next) {
+        xmlNode *key_node, *value_node;
+        xmlChar *key, *value;
+        char *encoded_key, *encoded_value;
+        bool appended;
+        if (tag->type != XML_ELEMENT_NODE) continue;
+        if (!s3_xml_name(tag, "Tag") || ++count > 10) goto done;
+        key_node = s3_xml_child(tag, "Key");
+        value_node = s3_xml_child(tag, "Value");
+        if (key_node == NULL || value_node == NULL) goto done;
+        key = xmlNodeGetContent(key_node);
+        value = xmlNodeGetContent(value_node);
+        if (key == NULL || value == NULL || key[0] == '\0') {
+            xmlFree(key);
+            xmlFree(value);
+            goto done;
+        }
+        encoded_key = s3_uri_encode_alloc((const char *) key, false);
+        encoded_value = s3_uri_encode_alloc((const char *) value, false);
+        xmlFree(key);
+        xmlFree(value);
+        appended = encoded_key != NULL && encoded_value != NULL &&
+                   (count == 1 || xmlBufferCat(buffer, BAD_CAST "&") == 0) &&
+                   xmlBufferCat(buffer, BAD_CAST encoded_key) == 0 &&
+                   xmlBufferCat(buffer, BAD_CAST "=") == 0 &&
+                   xmlBufferCat(buffer, BAD_CAST encoded_value) == 0;
+        free(encoded_key);
+        free(encoded_value);
+        if (!appended) {
+            result = S3_RESULT_ERROR;
+            goto done;
+        }
+    }
+    *tagging = s3_memory_strdup((const char *) xmlBufferContent(buffer));
+    result = *tagging != NULL ? S3_RESULT_OK : S3_RESULT_ERROR;
+done:
+    if (buffer != NULL) xmlBufferFree(buffer);
+    if (doc != NULL) xmlFreeDoc(doc);
+    if (result != S3_RESULT_OK)
+        return s3_error_set(error, result,
+                            result == S3_RESULT_ERROR
+                                ? "cannot prepare object tags"
+                                : "invalid GetObjectTagging XML");
+    return result;
+}
+
 enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
                               const char *source_bucket, const char *source_key,
                               const char *destination_bucket,
@@ -765,6 +844,7 @@ enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
     struct copy_request copy = {0};
     char *encoded_bucket = NULL, *encoded_key = NULL;
     char *source = NULL, *url = NULL;
+    char *tagging = NULL, *tag_body = NULL;
     char *upload_id = NULL, *encoded_upload_id = NULL, *complete = NULL;
     char **etags = NULL;
     size_t part_count = 0, complete_size = 0;
@@ -828,11 +908,25 @@ enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
         result = s3_url_build_object(client, destination_bucket,
                                      destination_key, NULL, &url, error);
         if (result == S3_RESULT_OK)
-            result = memory_request_ex(client, error, url, "PUT",
-                                       (const unsigned char *) "", 0, NULL,
-                                       REQUEST_RETRY, NULL, &response, &copy);
+            result = memory_request_ex(
+                client, error, url, "PUT", (const unsigned char *) "", 0, NULL,
+                REQUEST_RETRY, NULL, &response, &copy, NULL);
         goto done;
     }
+
+    result = s3_url_build_object(client, source_bucket, source_key, "tagging",
+                                 &url, error);
+    if (result != S3_RESULT_OK) goto done;
+    {
+        size_t tag_size = 0;
+        result = s3_request_url(client, error, url, "GET", NULL, &tag_body,
+                                &tag_size);
+        if (result != S3_RESULT_OK) goto done;
+        result = encode_copy_tags(tag_body, tag_size, &tagging, error);
+        if (result != S3_RESULT_OK) goto done;
+    }
+    free(url);
+    url = NULL;
 
     etags = calloc(part_count, sizeof(*etags));
     if (etags == NULL) {
@@ -842,9 +936,9 @@ enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
     result = s3_url_build_object(client, destination_bucket, destination_key,
                                  "uploads", &url, error);
     if (result != S3_RESULT_OK) goto done;
-    result =
-        memory_request(client, error, url, "POST", (const unsigned char *) "",
-                       0, &properties, REQUEST_ONCE, NULL, &response);
+    result = memory_request_ex(client, error, url, "POST",
+                               (const unsigned char *) "", 0, &properties,
+                               REQUEST_ONCE, NULL, &response, NULL, tagging);
     if (result != S3_RESULT_OK) goto done;
     upload_id = xml_value(response.body, response.size,
                           "InitiateMultipartUploadResult", "UploadId");
@@ -882,7 +976,7 @@ enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
         put_response_free(&response);
         result = memory_request_ex(client, error, url, "PUT",
                                    (const unsigned char *) "", 0, NULL,
-                                   REQUEST_RETRY, NULL, &response, &copy);
+                                   REQUEST_RETRY, NULL, &response, &copy, NULL);
         if (result != S3_RESULT_OK) goto done;
         etags[part] =
             xml_value(response.body, response.size, "CopyPartResult", "ETag");
@@ -933,6 +1027,8 @@ done:
     free(etags);
     free(encoded_bucket);
     free(encoded_key);
+    free(tagging);
+    free(tag_body);
     free(source);
     free(upload_id);
     free(encoded_upload_id);

@@ -14,9 +14,17 @@ the client. An empty object uses CopyObject. An existing destination key is
 overwritten. Source and destination must differ.
 .PP
 The source is checked with HEAD. Each copied part uses the source ETag as a
-condition; if the source changes, copying stops. User metadata, content type,
-content encoding, and cache control are applied to the destination. ACL and
+condition; if the source ETag changes, copying stops. User metadata, content
+type, content encoding, cache control, content disposition, content language,
+expiry, and object tags are applied to the destination. ACL and
 server-side encryption settings are determined by the destination bucket.
+.PP
+For nonempty objects, tags are read with GetObjectTagging before starting the
+multipart upload. This requires read access to source tags and, for tagged
+objects, write access to destination tags (s3:GetObjectTagging and
+s3:PutObjectTagging on AWS S3). If reading tags fails, the copy fails.
+Metadata and tags are read before copying; ETag conditions do not detect
+changes to metadata or tags that leave object data unchanged.
 .PP
 Keys are literal, not URL-decoded. A trailing slash is part of a key. Quote
 operands containing spaces or shell metacharacters.

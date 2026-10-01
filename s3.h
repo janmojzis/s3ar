@@ -70,6 +70,9 @@ struct s3_object_properties {
     const char *cache_control;
     const struct s3_metadata *metadata;
     size_t metadata_count;
+    const char *content_disposition;
+    const char *content_language;
+    const char *expires;
 };
 
 enum { S3_MULTIPART_PART_SIZE = 16 * 1024 * 1024 };

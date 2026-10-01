@@ -1,4 +1,5 @@
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,11 @@ def run_copy(environment, *options, source="s3://copy-source/key",
     )
 
 
+def empty_tags_step(path="/copy-source/key"):
+    return ResponseStep("GET", path + "?tagging", 200,
+                        b"<Tagging><TagSet/></Tagging>")
+
+
 @pytest.mark.parametrize("size", [0, 9, 6 * 1024 * 1024])
 def test_copy_object(s3_server, s3_environment, size):
     data = b"x" * size
@@ -24,7 +30,12 @@ def test_copy_object(s3_server, s3_environment, size):
     for bucket in ("copy-source", "copy-destination"):
         client.create_bucket(Bucket=bucket)
     client.put_object(Bucket="copy-source", Key="key", Body=data,
-                      ContentType="text/plain", Metadata={"origin": "test"})
+                      ContentType="text/plain", Metadata={"origin": "test"},
+                      ContentDisposition='attachment; filename="test.txt"',
+                      ContentLanguage="cs", ContentEncoding="identity",
+                      CacheControl="max-age=3600",
+                      Expires=datetime(2030, 1, 1, tzinfo=timezone.utc),
+                      Tagging="a%20b%2F%C5%BE%2B=x%20y%3Az%2F%2B&empty=")
 
     result = run_copy(s3_environment, "--multipart-size", "5M")
 
@@ -34,6 +45,15 @@ def test_copy_object(s3_server, s3_environment, size):
     assert response["Body"].read() == data
     assert response["ContentType"] == "text/plain"
     assert response["Metadata"] == {"origin": "test"}
+    assert response["ContentDisposition"] == 'attachment; filename="test.txt"'
+    assert response["ContentLanguage"] == "cs"
+    assert response["ContentEncoding"] == "identity"
+    assert response["CacheControl"] == "max-age=3600"
+    assert response["Expires"] == datetime(2030, 1, 1, tzinfo=timezone.utc)
+    tags = client.get_object_tagging(Bucket="copy-destination", Key="key")
+    assert {tag["Key"]: tag["Value"] for tag in tags["TagSet"]} == {
+        "a b/ž+": "x y:z/+", "empty": "",
+    }
 
 
 @pytest.mark.parametrize("size", [0, 3])
@@ -52,6 +72,7 @@ def test_copy_encodes_source_bucket(s3_environment, size):
                                   expected_headers=copy_headers))
     else:
         steps.extend([
+            empty_tags_step(source),
             ResponseStep("POST", base + "?uploads", 200,
                          b"<InitiateMultipartUploadResult><UploadId>test-upload"
                          b"</UploadId></InitiateMultipartUploadResult>"),
@@ -74,6 +95,52 @@ def test_copy_rejects_same_identity_before_network(s3_environment):
     result = run_copy(s3_environment, destination="s3://copy-source/key")
     assert result.returncode == 2
     assert b"identical" in result.stderr
+
+
+@pytest.mark.parametrize("status,body", [
+    (403, b"<Error><Code>AccessDenied</Code></Error>"),
+    (200, b"not XML"),
+    (200, b"<Tagging/>"),
+    (200, b"<Tagging><TagSet><Tag><Key>key</Key></Tag></TagSet></Tagging>"),
+    (200, b"<Tagging><TagSet><Tag><Key/><Value>value</Value>"
+          b"</Tag></TagSet></Tagging>"),
+])
+def test_copy_tag_read_failure_prevents_upload(s3_environment, status, body):
+    steps = [
+        ResponseStep("HEAD", "/copy-source/key", 200,
+                     headers=(("Content-Length", "3"), ("ETag", '"source"'))),
+        ResponseStep("GET", "/copy-source/key?tagging", status, body),
+    ]
+    with FaultServer(steps) as server:
+        result = run_copy({**s3_environment, "S3AR_ENDPOINT": server.endpoint})
+        assert result.returncode == 2
+
+
+@pytest.mark.parametrize("tagged", [False, True])
+def test_copy_passes_encoded_tags_at_initiation(s3_environment, tagged):
+    tag_set = (b"<Tag><Key>a b/+</Key><Value>x y:/+</Value></Tag>"
+               b"<Tag><Key>empty</Key><Value/></Tag>" if tagged else b"")
+    tags = b'<Tagging xmlns="http://s3.amazonaws.com/doc/2006-03-01/">' \
+           b"<TagSet>" + tag_set + b"</TagSet></Tagging>"
+    expected = (("x-amz-tagging", "a%20b%2F%2B=x%20y%3A%2F%2B&empty="),) \
+               if tagged else ()
+    steps = [
+        ResponseStep("HEAD", "/copy-source/key", 200,
+                     headers=(("Content-Length", "3"), ("ETag", '"source"'))),
+        ResponseStep("GET", "/copy-source/key?tagging", 200, tags),
+        ResponseStep("POST", "/copy-destination/key?uploads", 200,
+                     b"<InitiateMultipartUploadResult><UploadId>test-upload"
+                     b"</UploadId></InitiateMultipartUploadResult>",
+                     expected_headers=expected,
+                     absent_headers=() if tagged else ("x-amz-tagging",)),
+        ResponseStep("PUT", "/copy-destination/key?partNumber=1&uploadId=test-upload",
+                     200, b'<CopyPartResult><ETag>"part"</ETag></CopyPartResult>'),
+        ResponseStep("POST", "/copy-destination/key?uploadId=test-upload", 200,
+                     b"<CompleteMultipartUploadResult/>"),
+    ]
+    with FaultServer(steps) as server:
+        result = run_copy({**s3_environment, "S3AR_ENDPOINT": server.endpoint})
+        assert result.returncode == 0, result.stderr.decode()
 
 
 def test_copy_debug_logs_options_and_both_operands():
@@ -113,6 +180,7 @@ def test_copy_aborts_after_embedded_part_error(s3_environment):
     steps = [
         ResponseStep("HEAD", "/copy-source/key", 200,
                      headers=(("Content-Length", "1"), ("ETag", '"source"'))),
+        empty_tags_step(),
         ResponseStep("POST", "/copy-destination/key?uploads", 200, initiate),
         ResponseStep("PUT", "/copy-destination/key?partNumber=1&uploadId=test-upload",
                      200, b"<Error><Code>AccessDenied</Code></Error>"),
@@ -122,7 +190,7 @@ def test_copy_aborts_after_embedded_part_error(s3_environment):
     with FaultServer(steps) as server:
         result = run_copy({**s3_environment, "S3AR_ENDPOINT": server.endpoint})
     assert result.returncode == 2
-    assert len(server.requests) == 4
+    assert len(server.requests) == 5
 
 
 def test_copy_uses_ranges_and_source_etag(s3_environment):
@@ -136,6 +204,7 @@ def test_copy_uses_ranges_and_source_etag(s3_environment):
         ResponseStep("HEAD", "/copy-source/a%20b%25%3F", 200,
                      headers=(("Content-Length", str(6 * 1024 * 1024)),
                               ("ETag", '"source"'))),
+        empty_tags_step("/copy-source/a%20b%25%3F"),
         ResponseStep("POST", base + "?uploads", 200, initiate),
         ResponseStep("PUT", base + "?partNumber=1&uploadId=test-upload",
                      200, part, expected_headers=(source, match,
@@ -159,6 +228,7 @@ def test_copy_small_object_omits_range(s3_environment):
     steps = [
         ResponseStep("HEAD", "/copy-source/key", 200,
                      headers=(("Content-Length", "3"), ("ETag", '"source"'))),
+        empty_tags_step(),
         ResponseStep("POST", "/copy-destination/key?uploads", 200, initiate),
         ResponseStep("PUT", "/copy-destination/key?partNumber=1&uploadId=test-upload",
                      200, b'<CopyPartResult><ETag>"part"</ETag></CopyPartResult>',
@@ -178,6 +248,7 @@ def test_copy_source_change_aborts(s3_environment):
     steps = [
         ResponseStep("HEAD", "/copy-source/key", 200,
                      headers=(("Content-Length", "3"), ("ETag", '"source"'))),
+        empty_tags_step(),
         ResponseStep("POST", "/copy-destination/key?uploads", 200, initiate),
         ResponseStep("PUT", "/copy-destination/key?partNumber=1&uploadId=test-upload",
                      412, b"<Error><Code>PreconditionFailed</Code></Error>"),

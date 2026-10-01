@@ -221,6 +221,21 @@ size_t s3_headers_callback(char *buffer, size_t size, size_t count,
         parse_retry_after(response, first, last);
     }
     else if (name_is(buffer, (size_t) (colon - buffer),
+                     "Content-Disposition")) {
+        if (!replace_property(&response->properties.content_disposition, first,
+                              last))
+            response->invalid_headers = true;
+    }
+    else if (name_is(buffer, (size_t) (colon - buffer), "Content-Language")) {
+        if (!replace_property(&response->properties.content_language, first,
+                              last))
+            response->invalid_headers = true;
+    }
+    else if (name_is(buffer, (size_t) (colon - buffer), "Expires")) {
+        if (!replace_property(&response->properties.expires, first, last))
+            response->invalid_headers = true;
+    }
+    else if (name_is(buffer, (size_t) (colon - buffer),
                      "x-amz-bucket-region")) {
         if (!copy_value(response->bucket_region,
                         sizeof(response->bucket_region), first, last))

@@ -43,6 +43,9 @@ static void preserve_original_properties(struct get_context *context) {
     response->properties.content_type = NULL;
     response->properties.content_encoding = NULL;
     response->properties.cache_control = NULL;
+    response->properties.content_disposition = NULL;
+    response->properties.content_language = NULL;
+    response->properties.expires = NULL;
     response->properties.metadata = NULL;
     response->properties.metadata_count = 0;
     response->metadata = NULL;
@@ -93,6 +96,12 @@ static enum s3_result validate_get_headers(struct get_context *context,
                             context->original_properties.content_encoding) ||
             !property_equal(r->properties.cache_control,
                             context->original_properties.cache_control) ||
+            !property_equal(r->properties.content_disposition,
+                            context->original_properties.content_disposition) ||
+            !property_equal(r->properties.content_language,
+                            context->original_properties.content_language) ||
+            !property_equal(r->properties.expires,
+                            context->original_properties.expires) ||
             !same_metadata) {
             if (error != NULL) {
                 error->result = S3_RESULT_PROTOCOL_ERROR;
@@ -403,6 +412,9 @@ enum s3_result s3_object_head(struct s3_client *client, struct s3_error *error,
             response.properties.content_type = NULL;
             response.properties.content_encoding = NULL;
             response.properties.cache_control = NULL;
+            response.properties.content_disposition = NULL;
+            response.properties.content_language = NULL;
+            response.properties.expires = NULL;
             response.properties.metadata = NULL;
             response.properties.metadata_count = 0;
             response.metadata = NULL;
