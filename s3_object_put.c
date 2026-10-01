@@ -457,6 +457,45 @@ done:
     return result;
 }
 
+static enum s3_result
+upload_part(struct s3_client *client, struct s3_error *error,
+            const char *bucket, const char *key, const char *encoded_upload_id,
+            size_t part_number, const unsigned char *body, size_t body_size,
+            const struct copy_request *copy, char **etag) {
+    char query[1024], *url = NULL;
+    struct s3_memory_response response = {0};
+    enum s3_result result;
+    *etag = NULL;
+    if (snprintf(query, sizeof(query), "partNumber=%zu&uploadId=%s",
+                 part_number, encoded_upload_id) >= (int) sizeof(query))
+        return s3_error_set(error, S3_RESULT_ERROR,
+                            "multipart upload ID is too long");
+    result = s3_url_build_object(client, bucket, key, query, &url, error);
+    if (result != S3_RESULT_OK) goto done;
+    result = memory_request_ex(client, error, url, "PUT", body, body_size, NULL,
+                               REQUEST_RETRY, NULL, &response, copy, NULL);
+    if (result != S3_RESULT_OK) goto done;
+    if (copy != NULL) {
+        *etag =
+            xml_value(response.body, response.size, "CopyPartResult", "ETag");
+        if (*etag == NULL)
+            result = s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
+                                  "CopyPartResult lacks ETag");
+    }
+    else if (response.response.properties.etag[0] == '\0')
+        result = s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
+                              "UploadPart response lacks ETag");
+    else {
+        *etag = s3_memory_strdup(response.response.properties.etag);
+        if (*etag == NULL)
+            result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
+    }
+done:
+    free(url);
+    put_response_free(&response);
+    return result;
+}
+
 static enum s3_result complete_upload(struct s3_client *client,
                                       struct s3_error *error,
                                       const char *bucket, const char *key,
@@ -592,37 +631,14 @@ enum s3_result s3_object_put(struct s3_client *client, struct s3_error *error,
         for (size_t part = 0; part < part_count; ++part) {
             size_t amount =
                 remaining < part_size ? (size_t) remaining : part_size;
-            char query[1024];
             if (part != 0) {
                 result =
                     fill_buffer(buffer, amount, read_callback, data, error);
                 if (result != S3_RESULT_OK) goto multipart_done;
             }
-            free(url);
-            url = NULL;
-            if (snprintf(query, sizeof(query), "partNumber=%zu&uploadId=%s",
-                         part + 1, encoded_upload_id) >= (int) sizeof(query)) {
-                result = s3_error_set(error, S3_RESULT_ERROR,
-                                      "multipart upload ID is too long");
-                goto multipart_done;
-            }
-            result =
-                s3_url_build_object(client, bucket, key, query, &url, error);
+            result = upload_part(client, error, bucket, key, encoded_upload_id,
+                                 part + 1, buffer, amount, NULL, &etags[part]);
             if (result != S3_RESULT_OK) goto multipart_done;
-            put_response_free(&response);
-            result = memory_request(client, error, url, "PUT", buffer, amount,
-                                    NULL, REQUEST_RETRY, NULL, &response);
-            if (result != S3_RESULT_OK) goto multipart_done;
-            if (response.response.properties.etag[0] == '\0') {
-                result = s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
-                                      "UploadPart response lacks ETag");
-                goto multipart_done;
-            }
-            etags[part] = s3_memory_strdup(response.response.properties.etag);
-            if (etags[part] == NULL) {
-                result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-                goto multipart_done;
-            }
             remaining -= amount;
         }
         result = expect_eof(read_callback, data, error);
@@ -660,8 +676,7 @@ s3_object_put_stream(struct s3_client *client, struct s3_error *error,
     unsigned char *buffer = NULL;
     char **etags = NULL;
     size_t etag_count = 0;
-    char *url = NULL, *encoded_upload_id = NULL;
-    struct s3_memory_response response = {0};
+    char *encoded_upload_id = NULL;
     enum s3_result result;
     bool completion_uncertain = false;
 
@@ -683,7 +698,6 @@ s3_object_put_stream(struct s3_client *client, struct s3_error *error,
     for (;;) {
         size_t amount = 0;
         bool eof = false;
-        char query[1024];
         result = read_part(buffer, part_size, read_callback, data, &amount,
                            &eof, error);
         if (result != S3_RESULT_OK) goto done;
@@ -693,31 +707,10 @@ s3_object_put_stream(struct s3_client *client, struct s3_error *error,
                                   "stream exceeds multipart upload limit");
             goto done;
         }
-        if (snprintf(query, sizeof(query), "partNumber=%zu&uploadId=%s",
-                     etag_count + 1,
-                     encoded_upload_id) >= (int) sizeof(query)) {
-            result = s3_error_set(error, S3_RESULT_ERROR,
-                                  "multipart upload ID is too long");
-            goto done;
-        }
-        free(url);
-        url = NULL;
-        result = s3_url_build_object(client, bucket, key, query, &url, error);
+        result = upload_part(client, error, bucket, key, encoded_upload_id,
+                             etag_count + 1, buffer, amount, NULL,
+                             &etags[etag_count]);
         if (result != S3_RESULT_OK) goto done;
-        put_response_free(&response);
-        result = memory_request(client, error, url, "PUT", buffer, amount, NULL,
-                                REQUEST_RETRY, NULL, &response);
-        if (result != S3_RESULT_OK) goto done;
-        if (response.response.properties.etag[0] == '\0') {
-            result = s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
-                                  "UploadPart response lacks ETag");
-            goto done;
-        }
-        etags[etag_count] = s3_memory_strdup(response.response.properties.etag);
-        if (etags[etag_count] == NULL) {
-            result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-            goto done;
-        }
         ++etag_count;
         if (eof) break;
     }
@@ -739,9 +732,7 @@ done:
     for (size_t i = 0; i < etag_count; ++i) free(etags[i]);
     free(etags);
     free(buffer);
-    free(url);
     free(encoded_upload_id);
-    put_response_free(&response);
     return result;
 }
 
@@ -913,33 +904,15 @@ enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
         uint64_t last = properties.size - first < part_size
                             ? properties.size - 1
                             : first + part_size - 1;
-        char range[80], query[1024];
+        char range[80];
         (void) snprintf(range, sizeof(range), "bytes=%" PRIu64 "-%" PRIu64,
                         first, last);
         copy.range = properties.size > 5 * UINT64_C(1024) * 1024 ? range : NULL;
-        if (snprintf(query, sizeof(query), "partNumber=%zu&uploadId=%s",
-                     part + 1, encoded_upload_id) >= (int) sizeof(query)) {
-            result = s3_error_set(error, S3_RESULT_ERROR,
-                                  "multipart upload ID is too long");
-            goto done;
-        }
-        free(url);
-        url = NULL;
-        result = s3_url_build_object(client, destination_bucket,
-                                     destination_key, query, &url, error);
+        result =
+            upload_part(client, error, destination_bucket, destination_key,
+                        encoded_upload_id, part + 1, (const unsigned char *) "",
+                        0, &copy, &etags[part]);
         if (result != S3_RESULT_OK) goto done;
-        put_response_free(&response);
-        result = memory_request_ex(client, error, url, "PUT",
-                                   (const unsigned char *) "", 0, NULL,
-                                   REQUEST_RETRY, NULL, &response, &copy, NULL);
-        if (result != S3_RESULT_OK) goto done;
-        etags[part] =
-            xml_value(response.body, response.size, "CopyPartResult", "ETag");
-        if (etags[part] == NULL) {
-            result = s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
-                                  "CopyPartResult lacks ETag");
-            goto done;
-        }
     }
     result = complete_upload(client, error, destination_bucket, destination_key,
                              encoded_upload_id, etags, part_count,

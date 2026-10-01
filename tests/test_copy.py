@@ -174,7 +174,12 @@ def test_copy_debug_logs_help():
     assert b"Usage: s3ar-copy" in result.stdout
 
 
-def test_copy_aborts_after_embedded_part_error(s3_environment):
+@pytest.mark.parametrize("body,diagnostic", [
+    (b"<Error><Code>AccessDenied</Code></Error>", b"AccessDenied"),
+    (b"<CopyPartResult/>", b"CopyPartResult lacks ETag"),
+    (b"<CopyPartResult><ETag/></CopyPartResult>", b"CopyPartResult lacks ETag"),
+])
+def test_copy_aborts_after_invalid_part_response(s3_environment, body, diagnostic):
     initiate = (b"<InitiateMultipartUploadResult><UploadId>test-upload"
                 b"</UploadId></InitiateMultipartUploadResult>")
     steps = [
@@ -183,13 +188,14 @@ def test_copy_aborts_after_embedded_part_error(s3_environment):
         empty_tags_step(),
         ResponseStep("POST", "/copy-destination/key?uploads", 200, initiate),
         ResponseStep("PUT", "/copy-destination/key?partNumber=1&uploadId=test-upload",
-                     200, b"<Error><Code>AccessDenied</Code></Error>"),
+                     200, body),
         ResponseStep("DELETE", "/copy-destination/key?uploadId=test-upload",
                      204),
     ]
     with FaultServer(steps) as server:
         result = run_copy({**s3_environment, "S3AR_ENDPOINT": server.endpoint})
     assert result.returncode == 2
+    assert diagnostic in result.stderr
     assert len(server.requests) == 5
 
 

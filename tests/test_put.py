@@ -121,6 +121,24 @@ def test_put_aborts_definitive_completion_failure(s3_environment):
     assert b"AccessDenied" in result.stderr
 
 
+def test_put_aborts_when_part_response_lacks_etag(s3_environment):
+    steps = [
+        ResponseStep("POST", "/bucket/key?uploads", 200, UPLOAD_ID_XML,
+                     DISCONNECT),
+        ResponseStep("PUT", "/bucket/key?partNumber=1&uploadId=review-upload",
+                     200, headers=DISCONNECT),
+        ResponseStep("DELETE", UPLOAD_PATH, 204, headers=DISCONNECT),
+    ]
+    with FaultServer(steps) as server:
+        result = run_put(
+            EXECUTABLE, {**s3_environment, "S3AR_ENDPOINT": server.endpoint},
+            "s3://bucket/key", data=b"data",
+        )
+
+    assert result.returncode == 2
+    assert b"UploadPart response lacks ETag" in result.stderr
+
+
 def run_put(
     executable, environment, destination, data=None, path=None,
     multipart_size=None, verbosity=0, create_bucket=False,
