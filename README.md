@@ -321,6 +321,10 @@ s3ar-copy s3://backups/photos.tar.tmp s3://backups/photos.tar &&
 s3ar-delete s3://backups/photos.tar.tmp
 ```
 
+This example uses a fixed temporary object key for simplicity. For real use,
+choose a unique temporary key for each run so overlapping backups cannot
+publish or delete each other's temporary archive.
+
 ## Testing with the local S3 server
 
 Prepare a filesystem-backed test store and start the server:
