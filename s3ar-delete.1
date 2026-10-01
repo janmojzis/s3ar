@@ -8,8 +8,9 @@ s3ar-delete \- delete S3 objects and buckets
 .I s3://[BUCKET[/KEY]]
 .SH DESCRIPTION
 .B s3ar-delete
-lists and deletes matching resources in one pass, without prompting for
-confirmation.
+lists and deletes matching resources without prompting for confirmation.
+It rescans each bucket after deleting a batch of object versions or aborting
+a group of multipart uploads.
 It permanently removes object versions and delete markers, aborts matching
 multipart uploads, and removes selected buckets after they are empty.
 .PP
@@ -23,6 +24,8 @@ select one entire bucket.
 and
 .B s3://BUCKET/KEY/
 select the exact KEY object and all objects below KEY/, keeping the bucket.
+Bucket and key names in operands are literal, not URL-decoded.
+Quote operands containing spaces or shell metacharacters.
 A trailing slash does not change the selection, as with
 .BR s3ar (1).
 Matches stop at path boundaries. For example,
@@ -38,21 +41,34 @@ the command runs may remain, so the operation is not an atomic snapshot.
 .TP
 .BR \-v ", " \-\-verbose
 Show each matching resource. Repeat twice for debug messages or three times
-for S3 request tracing. A summary is printed without verbosity. Send
+for S3 request tracing. A summary is always printed on standard error;
+per-resource messages also go to standard error. Send
 .B SIGUSR1
 to increase verbosity while running, or
 .B SIGUSR2
 to decrease it.
 .TP
 .BR \-n ", " \-\-dry-run
-List resources that would be deleted without changing S3.
+Count resources that would be deleted without changing S3. Add
+.B \-v
+to show each matching resource.
 .TP
 .BR \-h ", " \-\-help
-Display command usage and exit.
+Display command usage on standard output and exit successfully.
+.SH ENVIRONMENT
+.BR S3AR_ENDPOINT ,
+.BR S3AR_REGION ,
+.BR S3AR_URI_STYLE ,
+.BR S3AR_ACCESS_KEY ,
+.BR S3AR_SECRET_KEY ,
+and
+.B S3AR_SESSION_TOKEN
+configure the S3 connection in the same way as for
+.BR s3ar (1).
 .SH EXIT STATUS
 .TP
 .B 0
-Completed successfully, or dry run completed.
+Deletion, dry run, or help completed successfully.
 .TP
 .B 2
 A fatal error occurred, including invalid arguments, a configuration error,
@@ -60,4 +76,5 @@ or an S3 failure.
 .SH SEE ALSO
 .BR s3ar (1),
 .BR s3ar-get (1),
+.BR s3ar-list (1),
 .BR s3ar-put (1)

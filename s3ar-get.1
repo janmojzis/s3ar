@@ -3,7 +3,7 @@
 s3ar-get \- download an S3 object
 .SH SYNOPSIS
 .B s3ar-get
-.RB [ \-v | \-vv ]
+.RB [ \-v | \-vv | \-vvv ]
 .RB [ \-f " FILE" " [" \-t " TEMP]" ]
 .I s3://BUCKET/KEY
 .SH DESCRIPTION
@@ -34,8 +34,9 @@ archives created by
 An HTTP 304 response leaves FILE unchanged. A downloaded replacement receives
 these attributes when the filesystem supports them; otherwise future calls
 download normally. The attributes do not verify local file contents.
-Successful downloads and HTTP 304 responses are reported on standard error
-as downloaded or not modified, respectively.
+A success summary is always written to standard error. With
+.BR \-v ,
+an additional message distinguishes downloaded from not modified.
 .PP
 An interrupted download resumes from the first byte not yet written, using
 .B Range
@@ -43,26 +44,29 @@ and
 .B If-Match
 to stay on the object selected by the initial response. Object properties and
 S3 user metadata must remain identical on every resumed response. A mismatch
-is deliberately treated as a protocol error instead of switching the
-in-progress download to a newer object. This conservative \(dqbetter safe than
-sorry\(dq policy prevents responses with uncertain snapshot identity from being
-combined. An existing regular
+is treated as a protocol error and stops the download rather than combining
+responses from different snapshots or switching to a newer object. An existing
+regular
 .I FILE
 remains unchanged after such a failure. Standard output can already contain
 bytes written before the failure.
 .PP
 .B \-f \-
 selects standard output explicitly.
+.PP
+The operand names exactly one object. KEY is literal, not URL-decoded, and
+a trailing slash is part of the key. Quote operands containing spaces or shell
+metacharacters.
 .SH OPTIONS
 .TP
-.BI \-f " FILE"
+.BR \-f " " FILE ", " \-\-file= FILE
 Write data to FILE instead of standard output.
 .IP
 FILE is replaced atomically after a successful download. The new file uses
 mode 0600 modified by the current umask. An existing FILE must be a regular
 file; devices, directories, and symbolic links are rejected.
 .TP
-.BI \-t " TEMP"
+.BR \-t " " TEMP ", " \-\-temporary= TEMP
 Use TEMP as the temporary file when writing to FILE. TEMP must not exist and
 must be on the same filesystem as FILE. On success, TEMP replaces FILE
 atomically. TEMP is removed if the download fails.
@@ -72,8 +76,8 @@ Increase diagnostic verbosity to info, debug, or HTTP trace. Further repetitions
 .B \-v
 have no effect. Fatal errors are shown at every level.
 .TP
-.B \-h
-Display command usage and exit.
+.BR \-h ", " \-\-help
+Display command usage on standard output and exit successfully.
 .SH SIGNALS
 .TP
 .B SIGUSR1
@@ -103,5 +107,8 @@ download failure, or output-file failure.
 When an S3 operation fails after a retry, the diagnostic includes the number
 of attempts.
 .SH SEE ALSO
-.BR s3ar-put (1),
-.BR s3ar (1)
+.BR getfattr (1),
+.BR s3ar (1),
+.BR s3ar-delete (1),
+.BR s3ar-list (1),
+.BR s3ar-put (1)

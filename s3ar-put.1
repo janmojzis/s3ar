@@ -3,7 +3,7 @@
 s3ar-put \- upload a file or standard input to an S3 object
 .SH SYNOPSIS
 .B s3ar-put
-.RB [ \-v | \-vv ]
+.RB [ \-v | \-vv | \-vvv ]
 .RB [ \-f " FILE" ]
 .RB [ \-\-create-bucket ]
 .RB [ \-\-multipart-size " SIZE" ]
@@ -23,9 +23,13 @@ Successful uploads are reported on standard error, even without
 .PP
 .B \-f \-
 selects standard input explicitly.
+.PP
+The operand names exactly one object; an existing object with that key is
+overwritten. KEY is literal, not URL-decoded, and a trailing slash is part of
+the key. Quote operands containing spaces or shell metacharacters.
 .SH OPTIONS
 .TP
-.BI \-f " FILE"
+.BR \-f " " FILE ", " \-\-file= FILE
 Read data from FILE instead of standard input.
 .TP
 .B \-\-create-bucket
@@ -39,12 +43,12 @@ Set the multipart part size.  SIZE must be between 5M and 5G, inclusive.
 Only the binary suffixes M (1024 squared bytes) and G (1024 cubed bytes) are
 accepted.
 .TP
-.B \-v
+.BR \-v ", " \-\-verbose
 Increase verbosity.  One occurrence selects informational messages; two
 select debug messages; three select HTTP trace. Further occurrences have no effect.
 .TP
-.B \-h
-Display command usage and exit.
+.BR \-h ", " \-\-help
+Display command usage on standard output and exit successfully.
 .SH SIGNALS
 .TP
 .B SIGUSR1
@@ -74,4 +78,7 @@ bucket check or creation failure, upload failure, or input-file failure.
 When an S3 operation fails after a retry, the diagnostic includes the number
 of attempts.
 .SH SEE ALSO
-.BR s3ar (1)
+.BR s3ar (1),
+.BR s3ar-delete (1),
+.BR s3ar-get (1),
+.BR s3ar-list (1)

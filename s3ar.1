@@ -49,7 +49,7 @@ works with live S3 resources and implements only the options documented here;
 it is not a general replacement for
 .BR tar .
 .SH S3 CONFIGURATION
-Set the S3 credentials and endpoint. These values are an example:
+Set the S3 connection through environment variables. For example:
 .PP
 .nf
 export S3AR_ACCESS_KEY='access-key'
@@ -60,35 +60,8 @@ export S3AR_REGION='us-east-1'
 export S3AR_SESSION_TOKEN='temporary-session-token'
 .fi
 .PP
-.BR S3AR_ACCESS_KEY ,
-.BR S3AR_SECRET_KEY ,
-and
-.B S3AR_ENDPOINT
-are required.
-.B S3AR_ENDPOINT
-may contain a host and port, but not a URL path. Its scheme may be
-.B http://
-or
-.BR https://
-and is required. A trailing slash is not accepted.
-.PP
-.B S3AR_URI_STYLE
-accepts
-.B path
-or
-.B virtual
-and defaults to
-.BR path .
-.B S3AR_REGION
-selects the SigV4 signing region and the location constraint used when creating
-a bucket that does not already exist. It defaults to
-.B us-east-1
-when it is not set; for that value,
-.B s3ar
-omits the location constraint.
-.PP
-.B S3AR_SESSION_TOKEN
-optionally supplies a token for temporary credentials.
+S3 configuration is required for creation and extraction, but not for archive
+listing. The session token is needed only for temporary credentials.
 .SS Environment variables
 .TP
 .B S3AR_ACCESS_KEY
@@ -99,11 +72,18 @@ S3 secret key. Required.
 .TP
 .B S3AR_ENDPOINT
 S3 endpoint in the form
-.BR [http://|https://]HOST[:PORT] .
+.B http://HOST[:PORT]
+or
+.BR https://HOST[:PORT] .
+The scheme is required; URL paths and a trailing slash are not accepted.
 Required.
 .TP
 .B S3AR_URI_STYLE
-S3 addressing style. Optional; defaults to
+S3 addressing style:
+.B path
+or
+.BR virtual .
+Optional; defaults to
 .BR path .
 .TP
 .B S3AR_REGION
@@ -130,14 +110,13 @@ to restore the whole archive. Other URIs limit extraction to matching entries;
 overlapping matches do not upload an entry more than once.
 .TP
 .BR \-t ", " \-\-list
-List archived objects without connecting to S3. With no S3 URI, all objects
-are listed. One or more URIs limit the listing to matching objects.
+List archived buckets and objects without connecting to S3. With no S3 URI,
+all entries are listed. One or more URIs limit the listing to matching entries.
 .SS Options
 .TP
 .BR \-f " " TARFILE ", " \-\-file= TARFILE
 Read or write the named archive. This option is valid only with
-.B \-\-create
-,
+.BR \-\-create ,
 .BR \-\-extract ,
 or
 .BR \-\-list .
@@ -287,24 +266,9 @@ If a URI matches neither an object nor a prefix, the command fails. Empty
 buckets are valid and still produce a bucket entry during archive creation.
 Input URIs use the
 .B s3://
-form. Archive listings omit that prefix; verbose logs include it.
-.PP
-The examples below assume that S3 contains these objects:
-.PP
-.nf
-s3://photos/2026/photo1.jpg
-s3://photos/2026/photo2.jpg
-s3://photos/2026/photoN.jpg
-s3://photos/2027/photo1.jpg
-s3://photos/2027/photo2.jpg
-s3://photos/2027/photoN.jpg
-s3://videos/2026/video1.jpg
-s3://videos/2026/video2.jpg
-s3://videos/2026/videoN.jpg
-s3://videos/2027/video1.jpg
-s3://videos/2027/video2.jpg
-s3://videos/2027/videoN.jpg
-.fi
+form. Bucket and key names in operands are literal, not URL-decoded; quote
+operands containing spaces or shell metacharacters. Archive listings and
+creation/extraction info logs omit the URI prefix.
 .SH CREATING ARCHIVES
 The
 .B \-\-create
@@ -376,14 +340,13 @@ and
 to stay on the object selected by the initial response. Object properties and
 S3 user metadata are captured by that response and must remain identical on
 every resumed response. A mismatch is deliberately treated as a protocol
-error: s3ar stops instead of silently combining responses whose snapshot
-identity is uncertain. This conservative \(dqbetter safe than sorry\(dq policy
-never switches an in-progress download to a newer object. When the archive is
+error. The download stops rather than combining responses from different
+snapshots or switching to a newer object. When the archive is
 a regular file, the previously installed archive remains unchanged.
 .PP
 With
 .BR \-v ,
-archived entry names are logged as info on standard error with the
+archived entry names are logged as info on standard error without the
 .B s3://
 prefix. A tar stream written to standard output remains untouched.
 .SS Archive format
@@ -391,7 +354,7 @@ S3-specific information is stored in namespaced SCHILY extended attributes:
 .PP
 .nf
 SCHILY.xattr.user.s3ar.format=1
-SCHILY.xattr.user.s3ar.bucket=BUCKET
+SCHILY.xattr.user.s3ar.bucket=URL-ENCODED-BUCKET
 SCHILY.xattr.user.s3ar.key=URL-ENCODED-KEY
 SCHILY.xattr.user.s3ar.etag="3472a7..."
 SCHILY.xattr.user.s3ar.bucket-acl=public-read,custom
@@ -408,7 +371,7 @@ The format marker prevents metadata from older archives whose name begins with
 .BR s3ar.
 from being mistaken for part of the current format. On a filesystem, the
 attribute names are
-.B user.s3ar.format
+.BR user.s3ar.format ,
 .BR user.s3ar.bucket ,
 and
 .B user.s3ar.bucket-acl
@@ -528,9 +491,9 @@ is accepted instead, including legacy names that begin with the now-reserved
 prefix. Unknown format-marker values are rejected.
 .PP
 Bucket ACL summaries are informational and are not restored. New buckets and
-uploaded objects use private ACLs. With
+uploaded objects use private ACLs; existing bucket ACLs are unchanged. With
 .BR \-v ,
-restored names are logged as info on standard error with the
+restored names are logged as info on standard error without the
 .B s3://
 prefix.
 .SH LISTING AN ARCHIVE
@@ -565,13 +528,13 @@ BUCKET
 BUCKET/KEY SIZE LAST_MODIFIED ETAG HASH
 .fi
 .PP
-Size and modification time come from the archive member. Archives created by
+Size in bytes and modification time in seconds since the Unix epoch come
+from the archive member. Archives created by
 current versions store the ETag in an informational PAX attribute; older
 archives without it show
 .BR \- .
-The hash field is currently
-.BR \- ;
-SHA-512 calculation will be added later.
+The hash field is currently a placeholder, always
+.BR \- .
 .SH LISTING LIVE S3 RESOURCES
 Use
 .BR s3ar-list (1)
@@ -579,7 +542,7 @@ to list live buckets and objects.
 .SH EXIT STATUS
 .TP
 .B 0
-The listing or help completed successfully.
+Archive creation, extraction, listing, or help completed successfully.
 .TP
 .B 2
 Invalid usage, invalid configuration, allocation failure, S3 failure, or
@@ -590,5 +553,10 @@ Fatal errors go to standard error and start with
 When an S3 operation fails after a retry, the diagnostic includes the number
 of attempts.
 .SH SEE ALSO
+.BR getfattr (1),
+.BR s3ar-delete (1),
+.BR s3ar-get (1),
+.BR s3ar-list (1),
+.BR s3ar-put (1),
 .BR tar (1),
-.BR s3ar-list (1)
+.BR regex (7)
