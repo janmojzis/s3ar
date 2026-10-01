@@ -280,6 +280,49 @@ tar pathname, and use the same byte-oriented URL quoting as other listings.
 Bucket directory members are printed as bucket-name-only lines, so empty
 buckets remain visible.
 
+## Additional utilities
+
+`s3ar` also includes utilities for working directly with S3:
+
+- `s3ar-get`: download an object to a file or standard output.
+- `s3ar-put`: upload a file or standard input.
+- `s3ar-delete`: remove objects or buckets.
+- `s3ar-list`: list live buckets and objects.
+
+All use the same S3 configuration as `s3ar`.
+
+Stream a tar archive from one S3 storage directly into an object on another:
+
+```sh
+(
+  export S3AR_ACCESS_KEY='access-key1'
+  export S3AR_SECRET_KEY='secret-key1'
+  export S3AR_ENDPOINT='https://source.example.net'
+  s3ar -c s3://photos
+) | (
+  export S3AR_ACCESS_KEY='access-key2'
+  export S3AR_SECRET_KEY='secret-key2'
+  export S3AR_ENDPOINT='https://backup.example.net'
+  s3ar-put s3://backups/photos.tar
+)
+```
+
+Restore it by streaming the stored archive back into the source storage:
+
+```sh
+(
+  export S3AR_ACCESS_KEY='access-key2'
+  export S3AR_SECRET_KEY='secret-key2'
+  export S3AR_ENDPOINT='https://backup.example.net'
+  s3ar-get s3://backups/photos.tar
+) | (
+  export S3AR_ACCESS_KEY='access-key1'
+  export S3AR_SECRET_KEY='secret-key1'
+  export S3AR_ENDPOINT='https://source.example.net'
+  s3ar -x s3://photos
+)
+```
+
 ## Testing with the local S3 server
 
 Prepare a filesystem-backed test store and start the server:
