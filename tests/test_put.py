@@ -442,11 +442,16 @@ def test_put_does_not_retry_initiate_multipart_upload(s3_environment):
     assert InitiateHandler.initiates == 1
 
 
+@pytest.mark.parametrize("tool", ["s3ar-put", "s3ar-copy"])
 @pytest.mark.parametrize(
     "value",
     [
         "",
         "4M",
+        "0M",
+        "5121M",
+        "18446744073709551615G",
+        "18446744073709551616M",
         "6G",
         "1024",
         "5K",
@@ -460,17 +465,18 @@ def test_put_does_not_retry_initiate_multipart_upload(s3_environment):
         "5M ",
     ],
 )
-def test_put_rejects_invalid_multipart_size(value):
-    result = run_put(
-        EXECUTABLE,
-        os.environ.copy(),
-        "s3://unused/object",
-        multipart_size=value,
+def test_tools_reject_invalid_multipart_size(value, tool):
+    operands = ["s3://unused/object"]
+    if tool == "s3ar-copy":
+        operands.append("s3://unused/destination")
+    result = subprocess.run(
+        [str(EXECUTABLE.with_name(tool)), "--multipart-size", value, *operands],
+        capture_output=True, timeout=5,
     )
 
     assert result.returncode == 2
     assert result.stderr == (
-        b"s3ar-put: fatal: --multipart-size must be between 5M and 5G\n"
+        f"{tool}: fatal: --multipart-size must be between 5M and 5G\n".encode()
     )
 
 

@@ -491,7 +491,29 @@ static void test_s3_uri_log_part(void) {
     assert_s3_logged_uri("s3", "bucket", NULL, "s3://bucket");
 }
 
+static void test_multipart_size_parser(void) {
+    const struct {
+        const char *text;
+        uint64_t bytes;
+    } valid[] = {
+        {"5M", UINT64_C(5) * 1024 * 1024},
+        {"0005M", UINT64_C(5) * 1024 * 1024},
+        {"1G", UINT64_C(1024) * 1024 * 1024},
+        {"5120M", UINT64_C(5) * 1024 * 1024 * 1024},
+        {"5G", UINT64_C(5) * 1024 * 1024 * 1024},
+    };
+    size_t bytes = 0;
+    assert(!s3ar_parse_multipart_size(NULL, &bytes));
+    for (size_t i = 0; i < sizeof(valid) / sizeof(*valid); ++i) {
+        bool fits = valid[i].bytes <= SIZE_MAX;
+        errno = ERANGE;
+        assert(s3ar_parse_multipart_size(valid[i].text, &bytes) == fits);
+        if (fits) assert(bytes == valid[i].bytes);
+    }
+}
+
 int main(void) {
+    test_multipart_size_parser();
     test_public_api_clears_error();
     test_uri_variants();
     test_multiple_clients();

@@ -7,20 +7,13 @@
 #include "s3ar_log.h"
 #include "sig.h"
 
-#include <ctype.h>
-#include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
-#include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-
-enum {
-    MIN_MULTIPART_SIZE = 5 * 1024 * 1024,
-};
 
 static void usage(FILE *stream) {
     log_usage(stream, "Usage: s3ar-put [-v|-vv] [-f FILE] "
@@ -28,29 +21,6 @@ static void usage(FILE *stream) {
                       "s3://BUCKET/KEY\n"
                       "Read FILE, or standard input, and upload it using S3 "
                       "multipart upload.\n");
-}
-
-static bool parse_multipart_size(const char *text, size_t *result) {
-    char *end;
-    uintmax_t value, multiplier;
-    if (text == NULL || !isdigit((unsigned char) text[0])) return false;
-    errno = 0;
-    value = strtoumax(text, &end, 10);
-    if (errno != 0 || end == text) return false;
-    if (*end == 'M')
-        multiplier = UINT64_C(1024) * 1024;
-    else if (*end == 'G')
-        multiplier = UINT64_C(1024) * 1024 * 1024;
-    else
-        return false;
-    if (end[1] != '\0') return false;
-    if (value > UINTMAX_MAX / multiplier) return false;
-    value *= multiplier;
-    if (value < MIN_MULTIPART_SIZE || value > S3_MULTIPART_MAX_PART_SIZE ||
-        value > SIZE_MAX)
-        return false;
-    *result = (size_t) value;
-    return true;
 }
 
 static const char *fn = NULL;
@@ -125,7 +95,7 @@ int main_s3ar_put(int argc, char **argv) {
                 die(2);
             }
             multipart_size_seen = true;
-            if (!parse_multipart_size(optarg, &multipart_size)) {
+            if (!s3ar_parse_multipart_size(optarg, &multipart_size)) {
                 log_f1("--multipart-size must be between 5M and 5G");
                 die(2);
             }

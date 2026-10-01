@@ -6,10 +6,7 @@
 #include "log.h"
 #include "sig.h"
 
-#include <ctype.h>
-#include <errno.h>
 #include <getopt.h>
-#include <inttypes.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,28 +27,6 @@ static void usage(FILE *stream) {
                       "[--multipart-size SIZE] "
                       "s3://SOURCE/KEY s3://DESTINATION/KEY\n"
                       "Copy one S3 object on the server.\n");
-}
-
-static bool parse_multipart_size(const char *text, size_t *result) {
-    char *end;
-    uintmax_t value, multiplier;
-    if (text == NULL || !isdigit((unsigned char) text[0])) return false;
-    errno = 0;
-    value = strtoumax(text, &end, 10);
-    if (errno != 0 || end == text) return false;
-    if (*end == 'M')
-        multiplier = UINT64_C(1024) * 1024;
-    else if (*end == 'G')
-        multiplier = UINT64_C(1024) * 1024 * 1024;
-    else
-        return false;
-    if (end[1] != '\0' || value > UINTMAX_MAX / multiplier) return false;
-    value *= multiplier;
-    if (value < 5 * UINT64_C(1024) * 1024 ||
-        value > S3_MULTIPART_MAX_PART_SIZE || value > SIZE_MAX)
-        return false;
-    *result = (size_t) value;
-    return true;
 }
 
 static _Noreturn void die(int status) {
@@ -96,7 +71,7 @@ int main_s3ar_copy(int argc, char **argv) {
                 die(2);
             }
             part_size_seen = true;
-            if (!parse_multipart_size(optarg, &part_size)) {
+            if (!s3ar_parse_multipart_size(optarg, &part_size)) {
                 log_f1("--multipart-size must be between 5M and 5G");
                 die(2);
             }
