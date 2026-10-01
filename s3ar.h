@@ -2,6 +2,7 @@
 #define S3AR_H____
 
 #include "s3.h"
+#include "s3ar_selection.h"
 
 #include <stdbool.h>
 
@@ -27,22 +28,10 @@ struct s3ar_config {
     struct s3ar_transform *transforms;
 };
 
-struct s3ar_selection {
-    const char *uri;
-    char *storage;
-    const char *bucket;
-    const char *key;
-};
-
 void s3ar_create(const struct s3ar_config *config);
 void s3ar_create_cleanup(void);
 void s3ar_extract(const struct s3ar_config *config);
 void s3ar_list_archive(const struct s3ar_config *config);
-int s3ar_selection_parse(struct s3ar_selection *selection, const char *uri);
-void s3ar_selection_free(struct s3ar_selection *selection);
-bool s3ar_selection_matches(const struct s3ar_selection *selection,
-                            const char *bucket, const char *key);
-
 _Noreturn void s3ar_die(int status);
 
 #endif

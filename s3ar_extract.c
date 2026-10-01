@@ -44,8 +44,7 @@ struct bucket_names {
 struct extract_context {
     const struct s3ar_config *config;
     struct archive *archive;
-    struct s3ar_selection *selections;
-    bool *matched;
+    struct s3ar_selection_set selections;
     struct bucket_names archive_buckets;
     struct bucket_names ready_buckets;
     bool list_only;
@@ -131,36 +130,6 @@ static void ensure_bucket(struct extract_context *context, const char *bucket) {
         s3ar_die(2);
     }
     remember_bucket(&context->ready_buckets, bucket);
-}
-
-static bool select_bucket_member(struct extract_context *context,
-                                 const char *bucket) {
-    if (context->config->operand_count == 0) { return true; }
-    bool selected = false;
-    for (int i = 0; i < context->config->operand_count; ++i) {
-        const struct s3ar_selection *selection = &context->selections[i];
-        if (selection->bucket == NULL ||
-            strcmp(selection->bucket, bucket) == 0) {
-            selected = true;
-            if (selection->key == NULL) { context->matched[i] = true; }
-        }
-    }
-    return selected;
-}
-
-static bool selected(struct extract_context *context, const char *bucket,
-                     const char *key) {
-    if (context->config->operand_count == 0) { return true; }
-    bool selected = false;
-    for (int i = 0; i < context->config->operand_count; ++i) {
-        const struct s3ar_selection *selection = &context->selections[i];
-        if (!s3ar_selection_matches(selection, bucket, key)) { continue; }
-        selected = true;
-        if (key != NULL || selection->key == NULL) {
-            context->matched[i] = true;
-        }
-    }
-    return selected;
 }
 
 static void append_metadata(struct s3_metadata **metadata, size_t *count,
@@ -538,7 +507,7 @@ static void extract_bucket(struct extract_context *context,
     }
     transform_identity(context, &header_bucket, &header_key);
     bucket = header_bucket;
-    if (!select_bucket_member(context, bucket)) {
+    if (!s3ar_selection_set_match(&context->selections, bucket, NULL)) {
         free(header_bucket);
         free(header_key);
         return;
@@ -570,7 +539,7 @@ static void extract_object(struct extract_context *context,
     transform_identity(context, &header_bucket, &header_key);
     bucket = header_bucket;
     key = header_key;
-    if (!selected(context, bucket, key)) {
+    if (!s3ar_selection_set_match(&context->selections, bucket, key)) {
         if (archive_read_data_skip(context->archive) != ARCHIVE_OK) {
             archive_fatal(context->archive, "cannot skip archive member");
         }
@@ -679,6 +648,10 @@ static void extract_entry(struct extract_context *context,
 }
 
 static void read_archive(const struct s3ar_config *config, bool list_only) {
+    struct s3ar_selection_set selections;
+    if (s3ar_selection_set_parse(&selections, (size_t) config->operand_count,
+                                 config->operands) != 0)
+        s3ar_die(2);
     interrupted_signal = 0;
     s3ar_interrupt_bind(config->s3, &interrupted_signal);
     install_interrupt_handlers();
@@ -713,27 +686,7 @@ static void read_archive(const struct s3ar_config *config, bool list_only) {
         .archive = archive,
         .list_only = list_only,
     };
-    if (config->operand_count > 0) {
-        context.selections =
-            calloc((size_t) config->operand_count, sizeof(*context.selections));
-        context.matched =
-            calloc((size_t) config->operand_count, sizeof(*context.matched));
-        if (context.selections == NULL || context.matched == NULL) {
-            log_f1("out of memory");
-            s3ar_die(2);
-        }
-        for (int i = 0; i < config->operand_count; ++i) {
-            if (s3ar_selection_parse(&context.selections[i],
-                                     config->operands[i]) != 0) {
-                if (errno == EINVAL) {
-                    log_f2("invalid S3 operand ", config->operands[i]);
-                    s3ar_die(2);
-                }
-                log_f1("out of memory");
-                s3ar_die(2);
-            }
-        }
-    }
+    context.selections = selections;
 
     struct archive_entry *entry;
     while ((result = archive_read_next_header(archive, &entry)) == ARCHIVE_OK) {
@@ -750,15 +703,13 @@ static void read_archive(const struct s3ar_config *config, bool list_only) {
     if (result != ARCHIVE_EOF) {
         archive_fatal(archive, "cannot read archive header");
     }
-    for (int i = 0; i < config->operand_count; ++i) {
-        if (!context.matched[i]) {
-            log_f2("not found in archive ", config->operands[i]);
+    for (size_t i = 0; i < context.selections.count; ++i) {
+        if (!context.selections.items[i].matched) {
+            log_f2("not found in archive ", context.selections.items[i].uri);
             s3ar_die(2);
         }
-        s3ar_selection_free(&context.selections[i]);
     }
-    free(context.selections);
-    free(context.matched);
+    s3ar_selection_set_free(&context.selections);
     free_buckets(&context.archive_buckets);
     free_buckets(&context.ready_buckets);
 

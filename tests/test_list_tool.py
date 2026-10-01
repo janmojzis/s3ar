@@ -100,7 +100,8 @@ def test_list_reports_closed_output_pipe(executable, s3_environment, s3_server):
     assert "standard output" in result.stderr
 
 
-def test_list_bucket_avoids_redundant_head_request(executable):
+@pytest.mark.parametrize("key", ["", "/photo"])
+def test_list_selection_uses_only_listing_requests(executable, key):
     class RequestCountingHandler(BaseHTTPRequestHandler):
         requests = []
 
@@ -118,7 +119,12 @@ def test_list_bucket_avoids_redundant_head_request(executable):
             body = (
                 b"<ListBucketResult><EncodingType>url</EncodingType>"
                 b"<IsTruncated>false</IsTruncated>"
-                b"</ListBucketResult>"
+                b"<Contents><Key>photo</Key><Size>4</Size>"
+                b"<LastModified>2026-09-03T12:00:00Z</LastModified>"
+                b"<ETag>\"photo\"</ETag></Contents>"
+                b"<Contents><Key>photo-old</Key><Size>5</Size>"
+                b"<LastModified>2026-09-03T12:00:00Z</LastModified>"
+                b"<ETag>\"neighbor\"</ETag></Contents></ListBucketResult>"
             )
             self.send_response(200)
             self.send_header("Content-Length", str(len(body)))
@@ -141,7 +147,7 @@ def test_list_bucket_avoids_redundant_head_request(executable):
     try:
         result = run_tool(
             executable,
-            "s3://request-list",
+            f"s3://request-list{key}",
             env=environment,
         )
     finally:
@@ -155,6 +161,9 @@ def test_list_bucket_avoids_redundant_head_request(executable):
     assert method == "GET"
     assert path.startswith("/request-list?list-type=2&max-keys=1000")
     assert "encoding-type=url" in path
+    if key:
+        assert "prefix=photo" in path
+        assert result.stdout.splitlines() == ["s3://request-list", "s3://request-list/photo"]
 
 
 def test_list_retries_temporary_redirect(executable):

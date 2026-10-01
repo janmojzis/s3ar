@@ -362,79 +362,9 @@ static bool write_listed_object(void *callback_data,
     return true;
 }
 
-static bool write_all_bucket(void *callback_data,
-                             const struct s3_bucket *bucket) {
+static void write_selected_bucket(void *data, const struct s3_bucket *bucket) {
     check_interrupted();
-    struct create_context *context = callback_data;
-    write_bucket(context, bucket->name);
-    struct s3_error error = {0};
-    enum s3_result result =
-        s3_object_list(context->config->s3, &error, bucket->name, NULL,
-                       write_listed_object, context, NULL);
-    if (result != S3_RESULT_OK) {
-        log_f4("unable to list objects ", s3_log_uri(NULL, bucket->name, NULL),
-               ": ", s3ar_log_error(&error));
-        s3ar_die(2);
-    }
-    check_interrupted();
-    return true;
-}
-
-static void write_selection(struct create_context *context,
-                            const struct s3ar_selection *selection) {
-    check_interrupted();
-    struct s3_client *s3 = context->config->s3;
-    struct s3_error error = {0};
-    enum s3_result result;
-    if (selection->bucket == NULL) {
-        result = s3_bucket_list(s3, &error, write_all_bucket, context);
-        if (result != S3_RESULT_OK) {
-            log_f2("unable to list buckets: ", s3ar_log_error(&error));
-            s3ar_die(2);
-        }
-        return;
-    }
-    write_bucket(context, selection->bucket);
-    if (selection->key == NULL) {
-        result = s3_object_list(s3, &error, selection->bucket, NULL,
-                                write_listed_object, context, NULL);
-        if (result != S3_RESULT_OK) {
-            log_f4("unable to list objects ",
-                   s3_log_uri(NULL, selection->bucket, NULL), ": ",
-                   s3ar_log_error(&error));
-            s3ar_die(2);
-        }
-        return;
-    }
-
-    bool found = write_object(context, selection->bucket, selection->key, true);
-    size_t length = strlen(selection->key);
-    if (length > SIZE_MAX - 2) {
-        log_f1("out of memory");
-        s3ar_die(2);
-    }
-    char *prefix = malloc(length + 2);
-    if (prefix == NULL) {
-        log_f1("out of memory");
-        s3ar_die(2);
-    }
-    memcpy(prefix, selection->key, length);
-    prefix[length] = '/';
-    prefix[length + 1] = '\0';
-    size_t descendants = 0;
-    result = s3_object_list(s3, &error, selection->bucket, prefix,
-                            write_listed_object, context, &descendants);
-    free(prefix);
-    if (result != S3_RESULT_OK) {
-        log_f4("unable to list objects ",
-               s3_log_uri(NULL, selection->bucket, NULL), ": ",
-               s3ar_log_error(&error));
-        s3ar_die(2);
-    }
-    if (!found && descendants == 0) {
-        log_f2("not found ", selection->uri);
-        s3ar_die(2);
-    }
+    write_bucket(data, bucket->name);
 }
 
 static int open_archive_output(const char *path) {
@@ -482,6 +412,10 @@ static int open_archive_output(const char *path) {
 }
 
 void s3ar_create(const struct s3ar_config *config) {
+    struct s3ar_selection_set selections;
+    if (s3ar_selection_set_parse(&selections, (size_t) config->operand_count,
+                                 config->operands) != 0)
+        s3ar_die(2);
     interrupted_signal = 0;
     s3ar_interrupt_bind(config->s3, &interrupted_signal);
     install_interrupt_handlers();
@@ -519,20 +453,17 @@ void s3ar_create(const struct s3ar_config *config) {
         .config = config,
         .archive = archive,
     };
-    for (int i = 0; i < config->operand_count; ++i) {
+    const struct s3ar_selection_callbacks callbacks = {
+        .bucket = write_selected_bucket,
+        .object = write_listed_object,
+    };
+    for (size_t i = 0; i < selections.count; ++i) {
         check_interrupted();
-        struct s3ar_selection selection;
-        if (s3ar_selection_parse(&selection, config->operands[i]) != 0) {
-            if (errno == EINVAL) {
-                log_f2("invalid S3 operand ", config->operands[i]);
-                s3ar_die(2);
-            }
-            log_f1("out of memory");
+        if (s3ar_selection_walk(config->s3, &selections.items[i], &callbacks,
+                                &context) != S3_RESULT_OK)
             s3ar_die(2);
-        }
-        write_selection(&context, &selection);
-        s3ar_selection_free(&selection);
     }
+    s3ar_selection_set_free(&selections);
     check_interrupted();
 
     if (archive_write_close(archive) != ARCHIVE_OK) {

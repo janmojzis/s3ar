@@ -111,13 +111,15 @@ def test_create_exact_object_avoids_redundant_head_requests(
             elif (
                 parsed.path == "/request-create"
                 and query.get("list-type") == ["2"]
-                and query.get("prefix") == ["object/"]
+                and query.get("prefix") == ["object"]
             ):
                 self.reply(
                     200,
                     b"<ListBucketResult><EncodingType>url</EncodingType>"
                     b"<IsTruncated>false</IsTruncated>"
-                    b"</ListBucketResult>",
+                    b"<Contents><Key>object</Key><Size>4</Size>"
+                    b"<LastModified>2026-09-03T12:00:00Z</LastModified>"
+                    b"<ETag>\"object\"</ETag></Contents></ListBucketResult>",
                 )
             else:
                 self.reply(404)
@@ -1039,11 +1041,18 @@ def test_interrupted_create_preserves_existing_archive(
 
         def do_GET(self):
             parsed = urllib.parse.urlsplit(self.path)
-            if parsed.path == "/interrupt-create" and parsed.query == "acl":
+            if parsed.path == "/interrupt-create":
+                body = acl if parsed.query == "acl" else (
+                    b"<ListBucketResult><EncodingType>url</EncodingType>"
+                    b"<IsTruncated>false</IsTruncated>"
+                    b"<Contents><Key>object</Key><Size>0</Size>"
+                    b"<LastModified>2026-09-03T12:00:00Z</LastModified>"
+                    b"<ETag>\"object\"</ETag></Contents></ListBucketResult>"
+                )
                 self.send_response(200)
-                self.send_header("Content-Length", str(len(acl)))
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(acl)
+                self.wfile.write(body)
                 return
             if parsed.path != "/interrupt-create/object":
                 self.send_response(404)
@@ -1119,11 +1128,18 @@ def test_interrupted_create_during_get_retry_delay_preserves_archive(
 
         def do_GET(self):
             parsed = urllib.parse.urlsplit(self.path)
-            if parsed.path == "/interrupt-retry" and parsed.query == "acl":
+            if parsed.path == "/interrupt-retry":
+                body = acl if parsed.query == "acl" else (
+                    b"<ListBucketResult><EncodingType>url</EncodingType>"
+                    b"<IsTruncated>false</IsTruncated>"
+                    b"<Contents><Key>object</Key><Size>0</Size>"
+                    b"<LastModified>2026-09-03T12:00:00Z</LastModified>"
+                    b"<ETag>\"object\"</ETag></Contents></ListBucketResult>"
+                )
                 self.send_response(200)
-                self.send_header("Content-Length", str(len(acl)))
+                self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
-                self.wfile.write(acl)
+                self.wfile.write(body)
                 return
             if parsed.path != "/interrupt-retry/object":
                 self.send_response(404)

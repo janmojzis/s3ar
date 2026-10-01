@@ -114,7 +114,8 @@ are encoded byte by byte. The format is independent of the current locale.
 
 ## Selecting S3 resources
 
-These selection rules apply to `s3ar -c`, `s3ar -x`, and `s3ar -t`.
+These selection rules apply to `s3ar -c`, `s3ar -x`, `s3ar -t`,
+`s3ar-list`, and `s3ar-delete`.
 
 A trailing slash does not change the selection:
 
@@ -130,8 +131,22 @@ Matches stop at path boundaries. For example, `photo` matches the exact key
 `photo` and keys below `photo/`, but not `photo1.jpg` or `photo-old.jpg`. The
 exact key itself does not need to exist if matching descendants do.
 
-If a URI matches neither an object nor a prefix, the command fails. Empty
-buckets are valid and still produce a bucket entry when creating an archive.
+Bucket and key names in operands are literal and are not URL-decoded.
+
+If a URI matches neither an object nor descendants, `s3ar -c`, `s3ar -x`,
+`s3ar -t`, and `s3ar-list` fail. `s3ar-delete` accepts an empty key selection;
+it selects all versions, delete markers, and multipart uploads for matching
+keys. A key selection keeps the bucket; a whole-bucket selection deletes it
+after its contents have been removed.
+
+Empty buckets are valid. Bucket entries are included before selected objects
+when creating, extracting, or listing, even for key selections. The bucket
+entry alone does not satisfy a key selection.
+
+`s3ar -c` and `s3ar-list` process operands in command-line order, with repeated
+entries for overlapping selections. `s3ar -x` and `s3ar -t` process the archive
+once in archive order and match names after `--transform`. `s3ar-delete`
+accepts one operand. With `s3ar-list -b s3://`, only buckets are listed.
 
 The examples below assume that S3 contains these objects:
 

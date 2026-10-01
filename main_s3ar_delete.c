@@ -114,7 +114,8 @@ static enum s3_result scan_targets(struct operation *op, const char *bucket,
         }
         for (size_t i = 0; i < page.count; ++i) {
             const struct s3_listing_item *target = &page.items[i];
-            if (!s3ar_selection_matches(op->selection, bucket, target->key))
+            if (s3ar_selection_match(op->selection, bucket, target->key) !=
+                S3AR_SELECTION_DIRECT)
                 continue;
             ++matched;
             if (!op->dry_run && !uploads) {
@@ -193,7 +194,9 @@ static enum s3_result scan_targets(struct operation *op, const char *bucket,
 static enum s3_result process_bucket(struct operation *op, const char *bucket) {
     enum s3_result result = scan_targets(op, bucket, true);
     if (result == S3_RESULT_OK) result = scan_targets(op, bucket, false);
-    if (result == S3_RESULT_OK && op->selection->key == NULL) {
+    if (result == S3_RESULT_OK &&
+        s3ar_selection_match(op->selection, bucket, NULL) ==
+            S3AR_SELECTION_DIRECT) {
         if (op->dry_run)
             log_i2(s3_log_uri("s3", bucket, NULL), " would delete");
         else {
@@ -313,25 +316,11 @@ int main_s3ar_delete(int argc, char **argv) {
     }
 
     /* collect selected buckets */
-    if (selection.bucket == NULL) {
-        result = s3_bucket_list(client, &error, collect_bucket, &names);
-        if (result != S3_RESULT_OK) {
-            log_f2("unable to list buckets: ", s3ar_log_error(&error));
-            die(2);
-        }
-    }
-    else {
-        names.items = malloc(sizeof(*names.items));
-        if (names.items == NULL) {
-            log_f1("out of memory");
-            die(2);
-        }
-        names.items[0] = strdup(selection.bucket);
-        if (names.items[0] == NULL) {
-            log_f1("out of memory");
-            die(2);
-        }
-        names.count = 1;
+    result = s3ar_selection_buckets(client, &error, &selection, collect_bucket,
+                                    &names);
+    if (result != S3_RESULT_OK) {
+        log_f2("unable to list buckets: ", s3ar_log_error(&error));
+        die(2);
     }
 
     /* delete matching resources */

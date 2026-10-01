@@ -16,6 +16,7 @@
 #include <string.h>
 
 static struct s3ar_config list_config;
+static struct s3ar_selection_set selections;
 static struct s3ar_config_env config;
 static struct s3_error error = {0};
 static enum s3_result result;
@@ -35,6 +36,7 @@ static void usage(void) {
 }
 
 static _Noreturn void s3ar_list_exit(int status) {
+    s3ar_selection_set_free(&selections);
     s3_client_close(list_config.s3);
     s3ar_config_free(&config);
     exit(status);
@@ -132,110 +134,25 @@ static bool list_object(void *callback_data, const struct s3_object *object) {
     return true;
 }
 
-static bool list_all_bucket(void *callback_data,
-                            const struct s3_bucket *bucket) {
-    struct list_context *context = callback_data;
+static void list_selected_bucket(void *data, const struct s3_bucket *bucket) {
+    (void) data;
     output_name(bucket->name, NULL);
-    struct s3_error error = {0};
-    enum s3_result result = s3_object_list(context->s3, &error, bucket->name,
-                                           NULL, list_object, context, NULL);
-    if (result != S3_RESULT_OK) {
-        log_f4("unable to list objects ", s3_log_uri(NULL, bucket->name, NULL),
-               ": ", s3ar_log_error(&error));
-        s3ar_list_exit(2);
-    }
-    return true;
 }
 
-static void list_selection(struct list_context *context,
-                           const struct s3ar_selection *selection) {
-    struct s3_client *s3 = context->s3;
-    struct s3_error error = {0};
-    enum s3_result result;
-    if (selection->bucket == NULL) {
-        result = s3_bucket_list(s3, &error, list_all_bucket, context);
-        if (result != S3_RESULT_OK) {
-            log_f2("unable to list buckets: ", s3ar_log_error(&error));
-            s3ar_list_exit(2);
-        }
-        return;
-    }
-    output_name(selection->bucket, NULL);
-    if (selection->key == NULL) {
-        result = s3_object_list(s3, &error, selection->bucket, NULL,
-                                list_object, context, NULL);
-        if (result != S3_RESULT_OK) {
-            log_f4("unable to list objects ",
-                   s3_log_uri(NULL, selection->bucket, NULL), ": ",
-                   s3ar_log_error(&error));
-            s3ar_list_exit(2);
-        }
-        return;
-    }
-
-    struct s3_object_properties properties = {0};
-    result = s3_object_head(s3, &error, &properties, selection->bucket,
-                            selection->key);
-    bool found = result == S3_RESULT_OK;
-    if (found) {
-        const struct s3_object object = {
-            .bucket = selection->bucket,
-            .key = selection->key,
-            .size = properties.size,
-            .last_modified = properties.last_modified,
-            .etag = properties.etag,
-        };
-        output_object(&object, context->verbose);
-        s3_object_properties_free(&properties);
-    }
-    else if (result != S3_RESULT_NOT_FOUND) {
-        log_f4("unable to inspect object ",
-               s3_log_uri(NULL, selection->bucket, selection->key), ": ",
-               s3ar_log_error(&error));
-        s3ar_list_exit(2);
-    }
-    size_t length = strlen(selection->key);
-    if (length > SIZE_MAX - 2) {
-        errno = ENOMEM;
-        list_fatal("out of memory", NULL, NULL);
-    }
-    char *prefix = malloc(length + 2);
-    if (prefix == NULL) { list_fatal("out of memory", NULL, NULL); }
-    memcpy(prefix, selection->key, length);
-    prefix[length] = '/';
-    prefix[length + 1] = '\0';
-    size_t descendants = 0;
-    result = s3_object_list(s3, &error, selection->bucket, prefix, list_object,
-                            context, &descendants);
-    free(prefix);
-    if (result != S3_RESULT_OK) {
-        log_f4("unable to list objects ",
-               s3_log_uri(NULL, selection->bucket, NULL), ": ",
-               s3ar_log_error(&error));
-        s3ar_list_exit(2);
-    }
-    if (!found && descendants == 0) {
-        log_f2("not found ", selection->uri);
-        s3ar_list_exit(2);
-    }
-}
-
-static void s3ar_list_objects(const struct s3ar_config *config) {
+static void s3ar_list_objects(const struct s3ar_config *config,
+                              const struct s3ar_selection_set *selections) {
     struct list_context context = {
         .s3 = config->s3,
         .verbose = config->verbose,
     };
-    for (int i = 0; i < config->operand_count; ++i) {
-        struct s3ar_selection selection;
-        if (s3ar_selection_parse(&selection, config->operands[i]) != 0) {
-            if (errno == EINVAL) {
-                log_f2("invalid S3 operand ", config->operands[i]);
-                s3ar_list_exit(2);
-            }
-            list_fatal("out of memory", NULL, NULL);
-        }
-        list_selection(&context, &selection);
-        s3ar_selection_free(&selection);
+    const struct s3ar_selection_callbacks callbacks = {
+        .bucket = list_selected_bucket,
+        .object = list_object,
+    };
+    for (size_t i = 0; i < selections->count; ++i) {
+        if (s3ar_selection_walk(config->s3, &selections->items[i], &callbacks,
+                                &context) != S3_RESULT_OK)
+            s3ar_list_exit(2);
     }
 }
 
@@ -245,8 +162,8 @@ static void s3ar_list_buckets(const struct s3ar_config *config) {
         .verbose = config->verbose,
     };
     struct s3_error error = {0};
-    enum s3_result result =
-        s3_bucket_list(config->s3, &error, list_bucket_name, &context);
+    enum s3_result result = s3ar_selection_buckets(
+        config->s3, &error, &selections.items[0], list_bucket_name, &context);
     if (result != S3_RESULT_OK) {
         log_f2("unable to list buckets: ", s3ar_log_error(&error));
         s3ar_list_exit(2);
@@ -303,16 +220,12 @@ int main_s3ar_list(int argc, char **argv) {
         log_f1("at least one S3 operand is required");
         s3ar_list_exit(2);
     }
-    else {
-        for (int i = optind; i < argc; ++i) {
-            if (strncmp(argv[i], "s3://", 5) != 0) {
-                log_f2("invalid S3 operand: ", argv[i]);
-                s3ar_list_exit(2);
-            }
-        }
-    }
     list_config.operands = &argv[optind];
     list_config.operand_count = argc - optind;
+    if (s3ar_selection_set_parse(&selections,
+                                 (size_t) list_config.operand_count,
+                                 list_config.operands) != 0)
+        s3ar_list_exit(2);
 
     log_d3("(option -v) verbosity = '", log_num(verbosity), "'");
     log_d1("(option -h) help = 'false'");
@@ -337,7 +250,7 @@ int main_s3ar_list(int argc, char **argv) {
     if (buckets)
         s3ar_list_buckets(&list_config);
     else
-        s3ar_list_objects(&list_config);
+        s3ar_list_objects(&list_config, &selections);
 
     if (fflush(stdout) != 0) {
         log_f2("cannot flush standard output: ", log_errno());

@@ -22,3 +22,5 @@
 /libs3.a
 /liblog.a
 /tests/__pycache__/
+
+/test-selection
