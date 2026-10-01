@@ -18,6 +18,7 @@
 /test-transform
 /test-transform-restore
 /test-uri-encode
+/test-log-escape
 /libs3.a
 /liblog.a
 /tests/__pycache__/

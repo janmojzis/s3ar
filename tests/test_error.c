@@ -456,6 +456,17 @@ static void test_s3_error_log_part(void) {
     assert(fclose(stream) == 0);
     assert(strcmp(output, "access denied [HTTP 403] [after 2 attempts]") == 0);
     free(output);
+
+    strcpy(error.message, "bad\nmessage");
+    strcpy(error.s3_code, "code\x1b");
+    strcpy(error.request_id, "id\\\t");
+    stream = open_memstream(&output, &size);
+    assert(stream != NULL);
+    part.value.custom.format(stream, part.value.custom.data);
+    assert(fclose(stream) == 0);
+    assert(strcmp(output, "bad\\x0Amessage (S3 code\\x1B) [HTTP 403] "
+                          "[request id\\\\\\x09] [after 2 attempts]") == 0);
+    free(output);
 }
 
 static void assert_s3_logged_uri(const char *scheme, const char *bucket,
@@ -476,6 +487,7 @@ static void test_s3_uri_log_part(void) {
     assert_s3_logged_uri("s3", "bucket", "path/a b/%",
                          "s3://bucket/path/a%20b/%25");
     assert_s3_logged_uri(NULL, "a b", NULL, "a%20b");
+    assert_s3_logged_uri("s3\n", "bucket", NULL, "s3\\x0A://bucket");
     assert_s3_logged_uri("s3", "bucket", NULL, "s3://bucket");
 }
 

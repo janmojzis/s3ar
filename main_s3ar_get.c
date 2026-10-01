@@ -134,17 +134,14 @@ static void format_xattr_value(FILE *stream, const void *data) {
     else {
         (void) fputs(" = '", stream);
         for (size_t i = 0; i < value->size; ++i) {
-            unsigned char c = (unsigned char) value->value[i];
-            if (c < 32 || c >= 127)
-                (void) fprintf(stream, "\\x%02X", c);
-            else {
-                if (c == '\'' || c == '\\') (void) fputc('\\', stream);
-                (void) fputc(c, stream);
-            }
+            if (value->value[i] == '\'') (void) fputc('\\', stream);
+            log_write_data(stream, value->value + i, 1);
         }
         (void) fputc('\'', stream);
     }
-    (void) fprintf(stream, " (%s)", value->status);
+    (void) fputs(" (", stream);
+    log_write_text(stream, value->status);
+    (void) fputc(')', stream);
 }
 
 static void debug_xattr(const char *name, const char *value, size_t size,

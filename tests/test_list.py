@@ -156,3 +156,39 @@ def test_list_archive_uses_pax_identity_without_s3_configuration(
         "archive-bucket/folder/key%20name%2B%25%C5%BE 4 123 - -\n"
         'archive-bucket/current 0 456 "3472a7" -\n'
     )
+
+
+@pytest.mark.parametrize("etag", ["\x1b[2J\x1b[HFORGED", "\x07", "\x7f", "\x9b"])
+def test_archive_listing_quotes_etag_control_bytes(executable, etag):
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w", format=tarfile.PAX_FORMAT) as out:
+        bucket = tarfile.TarInfo("bucket/")
+        bucket.type = tarfile.DIRTYPE
+        bucket.pax_headers = {"SCHILY.xattr.user.s3ar.bucket": "bucket"}
+        out.addfile(bucket)
+        entry = tarfile.TarInfo("bucket/key")
+        entry.pax_headers = {
+            "SCHILY.xattr.user.s3ar.bucket": "bucket",
+            "SCHILY.xattr.user.s3ar.key": "key",
+            "SCHILY.xattr.user.s3ar.etag": etag,
+        }
+        out.addfile(entry)
+    result = subprocess.run([str(executable), "-tv"], input=archive.getvalue(),
+                            capture_output=True, timeout=5, env={})
+    assert result.returncode == 0, result.stderr
+    assert all(c == 10 or 32 <= c <= 126 for c in result.stdout)
+    assert b"\\x" in result.stdout
+
+
+def test_rejected_archive_link_quotes_path(executable):
+    archive = io.BytesIO()
+    with tarfile.open(fileobj=archive, mode="w", format=tarfile.PAX_FORMAT) as out:
+        entry = tarfile.TarInfo("\x1b[2JFORGED")
+        entry.type = tarfile.SYMTYPE
+        entry.linkname = "target"
+        out.addfile(entry)
+    result = subprocess.run([str(executable), "-t"], input=archive.getvalue(),
+                            capture_output=True, timeout=5, env={})
+    assert result.returncode == 2
+    assert b"\x1b" not in result.stderr
+    assert b"\\x1B[2JFORGED" in result.stderr

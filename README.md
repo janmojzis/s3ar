@@ -376,3 +376,17 @@ with `.s3-object-` are reserved for temporary files and are also rejected.
 Such writes return HTTP 409.
 S3 user metadata is stored in `.s3testserver/metadata.sqlite3`; an existing
 `.s3testserver/metadata.json` is imported automatically on first use.
+
+### Log escaping
+
+All log records and listing rows escape ASCII control bytes and bytes outside
+printable ASCII as `\xHH`, using uppercase hexadecimal. A literal backslash
+is doubled. UTF-8 is escaped byte by byte; only the logger's final record
+separator is a literal newline. Custom formatters use `log_write_text()` and
+`log_write_data()` to escape variable data directly into the output stream. Trusted multiline help from `log_usage()` is emitted verbatim.
+S3 bucket/key URI encoding remains `%HH`; percent signs pass through the logger
+unchanged. Archive and object data streams do not pass through the logger.
+
+Logging needs no intermediate allocation. Custom formatters write trusted ASCII
+punctuation and numbers directly; they must use the escaping helpers for text
+and binary data (including embedded NUL bytes).

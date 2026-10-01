@@ -9,6 +9,28 @@
 static volatile sig_atomic_t current_verbosity;
 static const char *log_name;
 
+/* Escape bytes independently of the locale. Only the logger emits record
+ * separators; newlines supplied by a caller are ordinary escaped data. */
+void log_write_data(FILE *stream, const char *text, size_t size) {
+    static const char hex[] = "0123456789ABCDEF";
+    for (size_t i = 0; i < size; ++i) {
+        unsigned char c = (unsigned char) text[i];
+        if (c == '\\')
+            (void) fputs("\\\\", stream);
+        else if (c >= 0x20 && c <= 0x7e)
+            (void) fputc(c, stream);
+        else {
+            char escaped[] = {'\\', 'x', hex[c >> 4], hex[c & 15]};
+            (void) fwrite(escaped, 1, sizeof(escaped), stream);
+        }
+    }
+}
+
+void log_write_text(FILE *stream, const char *text) {
+    if (text == NULL) text = "(null)";
+    log_write_data(stream, text, strlen(text));
+}
+
 struct log_part log_bytes(long long bytes) {
     return (struct log_part) {.kind = log_PART_BYTES, .value.number = bytes};
 }
@@ -25,10 +47,12 @@ static void log_print_bytes(FILE *stream, long long bytes) {
     }
     long long hundredths =
         (long long) (value * 100 + (value < 0 ? -0.5L : 0.5L));
+    char text[64];
     if (hundredths % 100 == 0)
-        (void) fprintf(stream, "%.0Lf %s", value, units[unit]);
+        (void) snprintf(text, sizeof(text), "%.0Lf %s", value, units[unit]);
     else
-        (void) fprintf(stream, "%.2Lf %s", value, units[unit]);
+        (void) snprintf(text, sizeof(text), "%.2Lf %s", value, units[unit]);
+    log_write_text(stream, text);
 }
 
 struct log_part log_custom(log_format_fn format, const void *data) {
@@ -82,19 +106,20 @@ static void log_print(enum log_level level, const struct log_part *parts,
         [log_TRACE] = "trace",
     };
     if (level != log_OUTPUT) {
-        if (log_name != NULL) (void) fprintf(stream, "%s: ", log_name);
+        if (log_name != NULL) {
+            log_write_text(stream, log_name);
+            (void) fputs(": ", stream);
+        }
         (void) fprintf(stream, "%s: ", level_names[level]);
     }
     for (size_t i = 0; i < count; ++i) {
         if (parts[i].kind == log_PART_TEXT)
-            (void) fputs(parts[i].value.text != NULL ? parts[i].value.text
-                                                     : "(null)",
-                         stream);
+            log_write_text(stream, parts[i].value.text);
         else if (parts[i].kind == log_PART_CUSTOM &&
                  parts[i].value.custom.format != NULL)
             parts[i].value.custom.format(stream, parts[i].value.custom.data);
         else if (parts[i].kind == log_PART_ERRNO)
-            (void) fputs(strerror(parts[i].value.error_number), stream);
+            log_write_text(stream, strerror(parts[i].value.error_number));
         else if (parts[i].kind == log_PART_NUM)
             (void) fprintf(stream, "%lld", parts[i].value.number);
         else if (parts[i].kind == log_PART_BYTES)

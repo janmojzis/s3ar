@@ -41,6 +41,13 @@ static inline struct log_part log_text(const char *text) {
     return (struct log_part) {.kind = log_PART_TEXT, .value.text = text};
 }
 
+/* Write escaped text or bytes, including embedded NULs, without allocation. */
+void log_write_text(FILE *stream, const char *text);
+void log_write_data(FILE *stream, const char *text, size_t size);
+
+/* Write directly to the supplied stream; do not close or retain it.
+ * Use log_write_text/log_write_data for variable data. Trusted printable
+ * ASCII and already escaped output may be written verbatim. */
 typedef void (*log_format_fn)(FILE *stream, const void *data);
 
 struct log_part log_custom(log_format_fn format, const void *data);
@@ -69,8 +76,11 @@ void log_set_name(const char *name);
 const char *log_get_name(void);
 void log_inc_level(int signal_number);
 void log_dec_level(int signal_number);
+/* Trusted multiline help text; emitted verbatim. */
 void log_usage(FILE *stream, const char *text);
 bool log_enabled(enum log_level level);
+/* All levels escape control/non-ASCII bytes as \xHH and backslashes as \\.
+ * Custom formatters must follow the contract above. Preserves errno. */
 void log_emit(enum log_level level, const struct log_part *parts, size_t count);
 
 #define LOG_RECORD(level, ...)                                                 \
