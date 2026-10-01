@@ -18,48 +18,13 @@ void s3_listing_page_free(struct s3_listing_page *page) {
     memset(page, 0, sizeof(*page));
 }
 
-static int hex(unsigned char c) {
-    if (c >= '0' && c <= '9') return c - '0';
-    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-    return -1;
-}
-
-static char *decode_key(const char *encoded) {
-    size_t size = strlen(encoded), used = 0;
-    char *key = malloc(size + 1);
-    if (key == NULL) return NULL;
-    for (size_t i = 0; i < size; ++i) {
-        unsigned char c = (unsigned char) encoded[i];
-        if (c == '%') {
-            int high, low;
-            if (i + 2 >= size ||
-                (high = hex((unsigned char) encoded[i + 1])) < 0 ||
-                (low = hex((unsigned char) encoded[i + 2])) < 0) {
-                free(key);
-                return NULL;
-            }
-            c = (unsigned char) ((high << 4) | low);
-            i += 2;
-        }
-        if (c == '\0') {
-            free(key);
-            return NULL;
-        }
-        key[used++] = (char) c;
-    }
-    key[used] = '\0';
-    if (!s3_url_key_valid(key)) {
-        free(key);
-        return NULL;
-    }
-    return key;
-}
-
 static char *copy_key(const char *text, bool encoded) {
     if (text == NULL) return NULL;
-    if (encoded) return decode_key(text);
-    char *key = strdup(text);
+    char *key = NULL;
+    if (encoded)
+        (void) s3_uri_decode_alloc(text, &key);
+    else
+        key = strdup(text);
     if (key != NULL && !s3_url_key_valid(key)) {
         free(key);
         return NULL;

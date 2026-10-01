@@ -89,38 +89,6 @@ static bool parse_u64_text(const char *text, uint64_t *result) {
     return true;
 }
 
-static int hex_value(unsigned char value) {
-    if (value >= '0' && value <= '9') return value - '0';
-    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
-    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
-    return -1;
-}
-
-static enum s3_result decode_list_key(const char *encoded, char **decoded) {
-    size_t input_size = strlen(encoded), output_size = 0;
-    char *output = malloc(input_size + 1);
-    if (output == NULL) return S3_RESULT_ERROR;
-    for (size_t i = 0; i < input_size; ++i) {
-        unsigned char byte = (unsigned char) encoded[i];
-        if (byte == '%') {
-            int high, low;
-            if (i + 2 >= input_size) goto invalid;
-            high = hex_value((unsigned char) encoded[++i]);
-            low = hex_value((unsigned char) encoded[++i]);
-            if (high < 0 || low < 0) goto invalid;
-            byte = (unsigned char) ((high << 4) | low);
-        }
-        if (byte == '\0') goto invalid;
-        output[output_size++] = (char) byte;
-    }
-    output[output_size] = '\0';
-    *decoded = output;
-    return S3_RESULT_OK;
-invalid:
-    free(output);
-    return S3_RESULT_PROTOCOL_ERROR;
-}
-
 static enum s3_result append_xml_object(struct list_page *page, xmlNode *node) {
     xmlNode *key_node = s3_xml_child(node, "Key");
     xmlNode *size_node = s3_xml_child(node, "Size");
@@ -140,7 +108,7 @@ static enum s3_result append_xml_object(struct list_page *page, xmlNode *node) {
         !parse_u64_text((const char *) size, &bytes))
         goto done;
     if (!parse_timestamp((const char *) date, &modified)) goto done;
-    result = decode_list_key((const char *) key, &decoded_key);
+    result = s3_uri_decode_alloc((const char *) key, &decoded_key);
     if (result != S3_RESULT_OK) goto done;
     if (!s3_url_key_valid(decoded_key)) {
         result = S3_RESULT_PROTOCOL_ERROR;
