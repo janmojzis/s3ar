@@ -156,21 +156,35 @@ Bucket-only mode requires exactly the operand `s3://`. Object-only mode
 produces empty successful output for an empty bucket.
 
 Choose additional fields with `--object-size` (bytes), `--object-mtime`
-(seconds since the Unix epoch), and `--object-etag`. These require object
-output and always appear in the order size, mtime, etag. `--bucket-acl`
-requires bucket output. `-v` increases diagnostic verbosity on stderr.
+(seconds since the Unix epoch), and `--object-etag`. `--object-meta NAME`
+selects a user metadata value; repeat it for multiple names. Names omit
+`x-amz-meta-`. `--object-metadata` prints all user metadata as one compact
+JSON object, or `{}` if there is none. Both metadata options share one extra
+HEAD request per listed object. `--bucket-acl` fetches bucket ACL information.
+Object fields require object output; ACL requires bucket output.
+
+The URI comes first, followed by fields in option order, without field names.
+Repeated fields keep their first position. Selected metadata values are
+printed as received. Missing and empty values produce empty fields.
+
+Fields are separated by a space; records end with a newline. For parsing,
+use `--delimiter STRING` to choose a separator absent from the values, and
+preserve empty fields and trailing separators. Supported escapes are `\t`
+(tab), `\n` (newline), `\0` (NUL), and `\\` (backslash). For example,
+`--delimiter '\t'` uses a tab. `-v` increases diagnostic verbosity on stderr.
 
 ```sh
 s3ar-list -b s3://
-s3ar-list -o s3://photos/2026/
 s3ar-list -o --object-mtime --object-size s3://photos/2026/
-s3ar-list -bo --bucket-acl --object-etag s3://photos/
+s3ar-list -o --object-meta source --object-size --delimiter '|' s3://photos/
+s3ar-list -o --object-metadata --delimiter '\t' s3://photos/
 ```
 
-Example object row with size and mtime:
+Example output for selected source metadata and size with `|` as the delimiter:
 
 ```text
-s3://photos/2026/photo1.jpg size=12345 mtime=1790812800
+s3://photos/a.jpg|manual upload|12345
+s3://photos/b.jpg||456
 ```
 
 The examples below assume that S3 contains these objects:

@@ -7,6 +7,7 @@ s3ar-list \- list live S3 buckets and objects
 .RB [ \-b ]
 .RB [ \-o ]
 .RI [ FIELDS ]
+.RI [ \-\-delimiter " STRING" ]
 .I s3://[BUCKET[/KEY]]...
 .br
 .B s3ar-list
@@ -28,7 +29,6 @@ Bucket and key names in operands are literal, not URL-decoded. Quote operands
 containing spaces or shell metacharacters. Operands are processed in order;
 overlapping selections produce repeated output. A key selection that matches
 neither an object nor descendants is an error. Empty buckets are valid.
-
 .PP
 Listing results are written to standard output; diagnostics go to standard
 error. When bucket output is enabled, bucket names are printed before their
@@ -37,18 +37,25 @@ selected objects, including for key selections. Names have the
 prefix and use the byte-oriented URL encoding described in
 .BR s3ar (1).
 .PP
-With all object fields enabled, object rows have this form:
+The URI is followed by requested fields in command-line option order,
+without field names or prefixes. Repeated requests for the same field use
+its first position. Object fields apply to object rows; bucket ACL applies
+to bucket rows.
 .PP
+Fields are separated by a space by default. Records end with a newline.
+Missing values produce empty fields, including at the end of a record.
+Selected metadata values are printed as received, without added quoting or
+encoding. For parsing, use
+.B \-\-delimiter
+to choose a separator that does not occur in the values and preserve empty
+fields and trailing separators.
+.PP
+For example:
 .nf
-s3://BUCKET/KEY size=BYTES mtime=SECONDS etag=ETAG
+s3ar-list -o --object-meta source --object-size --delimiter '|' s3://bucket/
+s3://bucket/a|manual upload|123
+s3://bucket/b||456
 .fi
-.PP
-Fields are appended in the fixed order size, mtime, etag, regardless of
-option order. Only requested fields are included.
-With
-.BR \-\-bucket-acl ,
-bucket rows have the form
-.BR "s3://BUCKET acl=SUMMARY" .
 .SH OPTIONS
 .TP
 .BR \-b , " " \-\-buckets
@@ -72,8 +79,39 @@ Append object size in bytes.
 Append object modification time in seconds since the Unix epoch.
 .TP
 .B \-\-object-etag
-Append object ETag, or a dash if unavailable.
+Append object ETag, or an empty field if unavailable.
 Object field options require object output.
+.TP
+.B \-\-object-metadata
+Append all user metadata as one compact JSON object with keys sorted by name.
+An object with no metadata produces
+.BR {} .
+JSON strings use standard JSON escaping; the JSON object is not percent-encoded.
+.TP
+.BI \-\-object-meta " NAME"
+Append one user metadata value. Repeat to select multiple fields.
+Names are case-insensitive and omit the
+.B x-amz-meta-
+prefix. Missing and empty values both produce an empty field.
+Can be combined with
+.BR \-\-object-metadata .
+.PP
+Both metadata options require object output and make an additional HEAD
+request for each listed object. Multiple metadata options share one HEAD
+request per object. A failed HEAD request fails the listing.
+.TP
+.BI \-\-delimiter " STRING"
+Separate fields with STRING instead of a space. Supports
+.BR \(rst ,
+.BR \(rsn ,
+.BR \(rs0 ,
+and
+.B \(rs\(rs
+for tab, newline, NUL, and backslash. Other escapes and a trailing backslash
+are errors. Quote the argument to preserve backslashes, for example
+.BR "--delimiter '\(rst'" .
+An empty string joins fields without a separator. If repeated, the last
+value is used. Record endings remain newlines.
 .TP
 .B \-\-bucket-acl
 Fetch and append bucket ACL information. Requires bucket output.

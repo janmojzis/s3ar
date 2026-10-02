@@ -14,22 +14,33 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 static struct s3ar_config list_config;
 static struct s3ar_selection_set selections;
 static struct s3ar_config_env config;
 static bool buckets;
 static bool objects;
-static bool object_size;
-static bool object_mtime;
-static bool object_etag;
 static bool bucket_acl;
+static bool need_metadata;
+static char *delimiter;
+static size_t delimiter_size = 1;
+
+struct output_field {
+    int option;
+    const char *name;
+};
+static struct output_field *fields;
+static size_t field_count;
 
 enum {
     OPT_OBJECT_SIZE = 256,
     OPT_OBJECT_MTIME,
     OPT_OBJECT_ETAG,
     OPT_BUCKET_ACL,
+    OPT_OBJECT_METADATA,
+    OPT_OBJECT_META,
+    OPT_DELIMITER,
 };
 static int option;
 
@@ -39,6 +50,9 @@ static const struct option long_options[] = {
     {"object-size", no_argument, NULL, OPT_OBJECT_SIZE},
     {"object-mtime", no_argument, NULL, OPT_OBJECT_MTIME},
     {"object-etag", no_argument, NULL, OPT_OBJECT_ETAG},
+    {"object-metadata", no_argument, NULL, OPT_OBJECT_METADATA},
+    {"object-meta", required_argument, NULL, OPT_OBJECT_META},
+    {"delimiter", required_argument, NULL, OPT_DELIMITER},
     {"bucket-acl", no_argument, NULL, OPT_BUCKET_ACL},
     {"verbose", no_argument, NULL, 'v'},
     {"help", no_argument, NULL, 'h'},
@@ -50,6 +64,8 @@ static void usage(void) {
                       "List buckets and objects by default; -b lists only buckets,\n"
                       "-o only objects, and -bo both. Bucket-only mode requires s3://.\n"
                       "Fields: --object-size --object-mtime --object-etag --bucket-acl\n"
+                      "        --object-metadata --object-meta NAME (repeatable)\n"
+                      "  --delimiter STRING  Field separator (default: space)\n"
                       "  -b, --buckets   Include buckets\n"
                       "  -o, --objects   Include objects\n"
                       "  -v, --verbose   Increase diagnostic verbosity only\n"
@@ -57,6 +73,8 @@ static void usage(void) {
 }
 
 static _Noreturn void s3ar_list_exit(int status) {
+    free(fields);
+    free(delimiter);
     s3ar_selection_set_free(&selections);
     s3_client_close(list_config.s3);
     s3ar_config_free(&config);
@@ -93,39 +111,122 @@ static void encode_name(char *encoded_bucket, char *encoded_key,
     }
 }
 
-static void output_name(const char *bucket, const char *key) {
+static void output_separator(void) {
+    const char *bytes = delimiter != NULL ? delimiter : " ";
+    (void) fwrite(bytes, 1, delimiter_size, stdout);
+}
+
+static void set_delimiter(const char *value) {
+    char *decoded = malloc(strlen(value) + 1);
+    if (decoded == NULL) list_fatal("out of memory", NULL, NULL);
+    size_t length = 0;
+    for (const char *p = value; *p; ++p) {
+        char c = *p;
+        if (c == '\\') {
+            switch (*++p) {
+            case 't': c = '\t'; break;
+            case 'n': c = '\n'; break;
+            case '0': c = '\0'; break;
+            case '\\': c = '\\'; break;
+            default:
+                free(decoded);
+                log_f1("invalid escape in --delimiter");
+                s3ar_list_exit(2);
+            }
+        }
+        decoded[length++] = c;
+    }
+    free(delimiter);
+    delimiter = decoded;
+    delimiter_size = length;
+}
+
+static void add_field(int option, const char *name) {
+    for (size_t i = 0; i < field_count; ++i) {
+        if (fields[i].option == option &&
+            (name == NULL || strcasecmp(fields[i].name, name) == 0))
+            return;
+    }
+    fields[field_count++] = (struct output_field) {option, name};
+    if (option == OPT_OBJECT_META || option == OPT_OBJECT_METADATA)
+        need_metadata = true;
+}
+
+static void output_uri(const char *bucket, const char *key) {
     char encoded_bucket[S3_URI_ENCODED_MAX_BYTES];
     char encoded_key[S3_URI_ENCODED_MAX_BYTES];
     encode_name(encoded_bucket, encoded_key, bucket, key);
-    if (key != NULL)
-        log_o4("s3://", encoded_bucket, "/", encoded_key);
-    else
-        log_o2("s3://", encoded_bucket);
+    fprintf(stdout, "s3://%s", encoded_bucket);
+    if (key != NULL) fprintf(stdout, "/%s", encoded_key);
 }
 
-static void output_object(const struct s3_object *object) {
-    char encoded_bucket[S3_URI_ENCODED_MAX_BYTES];
-    char encoded_key[S3_URI_ENCODED_MAX_BYTES];
-    char size[32] = "";
-    char mtime[32] = "";
-    encode_name(encoded_bucket, encoded_key, object->bucket, object->key);
-    if (object_size)
-        (void) snprintf(size, sizeof(size), " size=%" PRIu64, object->size);
-    if (object_mtime)
-        (void) snprintf(mtime, sizeof(mtime), " mtime=%" PRId64,
-                        object->last_modified);
-    log_o8("s3://", encoded_bucket, "/", encoded_key, size, mtime,
-           object_etag ? " etag=" : "",
-           object_etag ? (object->etag != NULL ? object->etag : "-") : "");
+static void output_json_string(const char *value) {
+    fputc('"', stdout);
+    for (const unsigned char *p = (const unsigned char *) value; *p; ++p) {
+        if (*p == '"' || *p == '\\') {
+            fputc('\\', stdout);
+            fputc(*p, stdout);
+        }
+        else if (*p < 0x20)
+            fprintf(stdout, "\\u%04x", (unsigned) *p);
+        else
+            fputc(*p, stdout);
+    }
+    fputc('"', stdout);
+}
+
+static void output_metadata(const struct s3_object_properties *properties) {
+    /* HEAD properties already contain metadata sorted by name. */
+    fputc('{', stdout);
+    for (size_t i = 0; i < properties->metadata_count; ++i) {
+        const struct s3_metadata *meta = &properties->metadata[i];
+        if (i > 0) fputc(',', stdout);
+        output_json_string(meta->name);
+        fputc(':', stdout);
+        output_json_string(meta->value);
+    }
+    fputc('}', stdout);
+}
+
+static void output_object(const struct s3_object *object,
+                          const struct s3_object_properties *properties) {
+    output_uri(object->bucket, object->key);
+    for (size_t i = 0; i < field_count; ++i) {
+        const struct output_field *field = &fields[i];
+        output_separator();
+        switch (field->option) {
+        case OPT_OBJECT_SIZE:
+            fprintf(stdout, "%" PRIu64, object->size);
+            break;
+        case OPT_OBJECT_MTIME:
+            fprintf(stdout, "%" PRId64, object->last_modified);
+            break;
+        case OPT_OBJECT_ETAG:
+            if (object->etag != NULL) fputs(object->etag, stdout);
+            break;
+        case OPT_OBJECT_METADATA:
+            output_metadata(properties);
+            break;
+        case OPT_OBJECT_META:
+            for (size_t j = 0; j < properties->metadata_count; ++j) {
+                if (strcasecmp(field->name, properties->metadata[j].name) == 0) {
+                    fputs(properties->metadata[j].value, stdout);
+                    break;
+                }
+            }
+            break;
+        }
+    }
+    fputc('\n', stdout);
 }
 
 static bool list_bucket_acl(void *callback_data,
                             const struct s3_bucket *bucket) {
     (void) callback_data;
-    char name[S3_URI_ENCODED_MAX_BYTES];
-    encode_name(name, NULL, bucket->name, NULL);
-    log_o4("s3://", name,
-           " acl=", bucket->acl != NULL ? bucket->acl : "unavailable");
+    output_uri(bucket->name, NULL);
+    output_separator();
+    if (bucket->acl != NULL) fputs(bucket->acl, stdout);
+    fputc('\n', stdout);
     return true;
 }
 
@@ -143,14 +244,29 @@ static bool list_bucket_name(void *callback_data,
             s3ar_list_exit(2);
         }
     }
-    else
-        output_name(bucket->name, NULL);
+    else {
+        output_uri(bucket->name, NULL);
+        fputc('\n', stdout);
+    }
     return true;
 }
 
 static bool list_object(void *callback_data, const struct s3_object *object) {
-    (void) callback_data;
-    output_object(object);
+    const struct list_context *context = callback_data;
+    struct s3_object_properties properties = {0};
+    if (need_metadata) {
+        struct s3_error error = {0};
+        if (s3_object_head(context->s3, &error, &properties, object->bucket,
+                           object->key) != S3_RESULT_OK) {
+            log_f4("unable to read object metadata ",
+                   s3_log_uri(NULL, object->bucket, object->key), ": ",
+                   s3ar_log_error(&error));
+            s3_object_properties_free(&properties);
+            s3ar_list_exit(2);
+        }
+    }
+    output_object(object, &properties);
+    s3_object_properties_free(&properties);
     return true;
 }
 
@@ -199,6 +315,9 @@ int main_s3ar_list(int argc, char **argv) {
     sig_catch(SIGUSR1, log_inc_level);
     sig_catch(SIGUSR2, log_dec_level);
 
+    fields = calloc((size_t) argc, sizeof(*fields));
+    if (fields == NULL) list_fatal("out of memory", NULL, NULL);
+
     /* parse options */
     opterr = 0;
     while ((option = getopt_long(argc, argv, "bovh", long_options, NULL)) !=
@@ -217,12 +336,18 @@ int main_s3ar_list(int argc, char **argv) {
             }
             objects = true;
         }
-        else if (option == OPT_OBJECT_SIZE)
-            object_size = true;
-        else if (option == OPT_OBJECT_MTIME)
-            object_mtime = true;
-        else if (option == OPT_OBJECT_ETAG)
-            object_etag = true;
+        else if (option == OPT_OBJECT_SIZE || option == OPT_OBJECT_MTIME ||
+                 option == OPT_OBJECT_ETAG || option == OPT_OBJECT_METADATA)
+            add_field(option, NULL);
+        else if (option == OPT_OBJECT_META) {
+            if (*optarg == '\0') {
+                log_f1("--object-meta requires a nonempty metadata name");
+                s3ar_list_exit(2);
+            }
+            add_field(option, optarg);
+        }
+        else if (option == OPT_DELIMITER)
+            set_delimiter(optarg);
         else if (option == OPT_BUCKET_ACL)
             bucket_acl = true;
         else if (option == 'v') {
@@ -244,7 +369,7 @@ int main_s3ar_list(int argc, char **argv) {
     /* validate selection */
     if (!buckets && !objects)
         buckets = objects = true;
-    if (!objects && (object_size || object_mtime || object_etag)) {
+    if (!objects && field_count > 0) {
         log_f1("object fields require object output");
         s3ar_list_exit(2);
     }
@@ -287,7 +412,7 @@ int main_s3ar_list(int argc, char **argv) {
     else
         s3ar_list_objects(&list_config, &selections);
 
-    if (fflush(stdout) != 0) {
+    if (fflush(stdout) != 0 || ferror(stdout)) {
         log_f2("cannot flush standard output: ", log_errno());
         s3ar_list_exit(1);
     }

@@ -1,6 +1,7 @@
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import os
+import json
 import re
 import subprocess
 import threading
@@ -165,7 +166,7 @@ def test_list_selection_uses_only_listing_requests(executable, key):
     if key:
         assert "prefix=photo" in path
         assert result.stdout.splitlines() == [
-            "s3://request-list/photo size=4 mtime=1788436800"
+            "s3://request-list/photo 4 1788436800"
         ]
 
 
@@ -558,7 +559,7 @@ def test_list_buckets_includes_requested_acl(
     result = run_tool(executable, "-b", "s3://", "--bucket-acl", env=s3_environment)
 
     assert result.returncode == 0, result.stderr
-    assert "s3://list-buckets-verbose acl=private" in result.stdout.splitlines()
+    assert "s3://list-buckets-verbose private" in result.stdout.splitlines()
 
 
 def test_bucket_acl_group_uris_require_exact_match(executable):
@@ -625,7 +626,7 @@ def test_bucket_acl_group_uris_require_exact_match(executable):
         thread.join()
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout == "s3://acl-uri acl=public-read,custom\n"
+    assert result.stdout == "s3://acl-uri public-read,custom\n"
     assert AclHandler.acl_requests == 1
 
 
@@ -705,8 +706,7 @@ def test_list_requested_object_fields(executable, s3_server, s3_environment):
     assert result.stdout == (
         "s3://list-verbose\n"
         "s3://list-verbose/folder/a%20b%2B%25%C5%BE"
-        f" size=4 mtime={int(listed['LastModified'].timestamp())}"
-        f" etag={put['ETag']}\n"
+        f" {put['ETag']} {int(listed['LastModified'].timestamp())} 4\n"
     )
 
 
@@ -822,10 +822,9 @@ def test_list_output_selection(mode, fields, s3_server, s3_environment):
     client.put_object(Bucket=bucket, Key="item", Body=b"data")
     listed = client.list_objects_v2(Bucket=bucket)["Contents"][0]
     expected = f"s3://{bucket}/item"
-    if "--object-size" in fields:
-        expected += " size=4"
-    if "--object-mtime" in fields:
-        expected += f" mtime={int(listed['LastModified'].timestamp())}"
+    for field in fields:
+        expected += (" 4" if field == "--object-size"
+                     else f" {int(listed['LastModified'].timestamp())}")
     expected += "\n"
     if mode not in (["-o"], ["--objects"]):
         expected = f"s3://{bucket}\n" + expected
@@ -873,5 +872,154 @@ def test_list_combined_bucket_acl(mode, s3_server, s3_environment):
     result = run(*mode, "--bucket-acl", "--object-size",
                  "s3://list-combined-acl", env=s3_environment)
     assert result.returncode == 0, result.stderr
-    assert result.stdout == ("s3://list-combined-acl acl=private\n"
-                             "s3://list-combined-acl/item size=1\n")
+    assert result.stdout == ("s3://list-combined-acl private\n"
+                             "s3://list-combined-acl/item 1\n")
+
+
+@pytest.mark.parametrize("options, expected", [
+    (["--object-metadata"], ' {"empty":"","source":"upload","z":"last"}'),
+    (["--object-meta", "SOURCE"], ' upload'),
+    (["--object-meta", "missing", "--object-meta", "empty"], '  '),
+    (["--object-meta", "source", "--object-meta", "SOURCE"], ' upload'),
+    (["--object-metadata", "--object-meta", "source", "--object-meta", "missing"],
+     ' {"empty":"","source":"upload","z":"last"} upload '),
+])
+def test_list_object_metadata(options, expected, s3_server, s3_environment):
+    _, client = s3_server
+    client.create_bucket(Bucket="list-metadata")
+    client.put_object(Bucket="list-metadata", Key="item", Body=b"data",
+                      Metadata={"z": "last", "source": "upload", "empty": ""})
+    result = run("-o", "--object-size", *options, "s3://list-metadata",
+                 env=s3_environment)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "s3://list-metadata/item 4" + expected + "\n"
+
+
+@pytest.mark.parametrize("options", [[], ["--object-metadata"],
+                                     ["--object-meta", "source"],
+                                     ["--object-metadata", "--object-meta", "source"]])
+def test_list_metadata_requests_and_pagination(options, s3_environment):
+    from fault_server import FaultServer, ResponseStep
+
+    def page(key, continuation=""):
+        return (
+            '<ListBucketResult><EncodingType>url</EncodingType>'
+            f'<IsTruncated>{"true" if continuation else "false"}</IsTruncated>'
+            f'<Contents><Key>{key}</Key><Size>4</Size>'
+            '<LastModified>2026-09-03T12:00:00Z</LastModified></Contents>'
+            + (f'<NextContinuationToken>{continuation}</NextContinuationToken>'
+               if continuation else '') + '</ListBucketResult>'
+        ).encode()
+
+    path = "/bucket?list-type=2&max-keys=1000&encoding-type=url"
+    steps = [ResponseStep("GET", path, 200, page("a", "next"))]
+    if options:
+        steps.append(ResponseStep("HEAD", "/bucket/a", 200,
+                                  headers=(("x-amz-meta-source", 'a "quote" \\ path'),)))
+    # Match the query order used by the object listing implementation.
+    steps.append(ResponseStep("GET", path + "&continuation-token=next",
+                              200, page("b")))
+    if options:
+        steps.append(ResponseStep("HEAD", "/bucket/b", 200))
+    with FaultServer(steps) as server:
+        result = run("-o", *options, "s3://bucket",
+                     env={**s3_environment, "S3AR_ENDPOINT": server.endpoint})
+    assert result.returncode == 0, result.stderr
+    first = second = ''
+    if "--object-metadata" in options:
+        first += ' ' + json.dumps({"source": 'a "quote" \\ path'}, separators=(',', ':'))
+        second += ' {}'
+    if "--object-meta" in options:
+        first += ' a "quote" \\ path'
+        second += ' '
+    assert result.stdout == f"s3://bucket/a{first}\ns3://bucket/b{second}\n"
+    assert len(server.requests) == len(steps)
+
+
+@pytest.mark.parametrize("status", [403, 404])
+def test_list_metadata_head_failure(status, s3_environment):
+    from fault_server import FaultServer, ResponseStep
+
+    listing = (b'<ListBucketResult><EncodingType>url</EncodingType>'
+               b'<IsTruncated>false</IsTruncated><Contents><Key>item</Key>'
+               b'<Size>1</Size><LastModified>2026-09-03T12:00:00Z</LastModified>'
+               b'</Contents></ListBucketResult>')
+    with FaultServer([
+        ResponseStep("GET", "/bucket?list-type=2&max-keys=1000&encoding-type=url",
+                     200, listing),
+        ResponseStep("HEAD", "/bucket/item", status),
+    ]) as server:
+        result = run("-o", "--object-metadata", "s3://bucket",
+                     env={**s3_environment, "S3AR_ENDPOINT": server.endpoint})
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "unable to read object metadata bucket/item" in result.stderr
+
+
+@pytest.mark.parametrize("options", [["-b", "--object-metadata"],
+                                     ["-b", "--object-meta", "source"],
+                                     ["-o", "--object-meta", ""],
+                                     ["-o", "s3://bucket", "--object-meta"]])
+def test_list_metadata_invalid_options(options):
+    result = run(*options)
+    assert result.returncode == 2
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("value, expected", [(None, ""), ("", ""), ("-", "-")])
+def test_list_metadata_missing_empty_and_dash(value, expected, s3_server, s3_environment):
+    _, client = s3_server
+    client.create_bucket(Bucket="list-metadata-sentinel")
+    client.put_object(Bucket="list-metadata-sentinel", Key="item", Body=b"",
+                      Metadata={} if value is None else {"source": value})
+    for options in (["--object-meta", "source"], ["--object-metadata"],
+                    ["--object-metadata", "--object-meta", "source"]):
+        result = run("-o", *options, "s3://list-metadata-sentinel", env=s3_environment)
+        assert result.returncode == 0, result.stderr
+        columns = ["s3://list-metadata-sentinel/item"]
+        if "--object-metadata" in options:
+            columns.append(json.dumps({} if value is None else {"source": value},
+                                      separators=(',', ':')))
+        if "--object-meta" in options:
+            columns.append(expected)
+        assert result.stdout == " ".join(columns) + "\n"
+
+
+@pytest.mark.parametrize("argument, separator", [
+    ("|", b"|"), (r"\t", b"\t"), (r"\n", b"\n"),
+    (r"\0", b"\0"), (r"\\", b"\\"), (r"<\0>\t", b"<\0>\t"),
+    ("", b""), ("::", b"::"),
+])
+def test_list_delimiter_and_field_order(argument, separator, s3_server, s3_environment):
+    _, client = s3_server
+    client.create_bucket(Bucket="list-delimiter")
+    client.put_object(Bucket="list-delimiter", Key="item", Body=b"data",
+                      Metadata={"source": 'manual "upload" \\ path', "z": "last"})
+    arguments = ["-o", "--delimiter", argument, "--object-meta", "z",
+                 "--object-size", "--object-meta", "source", "--object-metadata",
+                 "--object-meta", "missing", "--object-size", "--object-meta", "Z",
+                 "s3://list-delimiter"]
+    result = subprocess.run([str(EXECUTABLE), *arguments], capture_output=True,
+                            env=s3_environment, timeout=30)
+    assert result.returncode == 0, result.stderr
+    columns = [b"s3://list-delimiter/item", b"last", b"4",
+               b'manual "upload" \\ path',
+               b'{"source":"manual \\"upload\\" \\\\ path","z":"last"}', b'']
+    assert result.stdout == separator.join(columns) + b"\n"
+
+
+@pytest.mark.parametrize("delimiter", [r"\x", "trailing\\"])
+def test_list_rejects_invalid_delimiter_escape(delimiter):
+    result = run("-o", "--delimiter", delimiter, "s3://bucket")
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "invalid escape in --delimiter" in result.stderr
+
+
+def test_list_delimiter_for_bucket_acl(s3_server, s3_environment):
+    _, client = s3_server
+    client.create_bucket(Bucket="list-delimiter-acl")
+    result = run("-b", "--bucket-acl", "--delimiter", "|", "s3://",
+                 env=s3_environment)
+    assert result.returncode == 0, result.stderr
+    assert "s3://list-delimiter-acl|private" in result.stdout.splitlines()
