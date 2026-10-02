@@ -111,6 +111,10 @@ enum s3_result s3_url_build_object(const struct s3_client *client,
                                    const char *query, char **url,
                                    struct s3_error *error);
 
+/* Parse decimal digits in the non-NULL range [first, last).
+ * Empty input, invalid digits and overflow leave *value unchanged. */
+bool s3_parse_u64(const char *first, const char *last, uint64_t *value);
+
 void s3_response_reset(struct s3_response *response);
 void s3_response_cleanup(struct s3_response *response);
 size_t s3_headers_callback(char *buffer, size_t size, size_t count, void *data);

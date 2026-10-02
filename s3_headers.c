@@ -22,20 +22,6 @@ static unsigned char ascii_lower(unsigned char value) {
     return value;
 }
 
-static bool parse_u64(const char *first, const char *last, uint64_t *value) {
-    uint64_t n = 0;
-    if (first == last) return false;
-    for (const char *p = first; p != last; ++p) {
-        unsigned digit;
-        if (*p < '0' || *p > '9') return false;
-        digit = (unsigned) (*p - '0');
-        if (n > (UINT64_MAX - digit) / 10) return false;
-        n = n * 10 + digit;
-    }
-    *value = n;
-    return true;
-}
-
 static void parse_status(struct s3_response *response, const char *buffer,
                          size_t size) {
     const char *end = buffer + size;
@@ -45,7 +31,7 @@ static void parse_status(struct s3_response *response, const char *buffer,
     const char *last = first;
     while (last < end && *last >= '0' && *last <= '9') ++last;
     uint64_t status;
-    if (parse_u64(first, last, &status) && status <= LONG_MAX)
+    if (s3_parse_u64(first, last, &status) && status <= LONG_MAX)
         response->status = (long) status;
 }
 
@@ -126,10 +112,10 @@ static void parse_content_range(struct s3_response *response, const char *first,
     if (dash == NULL) return;
     slash = memchr(dash + 1, '/', (size_t) (last - dash - 1));
     if (slash == NULL || slash + 1 == last) return;
-    if (!parse_u64(first, dash, &response->range_first) ||
-        !parse_u64(dash + 1, slash, &response->range_last) ||
+    if (!s3_parse_u64(first, dash, &response->range_first) ||
+        !s3_parse_u64(dash + 1, slash, &response->range_last) ||
         (*(slash + 1) != '*' &&
-         !parse_u64(slash + 1, last, &response->range_total)) ||
+         !s3_parse_u64(slash + 1, last, &response->range_total)) ||
         (*(slash + 1) == '*' && slash + 2 != last))
         return;
     if (*(slash + 1) == '*') response->range_total = UINT64_MAX;
@@ -141,7 +127,7 @@ static void parse_retry_after(struct s3_response *response, const char *first,
     /* Bound server-controlled sleeps while honoring ordinary S3 delays. */
     enum { RETRY_AFTER_LIMIT_S = 300 };
     uint64_t seconds;
-    if (!parse_u64(first, last, &seconds)) {
+    if (!s3_parse_u64(first, last, &seconds)) {
         char date[128];
         time_t now = time(NULL);
         time_t deadline;
@@ -193,7 +179,7 @@ size_t s3_headers_callback(char *buffer, size_t size, size_t count,
         --last;
     if (name_is(buffer, (size_t) (colon - buffer), "Content-Length")) {
         response->have_length =
-            parse_u64(first, last, &response->content_length);
+            s3_parse_u64(first, last, &response->content_length);
         response->properties.size = response->content_length;
     }
     else if (name_is(buffer, (size_t) (colon - buffer), "Content-Range")) {

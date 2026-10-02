@@ -75,20 +75,6 @@ static void free_page(struct list_page *page) {
     memset(page, 0, sizeof(*page));
 }
 
-static bool parse_u64_text(const char *text, uint64_t *result) {
-    uint64_t value = 0;
-    if (text == NULL || *text == '\0') return false;
-    for (; *text != '\0'; ++text) {
-        unsigned digit;
-        if (*text < '0' || *text > '9') return false;
-        digit = (unsigned) (*text - '0');
-        if (value > (UINT64_MAX - digit) / 10) return false;
-        value = value * 10 + digit;
-    }
-    *result = value;
-    return true;
-}
-
 static enum s3_result append_xml_object(struct list_page *page, xmlNode *node) {
     xmlChar *key = s3_xml_content(node, "Key");
     xmlChar *size = s3_xml_content(node, "Size");
@@ -101,7 +87,9 @@ static enum s3_result append_xml_object(struct list_page *page, xmlNode *node) {
     char *decoded_key = NULL;
     enum s3_result result = S3_RESULT_PROTOCOL_ERROR;
     if (key == NULL || key[0] == '\0' || size == NULL || date == NULL ||
-        !parse_u64_text((const char *) size, &bytes))
+        !s3_parse_u64((const char *) size,
+                      (const char *) size + strlen((const char *) size),
+                      &bytes))
         goto done;
     if (!parse_timestamp((const char *) date, &modified)) goto done;
     result = s3_uri_decode_alloc((const char *) key, &decoded_key);

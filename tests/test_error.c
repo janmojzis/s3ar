@@ -539,7 +539,42 @@ static void test_xml_child_text(void) {
     free(text);
 }
 
+static void test_parse_u64(void) {
+    const struct {
+        const char *text;
+        uint64_t value;
+    } valid[] = {{"0", 0}, {"00042", 42}, {"18446744073709551615", UINT64_MAX}};
+    uint64_t value;
+    for (size_t i = 0; i < sizeof(valid) / sizeof(*valid); ++i) {
+        assert(s3_parse_u64(valid[i].text,
+                            valid[i].text + strlen(valid[i].text), &value));
+        assert(value == valid[i].value);
+    }
+    const char *invalid[] = {"",
+                             "+1",
+                             "-1",
+                             " 1",
+                             "1 ",
+                             "1a",
+                             "1.0",
+                             "18446744073709551616",
+                             "999999999999999999999"};
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(*invalid); ++i) {
+        value = 123;
+        assert(
+            !s3_parse_u64(invalid[i], invalid[i] + strlen(invalid[i]), &value));
+        assert(value == 123);
+    }
+    const char range[] = {'4', '2', 'x'};
+    assert(s3_parse_u64(range, range + 2, &value) && value == 42);
+    const char embedded_nul[] = {'1', '\0', '2'};
+    assert(!s3_parse_u64(embedded_nul, embedded_nul + sizeof(embedded_nul),
+                         &value));
+    assert(value == 42);
+}
+
 int main(void) {
+    test_parse_u64();
     test_xml_child_text();
     test_multipart_size_parser();
     test_public_api_clears_error();
