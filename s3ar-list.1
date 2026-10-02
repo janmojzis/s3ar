@@ -1,9 +1,12 @@
-.TH S3AR-LIST 1 "September 2026" "S3 Archiver" "User Commands"
+.TH S3AR-LIST 1 "October 2026" "S3 Archiver" "User Commands"
 .SH NAME
 s3ar-list \- list live S3 buckets and objects
 .SH SYNOPSIS
 .B s3ar-list
 .RB [ \-v ]
+.RB [ \-b ]
+.RB [ \-o ]
+.RI [ FIELDS ]
 .I s3://[BUCKET[/KEY]]...
 .br
 .B s3ar-list
@@ -12,7 +15,7 @@ s3ar-list \- list live S3 buckets and objects
 .B s3://
 .SH DESCRIPTION
 .B s3ar-list
-lists live S3 objects selected by one or more S3 URIs. The URI
+lists live S3 buckets and objects selected by one or more S3 URIs. The URI
 .B s3://
 selects all buckets and their objects. A bucket URI selects that bucket and
 its objects; a key URI selects the exact key and keys below KEY/.
@@ -25,47 +28,60 @@ Bucket and key names in operands are literal, not URL-decoded. Quote operands
 containing spaces or shell metacharacters. Operands are processed in order;
 overlapping selections produce repeated output. A key selection that matches
 neither an object nor descendants is an error. Empty buckets are valid.
-.PP
-With
-.BR \-b ,
-list bucket names only. This mode requires exactly
-.BR s3:// .
+
 .PP
 Listing results are written to standard output; diagnostics go to standard
-error. Bucket names are printed before their selected objects, including for
-key selections. Names have the
+error. When bucket output is enabled, bucket names are printed before their
+selected objects, including for key selections. Names have the
 .B s3://
 prefix and use the byte-oriented URL encoding described in
 .BR s3ar (1).
 .PP
-With
-.BR \-v ,
-object rows have this form:
+With all object fields enabled, object rows have this form:
 .PP
 .nf
 s3://BUCKET/KEY size=BYTES mtime=SECONDS etag=ETAG
 .fi
 .PP
-Modification time is in seconds since the Unix epoch; an unavailable ETag
-is printed as
-.BR \- .
+Fields are appended in the fixed order size, mtime, etag, regardless of
+option order. Only requested fields are included.
 With
-.BR \-bv ,
+.BR \-\-bucket-acl ,
 bucket rows have the form
 .BR "s3://BUCKET acl=SUMMARY" .
-ACLs are fetched only in bucket-only mode with
-.BR \-v .
 .SH OPTIONS
 .TP
 .BR \-b , " " \-\-buckets
-List buckets only.
+Include bucket rows. Without
+.BR \-o ,
+list buckets only and require exactly one operand,
+.BR s3:// .
+.TP
+.BR \-o , " " \-\-objects
+Include object rows. Without
+.BR \-b ,
+omit bucket rows; an empty bucket produces empty successful output.
+Combine as
+.B \-bo
+for both row types. If neither option is given, both row types are enabled.
+.TP
+.B \-\-object-size
+Append object size in bytes.
+.TP
+.B \-\-object-mtime
+Append object modification time in seconds since the Unix epoch.
+.TP
+.B \-\-object-etag
+Append object ETag, or a dash if unavailable.
+Object field options require object output.
+.TP
+.B \-\-bucket-acl
+Fetch and append bucket ACL information. Requires bucket output.
 .TP
 .BR \-v , " " \-\-verbose
-Include object size, modification time, and ETag; with
-.BR \-b ,
-include bucket ACL information instead. One occurrence also enables info
-diagnostics, two enable debug, and three enable HTTP trace. Further
-occurrences have no effect.
+Increase diagnostic verbosity: one occurrence enables info diagnostics,
+two enable debug, and three enable HTTP trace. Further occurrences have no
+effect.
 .TP
 .BR \-h , " " \-\-help
 Display command usage on standard error and exit successfully.
@@ -76,9 +92,6 @@ Increase diagnostic verbosity by one level, up to trace.
 .TP
 .B SIGUSR2
 Decrease diagnostic verbosity by one level, down to fatal.
-.PP
-These signals do not change the listing fields selected by
-.BR \-v .
 .SH ENVIRONMENT
 .BR S3AR_ENDPOINT ,
 .BR S3AR_REGION ,

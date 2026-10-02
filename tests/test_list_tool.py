@@ -147,6 +147,7 @@ def test_list_selection_uses_only_listing_requests(executable, key):
     try:
         result = run_tool(
             executable,
+            "-o", "--object-size", "--object-mtime",
             f"s3://request-list{key}",
             env=environment,
         )
@@ -163,7 +164,9 @@ def test_list_selection_uses_only_listing_requests(executable, key):
     assert "encoding-type=url" in path
     if key:
         assert "prefix=photo" in path
-        assert result.stdout.splitlines() == ["s3://request-list", "s3://request-list/photo"]
+        assert result.stdout.splitlines() == [
+            "s3://request-list/photo size=4 mtime=1788436800"
+        ]
 
 
 def test_list_retries_temporary_redirect(executable):
@@ -546,13 +549,13 @@ def test_list_buckets_uses_sigv4_date_and_session_token(executable, tmp_path):
     assert DateCheckingS3Handler.date is not None
 
 
-def test_verbose_list_buckets_includes_acl(
+def test_list_buckets_includes_requested_acl(
     executable, s3_server, s3_environment
 ):
     _endpoint, client = s3_server
     client.create_bucket(Bucket="list-buckets-verbose")
 
-    result = run_tool(executable, "-b", "s3://", "-v", env=s3_environment)
+    result = run_tool(executable, "-b", "s3://", "--bucket-acl", env=s3_environment)
 
     assert result.returncode == 0, result.stderr
     assert "s3://list-buckets-verbose acl=private" in result.stdout.splitlines()
@@ -575,6 +578,8 @@ def test_bucket_acl_group_uris_require_exact_match(executable):
     )
 
     class AclHandler(BaseHTTPRequestHandler):
+        acl_requests = 0
+
         def log_message(self, _format, *_arguments):
             pass
 
@@ -584,6 +589,7 @@ def test_bucket_acl_group_uris_require_exact_match(executable):
                 body = buckets
                 status = 200
             elif parsed.path == "/acl-uri" and parsed.query == "acl":
+                type(self).acl_requests += 1
                 body = acl
                 status = 200
             else:
@@ -608,7 +614,11 @@ def test_bucket_acl_group_uris_require_exact_match(executable):
         }
     )
     try:
-        result = run_tool(executable, "-b", "s3://", "-v", env=environment)
+        plain = run_tool(executable, "-bv", "s3://", env=environment)
+        assert plain.returncode == 0, plain.stderr
+        assert plain.stdout == "s3://acl-uri\n"
+        assert AclHandler.acl_requests == 0
+        result = run_tool(executable, "-b", "s3://", "--bucket-acl", env=environment)
     finally:
         server.shutdown()
         server.server_close()
@@ -616,6 +626,7 @@ def test_bucket_acl_group_uris_require_exact_match(executable):
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == "s3://acl-uri acl=public-read,custom\n"
+    assert AclHandler.acl_requests == 1
 
 
 def test_list_multiple_live_s3_operands(
@@ -670,7 +681,7 @@ def test_list_objects_in_one_bucket_including_empty_bucket(
     assert empty.stdout == "s3://list-empty\n"
 
 
-def test_verbose_list_s3(executable, s3_server, s3_environment):
+def test_list_requested_object_fields(executable, s3_server, s3_environment):
     _endpoint, client = s3_server
     client.create_bucket(Bucket="list-verbose")
     put = client.put_object(
@@ -683,7 +694,9 @@ def test_verbose_list_s3(executable, s3_server, s3_environment):
 
     result = run_tool(
         executable,
-        "-v",
+        "--object-etag",
+        "--object-mtime",
+        "--object-size",
         "s3://list-verbose/",
         env={**s3_environment, "TZ": "Europe/Prague"},
     )
@@ -797,3 +810,68 @@ def test_listing_http_responses(s3_environment, buckets, response):
     else:
         assert result.stdout == ("" if buckets else "s3://bucket\n")
     assert len(server.requests) == len(steps)
+
+
+@pytest.mark.parametrize("mode", [[], ["-o"], ["--objects"], ["-bo"], ["-ob"]])
+@pytest.mark.parametrize("fields", [[], ["--object-size"], ["--object-mtime"],
+                                  ["--object-mtime", "--object-size"]])
+def test_list_output_selection(mode, fields, s3_server, s3_environment):
+    _, client = s3_server
+    bucket = "list-output-selection"
+    client.create_bucket(Bucket=bucket)
+    client.put_object(Bucket=bucket, Key="item", Body=b"data")
+    listed = client.list_objects_v2(Bucket=bucket)["Contents"][0]
+    expected = f"s3://{bucket}/item"
+    if "--object-size" in fields:
+        expected += " size=4"
+    if "--object-mtime" in fields:
+        expected += f" mtime={int(listed['LastModified'].timestamp())}"
+    expected += "\n"
+    if mode not in (["-o"], ["--objects"]):
+        expected = f"s3://{bucket}\n" + expected
+    for verbosity in ([], ["-v"], ["-vvv"]):
+        result = run(*mode, *fields, *verbosity, f"s3://{bucket}",
+                     env=s3_environment)
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == expected
+
+
+@pytest.mark.parametrize("arguments, message", [
+    (["-b", "--object-size"], "object fields require object output"),
+    (["-b", "--object-mtime"], "object fields require object output"),
+    (["-b", "--object-etag"], "object fields require object output"),
+    (["-o", "--bucket-acl"], "--bucket-acl requires bucket output"),
+    (["-bb"], "bucket mode specified twice"),
+    (["-oo"], "object mode specified twice"),
+])
+def test_list_invalid_output_selection(arguments, message):
+    result = run(*arguments, "s3://")
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert message in result.stderr
+
+
+def test_list_objects_only_empty_and_all_buckets(s3_server, s3_environment):
+    _, client = s3_server
+    client.create_bucket(Bucket="list-only-empty")
+    result = run("-o", "s3://list-only-empty", env=s3_environment)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ""
+    client.create_bucket(Bucket="list-only-full")
+    client.put_object(Bucket="list-only-full", Key="item", Body=b"")
+    result = run("-o", "s3://", env=s3_environment)
+    assert result.returncode == 0, result.stderr
+    assert "s3://list-only-full/item" in result.stdout.splitlines()
+    assert all("/" in line[5:] for line in result.stdout.splitlines())
+
+
+@pytest.mark.parametrize("mode", [[], ["-bo"]])
+def test_list_combined_bucket_acl(mode, s3_server, s3_environment):
+    _, client = s3_server
+    client.create_bucket(Bucket="list-combined-acl")
+    client.put_object(Bucket="list-combined-acl", Key="item", Body=b"x")
+    result = run(*mode, "--bucket-acl", "--object-size",
+                 "s3://list-combined-acl", env=s3_environment)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == ("s3://list-combined-acl acl=private\n"
+                             "s3://list-combined-acl/item size=1\n")

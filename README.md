@@ -140,13 +140,38 @@ keys. A key selection keeps the bucket; a whole-bucket selection deletes it
 after its contents have been removed.
 
 Empty buckets are valid. Bucket entries are included before selected objects
-when creating, extracting, or listing, even for key selections. The bucket
-entry alone does not satisfy a key selection.
+when creating, extracting, or listing with bucket output enabled, even for
+key selections. The bucket entry alone does not satisfy a key selection.
 
 `s3ar -c` and `s3ar-list` process operands in command-line order, with repeated
 entries for overlapping selections. `s3ar -x` and `s3ar -t` process the archive
 once in archive order and match names after `--transform`. `s3ar-delete`
-accepts one operand. With `s3ar-list -b s3://`, only buckets are listed.
+accepts one operand.
+
+### Live listing output
+
+`s3ar-list` includes buckets and objects by default. Use `-b` / `--buckets`
+for buckets only, `-o` / `--objects` for objects only, or `-bo` for both.
+Bucket-only mode requires exactly the operand `s3://`. Object-only mode
+produces empty successful output for an empty bucket.
+
+Choose additional fields with `--object-size` (bytes), `--object-mtime`
+(seconds since the Unix epoch), and `--object-etag`. These require object
+output and always appear in the order size, mtime, etag. `--bucket-acl`
+requires bucket output. `-v` increases diagnostic verbosity on stderr.
+
+```sh
+s3ar-list -b s3://
+s3ar-list -o s3://photos/2026/
+s3ar-list -o --object-mtime --object-size s3://photos/2026/
+s3ar-list -bo --bucket-acl --object-etag s3://photos/
+```
+
+Example object row with size and mtime:
+
+```text
+s3://photos/2026/photo1.jpg size=12345 mtime=1790812800
+```
 
 The examples below assume that S3 contains these objects:
 

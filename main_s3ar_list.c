@@ -18,19 +18,42 @@
 static struct s3ar_config list_config;
 static struct s3ar_selection_set selections;
 static struct s3ar_config_env config;
-static int buckets;
+static bool buckets;
+static bool objects;
+static bool object_size;
+static bool object_mtime;
+static bool object_etag;
+static bool bucket_acl;
+
+enum {
+    OPT_OBJECT_SIZE = 256,
+    OPT_OBJECT_MTIME,
+    OPT_OBJECT_ETAG,
+    OPT_BUCKET_ACL,
+};
 static int option;
 
 static const struct option long_options[] = {
     {"buckets", no_argument, NULL, 'b'},
+    {"objects", no_argument, NULL, 'o'},
+    {"object-size", no_argument, NULL, OPT_OBJECT_SIZE},
+    {"object-mtime", no_argument, NULL, OPT_OBJECT_MTIME},
+    {"object-etag", no_argument, NULL, OPT_OBJECT_ETAG},
+    {"bucket-acl", no_argument, NULL, OPT_BUCKET_ACL},
     {"verbose", no_argument, NULL, 'v'},
     {"help", no_argument, NULL, 'h'},
     {NULL, 0, NULL, 0},
 };
 
 static void usage(void) {
-    log_usage(stderr, "Usage: s3ar-list [-v] [-b] s3://[BUCKET[/KEY]]...\n"
-                      "List live S3 objects, or all buckets with -b s3://.\n");
+    log_usage(stderr, "Usage: s3ar-list [-v] [-b] [-o] [FIELDS] s3://[BUCKET[/KEY]]...\n"
+                      "List buckets and objects by default; -b lists only buckets,\n"
+                      "-o only objects, and -bo both. Bucket-only mode requires s3://.\n"
+                      "Fields: --object-size --object-mtime --object-etag --bucket-acl\n"
+                      "  -b, --buckets   Include buckets\n"
+                      "  -o, --objects   Include objects\n"
+                      "  -v, --verbose   Increase diagnostic verbosity only\n"
+                      "  -h, --help      Show this help\n");
 }
 
 static _Noreturn void s3ar_list_exit(int status) {
@@ -42,7 +65,6 @@ static _Noreturn void s3ar_list_exit(int status) {
 
 struct list_context {
     struct s3_client *s3;
-    bool verbose;
 };
 
 static _Noreturn void list_fatal(const char *text, const char *bucket,
@@ -81,20 +103,20 @@ static void output_name(const char *bucket, const char *key) {
         log_o2("s3://", encoded_bucket);
 }
 
-static void output_object(const struct s3_object *object, bool verbose) {
-    if (!verbose) {
-        output_name(object->bucket, object->key);
-        return;
-    }
+static void output_object(const struct s3_object *object) {
     char encoded_bucket[S3_URI_ENCODED_MAX_BYTES];
     char encoded_key[S3_URI_ENCODED_MAX_BYTES];
-    char details[96];
+    char size[32] = "";
+    char mtime[32] = "";
     encode_name(encoded_bucket, encoded_key, object->bucket, object->key);
-    (void) snprintf(details, sizeof(details),
-                    " size=%" PRIu64 " mtime=%" PRId64 " etag=", object->size,
-                    object->last_modified);
-    log_o6("s3://", encoded_bucket, "/", encoded_key, details,
-           object->etag != NULL ? object->etag : "-");
+    if (object_size)
+        (void) snprintf(size, sizeof(size), " size=%" PRIu64, object->size);
+    if (object_mtime)
+        (void) snprintf(mtime, sizeof(mtime), " mtime=%" PRId64,
+                        object->last_modified);
+    log_o8("s3://", encoded_bucket, "/", encoded_key, size, mtime,
+           object_etag ? " etag=" : "",
+           object_etag ? (object->etag != NULL ? object->etag : "-") : "");
 }
 
 static bool list_bucket_acl(void *callback_data,
@@ -110,7 +132,7 @@ static bool list_bucket_acl(void *callback_data,
 static bool list_bucket_name(void *callback_data,
                              const struct s3_bucket *bucket) {
     struct list_context *context = callback_data;
-    if (context->verbose) {
+    if (bucket_acl) {
         struct s3_error error = {0};
         enum s3_result result = s3_bucket_acl(context->s3, &error, bucket->name,
                                               list_bucket_acl, context);
@@ -127,21 +149,20 @@ static bool list_bucket_name(void *callback_data,
 }
 
 static bool list_object(void *callback_data, const struct s3_object *object) {
-    const struct list_context *context = callback_data;
-    output_object(object, context->verbose);
+    (void) callback_data;
+    output_object(object);
     return true;
 }
 
 static void list_selected_bucket(void *data, const struct s3_bucket *bucket) {
-    (void) data;
-    output_name(bucket->name, NULL);
+    if (buckets)
+        (void) list_bucket_name(data, bucket);
 }
 
 static void s3ar_list_objects(const struct s3ar_config *config,
                               const struct s3ar_selection_set *selections) {
     struct list_context context = {
         .s3 = config->s3,
-        .verbose = config->verbose,
     };
     const struct s3ar_selection_callbacks callbacks = {
         .bucket = list_selected_bucket,
@@ -157,7 +178,6 @@ static void s3ar_list_objects(const struct s3ar_config *config,
 static void s3ar_list_buckets(const struct s3ar_config *config) {
     struct list_context context = {
         .s3 = config->s3,
-        .verbose = config->verbose,
     };
     struct s3_error error = {0};
     enum s3_result result = s3ar_selection_buckets(
@@ -181,18 +201,32 @@ int main_s3ar_list(int argc, char **argv) {
 
     /* parse options */
     opterr = 0;
-    while ((option = getopt_long(argc, argv, "bvh", long_options, NULL)) !=
+    while ((option = getopt_long(argc, argv, "bovh", long_options, NULL)) !=
            -1) {
         if (option == 'b') {
             if (buckets) {
                 log_f1("bucket mode specified twice");
                 s3ar_list_exit(2);
             }
-            buckets = 1;
+            buckets = true;
         }
+        else if (option == 'o') {
+            if (objects) {
+                log_f1("object mode specified twice");
+                s3ar_list_exit(2);
+            }
+            objects = true;
+        }
+        else if (option == OPT_OBJECT_SIZE)
+            object_size = true;
+        else if (option == OPT_OBJECT_MTIME)
+            object_mtime = true;
+        else if (option == OPT_OBJECT_ETAG)
+            object_etag = true;
+        else if (option == OPT_BUCKET_ACL)
+            bucket_acl = true;
         else if (option == 'v') {
             if (verbosity < 3) ++verbosity;
-            list_config.verbose = true;
             log_inc_level(0);
         }
         else if (option == 'h') {
@@ -208,7 +242,17 @@ int main_s3ar_list(int argc, char **argv) {
     }
 
     /* validate selection */
-    if (buckets) {
+    if (!buckets && !objects)
+        buckets = objects = true;
+    if (!objects && (object_size || object_mtime || object_etag)) {
+        log_f1("object fields require object output");
+        s3ar_list_exit(2);
+    }
+    if (!buckets && bucket_acl) {
+        log_f1("--bucket-acl requires bucket output");
+        s3ar_list_exit(2);
+    }
+    if (!objects) {
         if (argc - optind != 1 || strcmp(argv[optind], "s3://") != 0) {
             log_f1("-b requires exactly s3://");
             s3ar_list_exit(2);
@@ -228,6 +272,7 @@ int main_s3ar_list(int argc, char **argv) {
     log_d3("(option -v) verbosity = '", log_num(verbosity), "'");
     log_d1("(option -h) help = 'false'");
     log_d3("(option -b) buckets = '", buckets ? "true" : "false", "'");
+    log_d3("(option -o) objects = '", objects ? "true" : "false", "'");
     for (int i = optind; i < argc; ++i)
         log_d3("(argument) selection = '", s3_log_uri("s3", argv[i] + 5, NULL),
                "'");
@@ -237,7 +282,7 @@ int main_s3ar_list(int argc, char **argv) {
     if (status != 0) s3ar_list_exit(status);
 
     /* list matching resources */
-    if (buckets)
+    if (!objects)
         s3ar_list_buckets(&list_config);
     else
         s3ar_list_objects(&list_config, &selections);
