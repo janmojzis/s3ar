@@ -13,4 +13,9 @@ xmlDoc *s3_xml_read(const char *body, size_t size, size_t limit,
 bool s3_xml_name(const xmlNode *node, const char *name);
 xmlNode *s3_xml_child(xmlNode *parent, const char *name);
 
+/* Missing children return NULL; empty children return an empty string.
+ * Release content with xmlFree(), text with free(). */
+xmlChar *s3_xml_content(xmlNode *parent, const char *name);
+char *s3_xml_text(xmlNode *parent, const char *name);
+
 #endif

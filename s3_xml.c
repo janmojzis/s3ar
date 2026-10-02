@@ -4,6 +4,7 @@
 #include <libxml/parser.h>
 
 #include <limits.h>
+#include <string.h>
 
 xmlDoc *s3_xml_read(const char *body, size_t size, size_t limit,
                     const char *document_name) {
@@ -28,4 +29,16 @@ xmlNode *s3_xml_child(xmlNode *parent, const char *name) {
     for (xmlNode *node = parent->children; node != NULL; node = node->next)
         if (s3_xml_name(node, name)) return node;
     return NULL;
+}
+
+xmlChar *s3_xml_content(xmlNode *parent, const char *name) {
+    xmlNode *node = s3_xml_child(parent, name);
+    return node != NULL ? xmlNodeGetContent(node) : NULL;
+}
+
+char *s3_xml_text(xmlNode *parent, const char *name) {
+    xmlChar *value = s3_xml_content(parent, name);
+    char *copy = value != NULL ? strdup((const char *) value) : NULL;
+    xmlFree(value);
+    return copy;
 }

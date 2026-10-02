@@ -345,23 +345,16 @@ static enum s3_result read_part(unsigned char *buffer, size_t capacity,
 
 static char *xml_value(const char *body, size_t size, const char *root_name,
                        const char *element) {
-    xmlDoc *doc;
-    xmlNode *root, *node = NULL;
-    xmlChar *value = NULL;
-    char *copy = NULL;
-    doc = s3_xml_read(body, size, PUT_RESPONSE_LIMIT, "s3-upload.xml");
-    if (doc == NULL) return NULL;
-    root = xmlDocGetRootElement(doc);
-    if (s3_xml_name(root, root_name)) {
-        for (node = root->children; node != NULL; node = node->next)
-            if (s3_xml_name(node, element)) break;
+    xmlDoc *doc = s3_xml_read(body, size, PUT_RESPONSE_LIMIT, "s3-upload.xml");
+    xmlNode *root = doc != NULL ? xmlDocGetRootElement(doc) : NULL;
+    char *value =
+        s3_xml_name(root, root_name) ? s3_xml_text(root, element) : NULL;
+    if (value != NULL && value[0] == '\0') {
+        free(value);
+        value = NULL;
     }
-    if (node != NULL) value = xmlNodeGetContent(node);
-    if (value != NULL && value[0] != '\0')
-        copy = s3_memory_strdup((const char *) value);
-    xmlFree(value);
-    xmlFreeDoc(doc);
-    return copy;
+    if (doc != NULL) xmlFreeDoc(doc);
+    return value;
 }
 
 static bool xml_has_root(const char *body, size_t size, const char *name) {

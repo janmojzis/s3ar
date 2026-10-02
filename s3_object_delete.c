@@ -118,14 +118,6 @@ static struct batch_entry *find_batch_entry(struct batch_entry *entries,
                    compare_batch_entries);
 }
 
-static char *xml_text(xmlNode *parent, const char *name) {
-    xmlNode *node = s3_xml_child(parent, name);
-    xmlChar *value = node != NULL ? xmlNodeGetContent(node) : NULL;
-    char *copy = value != NULL ? strdup((const char *) value) : NULL;
-    xmlFree(value);
-    return copy;
-}
-
 static enum s3_result
 parse_delete_result(struct batch_entry *entries, size_t count, const char *body,
                     size_t size, struct s3_object_delete_result *results,
@@ -139,8 +131,8 @@ parse_delete_result(struct batch_entry *entries, size_t count, const char *body,
         char *key, *id;
         struct batch_entry *entry;
         if (!deleted && !s3_xml_name(node, "Error")) continue;
-        key = xml_text(node, "Key");
-        id = xml_text(node, "VersionId");
+        key = s3_xml_text(node, "Key");
+        id = s3_xml_text(node, "VersionId");
         entry = key != NULL ? find_batch_entry(entries, count, key, id) : NULL;
         free(key);
         free(id);
@@ -148,8 +140,8 @@ parse_delete_result(struct batch_entry *entries, size_t count, const char *body,
         entry->seen = true;
         entry->deleted = deleted;
         if (!deleted) {
-            entry->code = xml_text(node, "Code");
-            entry->message = xml_text(node, "Message");
+            entry->code = s3_xml_text(node, "Code");
+            entry->message = s3_xml_text(node, "Message");
             if (entry->code == NULL || entry->code[0] == '\0' ||
                 entry->message == NULL)
                 goto done;

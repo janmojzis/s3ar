@@ -50,14 +50,6 @@ static bool append_target(struct s3_listing_page *page, size_t *capacity,
     return true;
 }
 
-static char *xml_text(xmlNode *parent, const char *name) {
-    xmlNode *node = s3_xml_child(parent, name);
-    xmlChar *value = node != NULL ? xmlNodeGetContent(node) : NULL;
-    char *copy = value != NULL ? strdup((const char *) value) : NULL;
-    xmlFree(value);
-    return copy;
-}
-
 static enum s3_result parse_page(const char *body, size_t size, bool uploads,
                                  struct s3_listing_page *page,
                                  struct s3_error *error) {
@@ -69,8 +61,8 @@ static enum s3_result parse_page(const char *body, size_t size, bool uploads,
     if (!s3_xml_name(root, uploads ? "ListMultipartUploadsResult"
                                    : "ListVersionsResult"))
         goto done;
-    truncated = xml_text(root, "IsTruncated");
-    encoding = xml_text(root, "EncodingType");
+    truncated = s3_xml_text(root, "IsTruncated");
+    encoding = s3_xml_text(root, "EncodingType");
     if (truncated == NULL ||
         (encoding != NULL && strcmp(encoding, "url") != 0) ||
         (strcmp(truncated, "true") != 0 && strcmp(truncated, "false") != 0))
@@ -81,8 +73,8 @@ static enum s3_result parse_page(const char *body, size_t size, bool uploads,
         if (!s3_xml_name(node, uploads ? "Upload" : "Version") &&
             (uploads || !s3_xml_name(node, "DeleteMarker")))
             continue;
-        encoded = xml_text(node, "Key");
-        id = xml_text(node, uploads ? "UploadId" : "VersionId");
+        encoded = s3_xml_text(node, "Key");
+        id = s3_xml_text(node, uploads ? "UploadId" : "VersionId");
         key = copy_key(encoded, encoding != NULL);
         free(encoded);
         if (key == NULL || id == NULL || id[0] == '\0' ||
@@ -95,11 +87,11 @@ static enum s3_result parse_page(const char *body, size_t size, bool uploads,
         }
     }
     if (page->truncated) {
-        char *encoded = xml_text(root, "NextKeyMarker");
+        char *encoded = s3_xml_text(root, "NextKeyMarker");
         page->next_key = copy_key(encoded, encoding != NULL);
         free(encoded);
-        page->next_id = xml_text(root, uploads ? "NextUploadIdMarker"
-                                               : "NextVersionIdMarker");
+        page->next_id = s3_xml_text(root, uploads ? "NextUploadIdMarker"
+                                                  : "NextVersionIdMarker");
         if (page->next_key == NULL || page->next_key[0] == '\0') goto done;
     }
     result = S3_RESULT_OK;

@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT-0 */
 #include "s3_internal.h"
+#include "s3_xml.h"
 #include "s3_log.h"
 #include "s3ar_config.h"
 
@@ -512,7 +513,34 @@ static void test_multipart_size_parser(void) {
     }
 }
 
+static void test_xml_child_text(void) {
+    const char body[] = "<Root xmlns='urn:test'><Empty/><Value>a&amp;b</Value>"
+                        "<Nested><Value>hidden</Value></Nested>"
+                        "<Value>second</Value></Root>";
+    xmlDoc *doc = s3_xml_read(body, sizeof(body) - 1, sizeof(body), "test.xml");
+    assert(doc != NULL);
+    xmlNode *root = xmlDocGetRootElement(doc);
+    assert(s3_xml_content(NULL, "Value") == NULL);
+    assert(s3_xml_text(NULL, "Value") == NULL);
+    assert(s3_xml_content(root, "Missing") == NULL);
+    assert(s3_xml_text(root, "Missing") == NULL);
+    xmlChar *content = s3_xml_content(root, "Empty");
+    char *empty = s3_xml_text(root, "Empty");
+    assert(content != NULL && content[0] == '\0');
+    assert(empty != NULL && empty[0] == '\0');
+    xmlFree(content);
+    free(empty);
+    content = s3_xml_content(root, "Value");
+    char *text = s3_xml_text(root, "Value");
+    xmlFreeDoc(doc);
+    assert(content != NULL && strcmp((const char *) content, "a&b") == 0);
+    assert(text != NULL && strcmp(text, "a&b") == 0);
+    xmlFree(content);
+    free(text);
+}
+
 int main(void) {
+    test_xml_child_text();
     test_multipart_size_parser();
     test_public_api_clears_error();
     test_uri_variants();

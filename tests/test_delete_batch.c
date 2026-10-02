@@ -28,7 +28,7 @@ __wrap_s3_request_bucket(struct s3_client *client, struct s3_error *error,
     for (xmlNode *node = xmlDocGetRootElement(doc)->children; node != NULL;
          node = node->next) {
         if (!s3_xml_name(node, "Object")) continue;
-        char *key = xml_text(node, "Key");
+        char *key = s3_xml_text(node, "Key");
         assert(key != NULL);
         assert(strcmp(key, count == 0 ? "a" : "z") == 0);
         free(key);
@@ -221,8 +221,8 @@ static void test_xml_preserves_special_key_bytes(void) {
     assert(doc != NULL);
     object = s3_xml_child(xmlDocGetRootElement(doc), "Object");
     assert(object != NULL);
-    key = xml_text(object, "Key");
-    id = xml_text(object, "VersionId");
+    key = s3_xml_text(object, "Key");
+    id = s3_xml_text(object, "VersionId");
     assert(key != NULL && strcmp(key, target.key) == 0);
     assert(id != NULL && strcmp(id, target.version_id) == 0);
     free(key);

@@ -90,14 +90,10 @@ static bool parse_u64_text(const char *text, uint64_t *result) {
 }
 
 static enum s3_result append_xml_object(struct list_page *page, xmlNode *node) {
-    xmlNode *key_node = s3_xml_child(node, "Key");
-    xmlNode *size_node = s3_xml_child(node, "Size");
-    xmlNode *date_node = s3_xml_child(node, "LastModified");
-    xmlNode *etag_node = s3_xml_child(node, "ETag");
-    xmlChar *key = key_node != NULL ? xmlNodeGetContent(key_node) : NULL;
-    xmlChar *size = size_node != NULL ? xmlNodeGetContent(size_node) : NULL;
-    xmlChar *date = date_node != NULL ? xmlNodeGetContent(date_node) : NULL;
-    xmlChar *etag = etag_node != NULL ? xmlNodeGetContent(etag_node) : NULL;
+    xmlChar *key = s3_xml_content(node, "Key");
+    xmlChar *size = s3_xml_content(node, "Size");
+    xmlChar *date = s3_xml_content(node, "LastModified");
+    xmlChar *etag = s3_xml_content(node, "ETag");
     struct listed_object *items;
     uint64_t bytes;
     int64_t modified;
@@ -157,21 +153,16 @@ static enum s3_result parse_page(const char *body, size_t size,
                                  struct s3_error *error) {
     xmlDoc *doc = NULL;
     xmlNode *root;
-    xmlNode *truncated_node;
-    xmlNode *encoding_node;
     xmlChar *truncated = NULL;
     xmlChar *encoding = NULL;
     enum s3_result result = S3_RESULT_OK;
     doc = s3_xml_read(body, size, S3_XML_BODY_LIMIT, "s3-list.xml");
     root = doc != NULL ? xmlDocGetRootElement(doc) : NULL;
     if (!s3_xml_name(root, "ListBucketResult")) goto invalid;
-    encoding_node = s3_xml_child(root, "EncodingType");
-    encoding = encoding_node != NULL ? xmlNodeGetContent(encoding_node) : NULL;
+    encoding = s3_xml_content(root, "EncodingType");
     if (encoding == NULL || strcmp((const char *) encoding, "url") != 0)
         goto invalid;
-    truncated_node = s3_xml_child(root, "IsTruncated");
-    truncated =
-        truncated_node != NULL ? xmlNodeGetContent(truncated_node) : NULL;
+    truncated = s3_xml_content(root, "IsTruncated");
     if (truncated == NULL || (strcmp((const char *) truncated, "true") != 0 &&
                               strcmp((const char *) truncated, "false") != 0))
         goto invalid;
@@ -183,9 +174,7 @@ static enum s3_result parse_page(const char *body, size_t size,
         if (result != S3_RESULT_OK) goto failed;
     }
     if (page->truncated) {
-        xmlNode *token_node = s3_xml_child(root, "NextContinuationToken");
-        xmlChar *token =
-            token_node != NULL ? xmlNodeGetContent(token_node) : NULL;
+        xmlChar *token = s3_xml_content(root, "NextContinuationToken");
         if (token == NULL || token[0] == '\0') {
             xmlFree(token);
             goto invalid;

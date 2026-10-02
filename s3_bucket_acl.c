@@ -35,21 +35,14 @@ static enum s3_result parse_acl(const char *body, size_t size, char *summary,
     if (!s3_xml_name(root, "AccessControlPolicy")) goto invalid;
     {
         xmlNode *owner = s3_xml_child(root, "Owner");
-        xmlNode *id = s3_xml_child(owner, "ID");
-        if (id != NULL) owner_id = xmlNodeGetContent(id);
+        owner_id = s3_xml_content(owner, "ID");
     }
     for (xmlNode *node = root; node != NULL;) {
         if (s3_xml_name(node, "Grant")) {
             xmlNode *grantee = s3_xml_child(node, "Grantee");
-            xmlNode *permission_node = s3_xml_child(node, "Permission");
-            xmlNode *uri_node = s3_xml_child(grantee, "URI");
-            xmlNode *id_node = s3_xml_child(grantee, "ID");
-            xmlChar *permission = permission_node != NULL
-                                      ? xmlNodeGetContent(permission_node)
-                                      : NULL;
-            xmlChar *uri =
-                uri_node != NULL ? xmlNodeGetContent(uri_node) : NULL;
-            xmlChar *id = id_node != NULL ? xmlNodeGetContent(id_node) : NULL;
+            xmlChar *permission = s3_xml_content(node, "Permission");
+            xmlChar *uri = s3_xml_content(grantee, "URI");
+            xmlChar *id = s3_xml_content(grantee, "ID");
             if (permission == NULL)
                 custom = true;
             else if (uri != NULL &&
