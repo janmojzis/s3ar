@@ -88,6 +88,15 @@ int s3_uri_encode_isliteral(unsigned char c, int keep_slash);
  * encoded NUL, and leave *decoded NULL on failure. Caller owns the result. */
 enum s3_result s3_uri_decode_alloc(const char *encoded, char **decoded);
 
+struct s3_query_param {
+    const char *name;
+    const char *value;
+};
+/* Append parameters in order to an already encoded base. Names are fixed,
+ * URI-safe literals; values are encoded. NULL values are omitted, empty values
+ * retained. Terminate params with a NULL name. Caller owns the result. */
+char *s3_query_build(const char *base, const struct s3_query_param *params);
+
 enum s3_result s3_url_build(const struct s3_client *client, const char *bucket,
                             const char *key, char **url,
                             struct s3_error *error);

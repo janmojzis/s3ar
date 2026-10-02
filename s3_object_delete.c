@@ -263,23 +263,18 @@ enum s3_result s3_object_delete_version(struct s3_client *client,
                                         struct s3_error *error,
                                         const char *bucket, const char *key,
                                         const char *version_id) {
-    char *encoded = NULL, *query = NULL, *url = NULL;
+    const struct s3_query_param params[] = {{"versionId", version_id},
+                                            {NULL, NULL}};
+    char *query = NULL, *url = NULL;
     enum s3_result result;
     s3_error_clear(error);
     if (client == NULL || error == NULL || bucket == NULL ||
         !s3_url_key_valid(key) || version_id == NULL || version_id[0] == '\0')
         return s3_error_set(error, S3_RESULT_CONFIGURATION_ERROR,
                             "invalid object version");
-    encoded = s3_uri_encode_alloc(version_id, false);
-    if (encoded == NULL)
+    query = s3_query_build("", params);
+    if (query == NULL)
         return s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-    query = malloc(strlen(encoded) + sizeof("versionId="));
-    if (query == NULL) {
-        free(encoded);
-        return s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-    }
-    (void) sprintf(query, "versionId=%s", encoded);
-    free(encoded);
     result = s3_url_build_object(client, bucket, key, query, &url, error);
     free(query);
     if (result == S3_RESULT_OK)

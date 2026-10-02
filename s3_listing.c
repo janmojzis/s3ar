@@ -2,7 +2,6 @@
 #include "s3_internal.h"
 #include "s3_xml.h"
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -119,32 +118,15 @@ done:
 
 static char *build_query(bool uploads, const char *prefix, const char *key,
                          const char *id) {
-    char *p = prefix != NULL ? s3_uri_encode_alloc(prefix, false) : NULL;
-    char *k = key != NULL ? s3_uri_encode_alloc(key, false) : NULL;
-    char *v = id != NULL ? s3_uri_encode_alloc(id, false) : NULL;
-    const char *base = uploads ? "uploads&max-uploads=1000&encoding-type=url"
-                               : "versions&max-keys=1000&encoding-type=url";
-    size_t size;
-    char *query = NULL;
-    if ((prefix != NULL && p == NULL) || (key != NULL && k == NULL) ||
-        (id != NULL && v == NULL))
-        goto done;
-    size = strlen(base) + (p != NULL ? strlen(p) : 0) +
-           (k != NULL ? strlen(k) : 0) + (v != NULL ? strlen(v) : 0) + 80;
-    query = malloc(size);
-    if (query != NULL)
-        (void) snprintf(query, size, "%s%s%s%s%s%s%s", base,
-                        p != NULL ? "&prefix=" : "", p != NULL ? p : "",
-                        k != NULL ? "&key-marker=" : "", k != NULL ? k : "",
-                        v != NULL ? uploads ? "&upload-id-marker="
-                                            : "&version-id-marker="
-                                  : "",
-                        v != NULL ? v : "");
-done:
-    free(p);
-    free(k);
-    free(v);
-    return query;
+    const struct s3_query_param params[] = {
+        {"prefix", prefix},
+        {"key-marker", key},
+        {uploads ? "upload-id-marker" : "version-id-marker", id},
+        {NULL, NULL},
+    };
+    return s3_query_build(uploads ? "uploads&max-uploads=1000&encoding-type=url"
+                                  : "versions&max-keys=1000&encoding-type=url",
+                          params);
 }
 
 static enum s3_result fetch_page(struct s3_client *client,

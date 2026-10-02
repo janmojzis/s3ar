@@ -3,7 +3,6 @@
 #include "s3_xml.h"
 
 #include <errno.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -133,36 +132,6 @@ static enum s3_result fetch_bucket_page(struct s3_client *client,
     return result;
 }
 
-static enum s3_result build_bucket_list_query(const char *continuation_token,
-                                              char **query,
-                                              struct s3_error *error) {
-    static const char prefix[] = "max-buckets=10000&continuation-token=";
-    char *encoded;
-    size_t size;
-    if (continuation_token == NULL) {
-        *query = s3_memory_strdup("max-buckets=10000");
-        if (*query == NULL)
-            return s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-        return S3_RESULT_OK;
-    }
-    encoded = s3_uri_encode_alloc(continuation_token, false);
-    if (encoded == NULL)
-        return s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-    if (strlen(encoded) > SIZE_MAX - sizeof(prefix)) {
-        free(encoded);
-        return s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-    }
-    size = sizeof(prefix) + strlen(encoded);
-    *query = malloc(size);
-    if (*query == NULL) {
-        free(encoded);
-        return s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-    }
-    (void) snprintf(*query, size, "%s%s", prefix, encoded);
-    free(encoded);
-    return S3_RESULT_OK;
-}
-
 enum s3_result s3_bucket_list(struct s3_client *client, struct s3_error *error,
                               s3_bucket_callback callback, void *data) {
     struct bucket_array buckets = {0};
@@ -173,12 +142,14 @@ enum s3_result s3_bucket_list(struct s3_client *client, struct s3_error *error,
         return s3_error_set(error, S3_RESULT_CONFIGURATION_ERROR,
                             "invalid ListBuckets arguments");
     do {
-        char *query = NULL;
+        const struct s3_query_param params[] = {
+            {"continuation-token", continuation_token}, {NULL, NULL}};
+        char *query = s3_query_build("max-buckets=10000", params);
         char *url = NULL;
         char *next_token = NULL;
-        result = build_bucket_list_query(continuation_token, &query, error);
-        if (result == S3_RESULT_OK)
-            result = s3_url_build_service(client, query, &url, error);
+        result = query != NULL
+                     ? s3_url_build_service(client, query, &url, error)
+                     : s3_error_set(error, S3_RESULT_ERROR, "out of memory");
         free(query);
         if (result == S3_RESULT_OK)
             result =

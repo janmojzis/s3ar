@@ -32,8 +32,45 @@ static void test_decode(void) {
     }
 }
 
+static void test_query(void) {
+    const struct s3_query_param params[] = {
+        {"omitted", NULL}, {"prefix", "a /+%&=?#ž"},
+        {"empty", ""},     {"marker", "%2F"},
+        {NULL, NULL},
+    };
+    char *query = s3_query_build("uploads&max-uploads=1000", params);
+    assert(query != NULL);
+    assert(strcmp(query, "uploads&max-uploads=1000&prefix=a%20%2F%2B%25%26%3D"
+                         "%3F%23%C5%BE&empty=&marker=%252F") == 0);
+    free(query);
+    query = s3_query_build("", params);
+    assert(query != NULL);
+    assert(
+        strcmp(query,
+               "prefix=a%20%2F%2B%25%26%3D%3F%23%C5%BE&empty=&marker=%252F") ==
+        0);
+    free(query);
+    const struct s3_query_param absent[] = {{"skip", NULL}, {NULL, NULL}};
+    query = s3_query_build("", absent);
+    assert(query != NULL && strcmp(query, "") == 0);
+    free(query);
+    query = s3_query_build("max-buckets=10000", absent);
+    assert(query != NULL && strcmp(query, "max-buckets=10000") == 0);
+    free(query);
+    char value[4097];
+    memset(value, '/', sizeof(value) - 1);
+    value[sizeof(value) - 1] = '\0';
+    const struct s3_query_param large[] = {{"uploadId", value}, {NULL, NULL}};
+    query = s3_query_build("", large);
+    assert(query != NULL && strlen(query) == 9 + 3 * 4096);
+    for (size_t i = 9; i < strlen(query); i += 3)
+        assert(memcmp(query + i, "%2F", 3) == 0);
+    free(query);
+}
+
 int main(void) {
     test_decode();
+    test_query();
     char input[1026];
     struct {
         char value[S3_URI_ENCODED_MAX_BYTES];

@@ -218,38 +218,21 @@ static enum s3_result fetch_page(struct s3_client *client,
                                  struct s3_error *error, const char *bucket,
                                  const char *prefix, const char *token,
                                  struct list_page *page) {
-    char *encoded_prefix = NULL, *encoded_token = NULL, *query = NULL;
+    const struct s3_query_param params[] = {
+        {"prefix", prefix != NULL && prefix[0] != '\0' ? prefix : NULL},
+        {"continuation-token", token},
+        {NULL, NULL},
+    };
+    char *query =
+        s3_query_build("list-type=2&max-keys=1000&encoding-type=url", params);
     char *body = NULL;
     size_t size = 0;
     enum s3_result result;
-    size_t query_size;
-    if (prefix != NULL && prefix[0] != '\0')
-        encoded_prefix = s3_uri_encode_alloc(prefix, false);
-    if (token != NULL) encoded_token = s3_uri_encode_alloc(token, false);
-    if ((prefix != NULL && prefix[0] != '\0' && encoded_prefix == NULL) ||
-        (token != NULL && encoded_token == NULL)) {
-        result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-        goto done;
-    }
-    query_size = 96 + (encoded_prefix != NULL ? strlen(encoded_prefix) : 0) +
-                 (encoded_token != NULL ? strlen(encoded_token) : 0);
-    query = malloc(query_size);
-    if (query == NULL) {
-        result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
-        goto done;
-    }
-    (void) snprintf(query, query_size,
-                    "list-type=2&max-keys=1000&encoding-type=url%s%s%s%s",
-                    encoded_prefix != NULL ? "&prefix=" : "",
-                    encoded_prefix != NULL ? encoded_prefix : "",
-                    encoded_token != NULL ? "&continuation-token=" : "",
-                    encoded_token != NULL ? encoded_token : "");
+    if (query == NULL)
+        return s3_error_set(error, S3_RESULT_ERROR, "out of memory");
     result = s3_request_bucket(client, error, bucket, query, "GET", NULL, &body,
                                &size);
     if (result == S3_RESULT_OK) result = parse_page(body, size, page, error);
-done:
-    free(encoded_prefix);
-    free(encoded_token);
     free(query);
     free(body);
     return result;
