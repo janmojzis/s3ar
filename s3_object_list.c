@@ -83,7 +83,6 @@ static enum s3_result append_xml_object(struct list_page *page, xmlNode *node) {
     struct listed_object *items;
     uint64_t bytes;
     int64_t modified;
-    size_t capacity;
     char *decoded_key = NULL;
     enum s3_result result = S3_RESULT_PROTOCOL_ERROR;
     if (key == NULL || key[0] == '\0' || size == NULL || date == NULL ||
@@ -99,18 +98,13 @@ static enum s3_result append_xml_object(struct list_page *page, xmlNode *node) {
         goto done;
     }
     if (page->count == page->capacity) {
-        capacity = page->capacity == 0 ? 16 : page->capacity * 2;
-        if (capacity < page->capacity || capacity > SIZE_MAX / sizeof(*items)) {
-            result = S3_RESULT_ERROR;
-            goto done;
-        }
-        items = realloc(page->items, capacity * sizeof(*items));
+        items =
+            s3_memory_grow(page->items, &page->capacity, sizeof(*items), 16);
         if (items == NULL) {
             result = S3_RESULT_ERROR;
             goto done;
         }
         page->items = items;
-        page->capacity = capacity;
     }
     page->items[page->count].key = decoded_key;
     decoded_key = NULL;

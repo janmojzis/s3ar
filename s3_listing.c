@@ -34,16 +34,10 @@ static char *copy_key(const char *text, bool encoded) {
 static bool append_target(struct s3_listing_page *page, size_t *capacity,
                           char *key, char *id, bool delete_marker) {
     struct s3_listing_item *items;
-    size_t next_capacity;
     if (page->count == *capacity) {
-        next_capacity = *capacity == 0 ? 16 : *capacity * 2;
-        if (next_capacity < *capacity ||
-            next_capacity > SIZE_MAX / sizeof(*page->items))
-            return false;
-        items = realloc(page->items, next_capacity * sizeof(*items));
+        items = s3_memory_grow(page->items, capacity, sizeof(*items), 16);
         if (items == NULL) return false;
         page->items = items;
-        *capacity = next_capacity;
     }
     page->items[page->count++] = (struct s3_listing_item) {
         .key = key, .id = id, .delete_marker = delete_marker};

@@ -26,25 +26,18 @@ static enum s3_result bucket_array_append(struct bucket_array *array,
     xmlNode *name_node = s3_xml_child(node, "Name");
     xmlChar *name = NULL;
     struct owned_bucket *items;
-    size_t capacity;
     enum s3_result result = S3_RESULT_PROTOCOL_ERROR;
     if (name_node == NULL) return result;
     name = xmlNodeListGetString(doc, name_node->children, 1);
     if (name == NULL || name[0] == '\0') goto done;
     if (array->count == array->capacity) {
-        capacity = array->capacity == 0 ? 8 : array->capacity * 2;
-        if (capacity < array->capacity ||
-            capacity > SIZE_MAX / sizeof(*array->items)) {
-            result = S3_RESULT_ERROR;
-            goto done;
-        }
-        items = realloc(array->items, capacity * sizeof(*items));
+        items =
+            s3_memory_grow(array->items, &array->capacity, sizeof(*items), 8);
         if (items == NULL) {
             result = S3_RESULT_ERROR;
             goto done;
         }
         array->items = items;
-        array->capacity = capacity;
     }
     array->items[array->count].name = s3_memory_strdup((const char *) name);
     if (array->items[array->count].name == NULL) {

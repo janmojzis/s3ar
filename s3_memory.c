@@ -23,3 +23,13 @@ void s3_memory_secure_free(char *value) {
     while (size-- != 0) *p++ = 0;
     free(value);
 }
+
+void *s3_memory_grow(void *items, size_t *capacity, size_t item_size,
+                     size_t initial_capacity) {
+    if (*capacity > SIZE_MAX / 2) return NULL;
+    size_t next = *capacity != 0 ? *capacity * 2 : initial_capacity;
+    if (item_size == 0 || next == 0 || next > SIZE_MAX / item_size) return NULL;
+    void *grown = realloc(items, next * item_size);
+    if (grown != NULL) *capacity = next;
+    return grown;
+}

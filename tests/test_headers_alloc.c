@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT-0 */
 #include "s3_internal.h"
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,6 +10,7 @@ void *__real_malloc(size_t size);
 void *__real_realloc(void *pointer, size_t size);
 
 static bool move_next_realloc;
+static bool fail_next_realloc;
 static unsigned fail_malloc_after;
 
 void *__wrap_malloc(size_t size) {
@@ -17,6 +19,10 @@ void *__wrap_malloc(size_t size) {
 }
 
 void *__wrap_realloc(void *pointer, size_t size) {
+    if (fail_next_realloc) {
+        fail_next_realloc = false;
+        return NULL;
+    }
     if (move_next_realloc && pointer != NULL) {
         void *moved = __real_malloc(size);
         if (moved == NULL) return NULL;
@@ -97,7 +103,38 @@ static int test_property_replacement_failure(void) {
     return failed;
 }
 
+static void test_array_growth(void) {
+    for (size_t initial = 8; initial <= 16; initial *= 2) {
+        size_t capacity = 0;
+        fail_next_realloc = true;
+        assert(s3_memory_grow(NULL, &capacity, sizeof(int), initial) == NULL);
+        assert(capacity == 0);
+        int *items = s3_memory_grow(NULL, &capacity, sizeof(*items), initial);
+        assert(items != NULL && capacity == initial);
+        for (size_t i = 0; i < capacity; ++i) items[i] = (int) i;
+        fail_next_realloc = true;
+        assert(s3_memory_grow(items, &capacity, sizeof(*items), initial) ==
+               NULL);
+        assert(capacity == initial);
+        for (size_t i = 0; i < capacity; ++i) assert(items[i] == (int) i);
+        int *grown = s3_memory_grow(items, &capacity, sizeof(*items), initial);
+        assert(grown != NULL && capacity == initial * 2);
+        for (size_t i = 0; i < initial; ++i) assert(grown[i] == (int) i);
+        free(grown);
+    }
+    const size_t overflows[] = {SIZE_MAX, SIZE_MAX / 2, SIZE_MAX / 2 + 1};
+    for (size_t i = 0; i < sizeof(overflows) / sizeof(*overflows); ++i) {
+        size_t capacity = overflows[i];
+        assert(s3_memory_grow(NULL, &capacity, 2, 8) == NULL);
+        assert(capacity == overflows[i]);
+    }
+    size_t capacity = 0;
+    assert(s3_memory_grow(NULL, &capacity, 2, SIZE_MAX) == NULL);
+    assert(capacity == 0);
+}
+
 int main(void) {
+    test_array_growth();
     int failed = test_growth_failure(1);
     failed |= test_growth_failure(2);
     failed |= test_property_replacement_failure();
