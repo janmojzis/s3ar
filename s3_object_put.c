@@ -414,10 +414,6 @@ done:
     return result;
 }
 
-static void put_response_free(struct s3_memory_response *response) {
-    s3_response_memory_cleanup(response);
-}
-
 static enum s3_result
 initiate_upload(struct s3_client *client, struct s3_error *error,
                 const char *bucket, const char *key,
@@ -446,7 +442,7 @@ initiate_upload(struct s3_client *client, struct s3_error *error,
 done:
     free(upload_id);
     free(url);
-    put_response_free(&response);
+    s3_response_memory_cleanup(&response);
     return result;
 }
 
@@ -485,7 +481,7 @@ upload_part(struct s3_client *client, struct s3_error *error,
     }
 done:
     free(url);
-    put_response_free(&response);
+    s3_response_memory_cleanup(&response);
     return result;
 }
 
@@ -521,7 +517,7 @@ done:
     free(body);
     free(query);
     free(url);
-    put_response_free(&response);
+    s3_response_memory_cleanup(&response);
     return result;
 }
 
@@ -553,7 +549,7 @@ static enum s3_result abort_upload(struct s3_client *client,
     if (result == S3_RESULT_NOT_FOUND) result = S3_RESULT_OK;
     free(query);
     free(url);
-    put_response_free(&response);
+    s3_response_memory_cleanup(&response);
     return result;
 }
 
@@ -659,7 +655,7 @@ enum s3_result s3_object_put(struct s3_client *client, struct s3_error *error,
 done:
     free(buffer);
     free(url);
-    put_response_free(&response);
+    s3_response_memory_cleanup(&response);
     return result;
 }
 
@@ -921,7 +917,7 @@ done:
     free(source);
     free(encoded_upload_id);
     free(url);
-    put_response_free(&response);
+    s3_response_memory_cleanup(&response);
     s3_object_properties_free(&properties);
     return result;
 }

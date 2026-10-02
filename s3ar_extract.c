@@ -193,10 +193,6 @@ static bool metadata_format(struct archive_entry *entry) {
     return false;
 }
 
-static bool namespaced_metadata(struct archive_entry *entry) {
-    return metadata_format(entry);
-}
-
 static bool identity_safe(unsigned char value) {
     return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z') ||
            (value >= '0' && value <= '9') || value == '-' || value == '.' ||
@@ -340,7 +336,7 @@ static struct s3_metadata *read_metadata(struct archive_entry *entry,
         "SCHILY.xattr.user.s3ar.metadata.";
     static const char legacy_prefix[] = "user.";
     static const char raw_legacy_prefix[] = "SCHILY.xattr.user.";
-    bool namespaced = namespaced_metadata(entry);
+    bool namespaced = metadata_format(entry);
     struct s3_metadata *metadata = NULL;
     archive_entry_xattr_reset(entry);
     const char *xattr_name;
