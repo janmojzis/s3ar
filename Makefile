@@ -86,9 +86,9 @@ test-get-retry: $(TEST_GET_RETRY_OBJECTS) libs3.a liblog.a s3ar_config.o s3ar_lo
 	$(CC) $(LDFLAGS) -o $@ $(TEST_GET_RETRY_OBJECTS) s3ar_config.o s3ar_log.o libs3.a liblog.a \
 		$(S3_LIBS)
 
-test-headers-alloc: $(TEST_HEADERS_ALLOC_OBJECTS) s3_headers.o s3_response.o s3_object_properties.o s3_memory.o
+test-headers-alloc: $(TEST_HEADERS_ALLOC_OBJECTS) s3_headers.o s3_response.o s3_object_properties.o s3_memory.o s3_error.o s3_xml.o
 	$(CC) $(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=realloc -o $@ \
-		$(TEST_HEADERS_ALLOC_OBJECTS) s3_headers.o s3_response.o s3_object_properties.o s3_memory.o $(S3_LIBS)
+		$(TEST_HEADERS_ALLOC_OBJECTS) s3_headers.o s3_response.o s3_object_properties.o s3_memory.o s3_error.o s3_xml.o $(S3_LIBS)
 
 test-uri-encode: $(TEST_URI_ENCODE_OBJECTS) s3_uri_encode.o
 	$(CC) $(LDFLAGS) -o $@ $(TEST_URI_ENCODE_OBJECTS) s3_uri_encode.o

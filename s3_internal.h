@@ -125,6 +125,9 @@ void s3_response_cleanup(struct s3_response *response);
  * allocations; the response retains its transport and header state. */
 void s3_response_take_properties(struct s3_response *response,
                                  struct s3_object_properties *properties);
+enum s3_result s3_response_check_headers(const struct s3_response *response,
+                                         const char *message,
+                                         struct s3_error *error);
 size_t s3_headers_callback(char *buffer, size_t size, size_t count, void *data);
 void s3_error_parse_xml(const char *body, size_t size, struct s3_error *error);
 enum s3_result s3_result_from_response(CURLcode code,
@@ -146,6 +149,18 @@ void s3_trace_perform_end(struct s3_client *client, unsigned attempt,
 enum s3_result s3_request_prepare(struct s3_client *client, const char *url,
                                   struct curl_slist **headers,
                                   struct s3_error *error);
+/* Perform a prepared request and collect transport diagnostics. The caller
+ * finishes tracing after any operation-specific diagnostics and applies its
+ * own validation and retry policy. curl_error must be initially empty. */
+CURLcode s3_request_perform(struct s3_client *client, unsigned attempt,
+                            unsigned max_attempts, struct s3_response *response,
+                            curl_write_callback write_callback,
+                            void *write_data, char curl_error[CURL_ERROR_SIZE],
+                            struct s3_error *error);
+enum s3_result s3_request_result(CURLcode code,
+                                 const struct s3_response *response,
+                                 const char *curl_error,
+                                 struct s3_error *error);
 enum s3_result s3_request_bucket(struct s3_client *client,
                                  struct s3_error *error, const char *bucket,
                                  const char *query, const char *method,

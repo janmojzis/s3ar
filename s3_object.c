@@ -46,9 +46,9 @@ static enum s3_result validate_get_headers(struct get_context *context,
                                            struct s3_error *error) {
     struct s3_response *r = &context->response;
     if (context->response_validated) return S3_RESULT_OK;
-    if (r->invalid_headers)
-        return s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
-                            "invalid or oversized GET response headers");
+    enum s3_result result = s3_response_check_headers(
+        r, "invalid or oversized GET response headers", error);
+    if (result != S3_RESULT_OK) return result;
     if (!r->headers_done)
         return s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
                             "response body arrived before complete headers");
@@ -224,33 +224,21 @@ s3_object_get_conditional(struct s3_client *client, struct s3_error *error,
             return result;
         }
         (void) curl_easy_setopt(client->curl, CURLOPT_HTTPGET, 1L);
-        (void) curl_easy_setopt(client->curl, CURLOPT_HEADERFUNCTION,
-                                s3_headers_callback);
-        (void) curl_easy_setopt(client->curl, CURLOPT_HEADERDATA,
-                                &context.response);
-        (void) curl_easy_setopt(client->curl, CURLOPT_WRITEFUNCTION,
-                                collect_body);
-        (void) curl_easy_setopt(client->curl, CURLOPT_WRITEDATA, &context);
-        (void) curl_easy_setopt(client->curl, CURLOPT_ERRORBUFFER, curl_error);
-        s3_trace_perform_start(client, attempt, client->max_attempts);
-        code = curl_easy_perform(client->curl);
-        (void) curl_easy_getinfo(client->curl, CURLINFO_RESPONSE_CODE,
-                                 &context.response.status);
+        code = s3_request_perform(client, attempt, client->max_attempts,
+                                  &context.response, collect_body, &context,
+                                  curl_error, error);
         curl_slist_free_all(headers);
-        s3_error_clear(error);
-        error->attempts = attempt;
-        error->http_status = context.response.status;
         error->callback_errno = context.callback_errno;
-        s3_error_parse_xml(context.response.error_body,
-                           context.response.error_body_size, error);
         s3_trace_perform_end(client, attempt, client->max_attempts, code,
                              &context.response, error);
 
-        if (context.response.invalid_headers) {
+        result = s3_response_check_headers(
+            &context.response, "invalid or oversized GET response headers",
+            error);
+        if (result != S3_RESULT_OK) {
             free(url);
             cleanup_get_context(&context);
-            return s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
-                                "invalid or oversized GET response headers");
+            return result;
         }
         if (context.callback_failed) {
             free(url);
@@ -296,10 +284,7 @@ s3_object_get_conditional(struct s3_client *client, struct s3_error *error,
             s3_retry_allowed(code, context.response.status, error->s3_code);
         if (!retryable) {
             result =
-                s3_result_from_response(code, &context.response, false, error);
-            if (code != CURLE_OK && curl_error[0] != '\0')
-                (void) snprintf(error->message, sizeof(error->message), "%s",
-                                curl_error);
+                s3_request_result(code, &context.response, curl_error, error);
             free(url);
             cleanup_get_context(&context);
             return result;
@@ -362,30 +347,18 @@ enum s3_result s3_object_head(struct s3_client *client, struct s3_error *error,
             return result;
         }
         (void) curl_easy_setopt(client->curl, CURLOPT_NOBODY, 1L);
-        (void) curl_easy_setopt(client->curl, CURLOPT_HEADERFUNCTION,
-                                s3_headers_callback);
-        (void) curl_easy_setopt(client->curl, CURLOPT_HEADERDATA, &response);
-        (void) curl_easy_setopt(client->curl, CURLOPT_WRITEFUNCTION,
-                                discard_body);
-        (void) curl_easy_setopt(client->curl, CURLOPT_WRITEDATA, &response);
-        (void) curl_easy_setopt(client->curl, CURLOPT_ERRORBUFFER, curl_error);
-        s3_trace_perform_start(client, attempt, client->max_attempts);
-        code = curl_easy_perform(client->curl);
-        (void) curl_easy_getinfo(client->curl, CURLINFO_RESPONSE_CODE,
-                                 &response.status);
+        code =
+            s3_request_perform(client, attempt, client->max_attempts, &response,
+                               discard_body, &response, curl_error, error);
         curl_slist_free_all(headers);
-        s3_error_clear(error);
-        error->attempts = attempt;
-        error->http_status = response.status;
-        s3_error_parse_xml(response.error_body, response.error_body_size,
-                           error);
         s3_trace_perform_end(client, attempt, client->max_attempts, code,
                              &response, error);
-        if (response.invalid_headers) {
+        result = s3_response_check_headers(
+            &response, "invalid or oversized HEAD response headers", error);
+        if (result != S3_RESULT_OK) {
             free(url);
             s3_response_cleanup(&response);
-            return s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
-                                "invalid or oversized HEAD response headers");
+            return result;
         }
         if (code == CURLE_OK && response.status >= 200 &&
             response.status < 300) {
@@ -400,10 +373,7 @@ enum s3_result s3_object_head(struct s3_client *client, struct s3_error *error,
             return S3_RESULT_OK;
         }
         if (!s3_retry_allowed(code, response.status, error->s3_code)) {
-            result = s3_result_from_response(code, &response, false, error);
-            if (code != CURLE_OK && curl_error[0] != '\0')
-                (void) snprintf(error->message, sizeof(error->message), "%s",
-                                curl_error);
+            result = s3_request_result(code, &response, curl_error, error);
             free(url);
             s3_response_cleanup(&response);
             return result;

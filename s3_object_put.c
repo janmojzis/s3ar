@@ -172,24 +172,10 @@ memory_request_ex(struct s3_client *client, struct s3_error *error,
             (void) curl_easy_setopt(client->curl, CURLOPT_POSTFIELDSIZE_LARGE,
                                     (curl_off_t) body_size);
         }
-        (void) curl_easy_setopt(client->curl, CURLOPT_HEADERFUNCTION,
-                                s3_headers_callback);
-        (void) curl_easy_setopt(client->curl, CURLOPT_HEADERDATA,
-                                &output->response);
-        (void) curl_easy_setopt(client->curl, CURLOPT_WRITEFUNCTION,
-                                s3_response_memory_collect);
-        (void) curl_easy_setopt(client->curl, CURLOPT_WRITEDATA, output);
-        (void) curl_easy_setopt(client->curl, CURLOPT_ERRORBUFFER, curl_error);
-        s3_trace_perform_start(client, attempt, attempts);
-        code = curl_easy_perform(client->curl);
-        (void) curl_easy_getinfo(client->curl, CURLINFO_RESPONSE_CODE,
-                                 &output->response.status);
+        code = s3_request_perform(client, attempt, attempts, &output->response,
+                                  s3_response_memory_collect, output,
+                                  curl_error, error);
         curl_slist_free_all(headers);
-        s3_error_clear(error);
-        error->attempts = attempt;
-        error->http_status = output->response.status;
-        s3_error_parse_xml(output->response.error_body,
-                           output->response.error_body_size, error);
         if ((retry_mode == REQUEST_COMPLETE || copy != NULL) &&
             code == CURLE_OK && output->response.status >= 200 &&
             output->response.status < 300 &&
@@ -203,11 +189,11 @@ memory_request_ex(struct s3_client *client, struct s3_error *error,
         }
         s3_trace_perform_end(client, attempt, attempts, code, &output->response,
                              error);
-        if (output->response.invalid_headers) {
+        result = s3_response_check_headers(
+            &output->response,
+            "invalid or oversized S3 upload response headers", error);
+        if (result != S3_RESULT_OK) {
             if (completion_uncertain != NULL) *completion_uncertain = true;
-            result =
-                s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
-                             "invalid or oversized S3 upload response headers");
             break;
         }
         if (output->body_error != S3_RESULT_OK) {
@@ -252,10 +238,7 @@ memory_request_ex(struct s3_client *client, struct s3_error *error,
         }
         if (!s3_retry_allowed(code, output->response.status, error->s3_code)) {
             result =
-                s3_result_from_response(code, &output->response, false, error);
-            if (code != CURLE_OK && curl_error[0] != '\0')
-                (void) snprintf(error->message, sizeof(error->message), "%s",
-                                curl_error);
+                s3_request_result(code, &output->response, curl_error, error);
             break;
         }
         if (attempt == attempts) {

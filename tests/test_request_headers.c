@@ -11,12 +11,13 @@ static unsigned requests;
 static bool allocation_failure;
 static bool fail_next_malloc;
 static bool not_modified;
+static bool object_headers;
 static struct s3_response *get_response;
 
 void __real_s3_response_reset(struct s3_response *context);
 void __wrap_s3_response_reset(struct s3_response *context) {
     __real_s3_response_reset(context);
-    if (not_modified) get_response = context;
+    if (not_modified || object_headers) get_response = context;
 }
 
 void *__real_malloc(size_t size);
@@ -41,8 +42,9 @@ CURLcode __wrap_curl_easy_getinfo(CURL *curl, CURLINFO info, ...) {
     assert(info == CURLINFO_RESPONSE_CODE);
     va_list arguments;
     va_start(arguments, info);
-    *va_arg(arguments, long *) =
-        not_modified ? get_response->status : response->response.status;
+    *va_arg(arguments, long *) = not_modified || object_headers
+                                     ? get_response->status
+                                     : response->response.status;
     va_end(arguments);
     return CURLE_OK;
 }
@@ -69,11 +71,13 @@ CURLcode __wrap_curl_easy_perform(CURL *curl) {
         memset(header + 6, 'x', 300);
         strcpy(header + 306, "\r\n");
     }
+    struct s3_response *headers =
+        object_headers ? get_response : &response->response;
     size_t size = strlen(header);
-    assert(s3_headers_callback(header, 1, size, &response->response) == size);
+    assert(s3_headers_callback(header, 1, size, headers) == size);
     assert(!fail_next_malloc);
-    assert(response->response.invalid_headers);
-    response->response.status = 200;
+    assert(headers->invalid_headers);
+    headers->status = 200;
     return CURLE_OK;
 }
 
@@ -146,6 +150,27 @@ int main(void) {
         assert(error.attempts == 1 && requests == 1);
         assert(strcmp(error.message,
                       "invalid or oversized S3 upload response headers") == 0);
+
+        object_headers = true;
+        requests = 0;
+        struct s3_object_properties properties = {0};
+        result = s3_object_head(client, &error, &properties, "bucket", "key");
+        assert(result == S3_RESULT_PROTOCOL_ERROR && error.result == result);
+        assert(error.http_status == 200);
+        assert(error.attempts == 1 && requests == 1);
+        assert(strcmp(error.message,
+                      "invalid or oversized HEAD response headers") == 0);
+        assert(properties.content_type == NULL && properties.metadata == NULL);
+
+        requests = 0;
+        result = s3_object_get(client, &error, unexpected_properties,
+                               unexpected_write, NULL, "bucket", "key");
+        assert(result == S3_RESULT_PROTOCOL_ERROR && error.result == result);
+        assert(error.http_status == 200);
+        assert(error.attempts == 1 && requests == 1);
+        assert(strcmp(error.message,
+                      "invalid or oversized GET response headers") == 0);
+        object_headers = false;
     }
     not_modified = true;
     requests = 0;

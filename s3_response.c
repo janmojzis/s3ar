@@ -35,6 +35,14 @@ void s3_response_take_properties(struct s3_response *response,
     response->metadata_capacity = 0;
 }
 
+enum s3_result s3_response_check_headers(const struct s3_response *response,
+                                         const char *message,
+                                         struct s3_error *error) {
+    if (response->invalid_headers)
+        return s3_error_set(error, S3_RESULT_PROTOCOL_ERROR, message);
+    return S3_RESULT_OK;
+}
+
 void s3_response_reset(struct s3_response *response) {
     memset(response, 0, sizeof(*response));
     response->range_total = UINT64_MAX;
