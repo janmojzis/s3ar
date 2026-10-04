@@ -85,6 +85,8 @@ static enum s3_result validate_get_headers(struct get_context *context,
         if (r->status != 206 || !r->have_content_range || !r->have_length ||
             r->range_first != context->delivered ||
             r->range_total != context->original_properties.size ||
+            r->range_last != context->original_properties.size - 1 ||
+            r->range_last - r->range_first + 1 != r->content_length ||
             r->content_length != remaining ||
             strcmp(r->properties.etag, context->original_properties.etag) !=
                 0 ||

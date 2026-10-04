@@ -1042,6 +1042,8 @@ def test_get_does_not_retry_output_callback_failure(s3_environment):
         "missing-content-range",
         "range-start",
         "range-total",
+        "range-end",
+        "short-range",
         "content-length",
         "etag",
         "last-modified",
@@ -1086,6 +1088,12 @@ def test_get_rejects_inconsistent_resumed_response(
         resumed_headers["Content-Range"] = (
             f"bytes {cutoff}-{len(data) - 1}/{len(data) + 1}"
         )
+    elif invalid_field in ("range-end", "short-range"):
+        resumed_headers["Content-Range"] = (
+            f"bytes {cutoff}-{len(data) - 2}/{len(data)}"
+        )
+        if invalid_field == "short-range":
+            resumed_headers["Content-Length"] = str(len(data) - cutoff - 1)
     elif invalid_field == "content-length":
         resumed_headers["Content-Length"] = str(len(data) - cutoff + 1)
     elif invalid_field == "etag":
