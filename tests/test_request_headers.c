@@ -10,6 +10,14 @@ static struct s3_memory_response *response;
 static unsigned requests;
 static bool allocation_failure;
 static bool fail_next_malloc;
+static bool not_modified;
+static struct s3_response *get_response;
+
+void __real_s3_response_reset(struct s3_response *context);
+void __wrap_s3_response_reset(struct s3_response *context) {
+    __real_s3_response_reset(context);
+    if (not_modified) get_response = context;
+}
 
 void *__real_malloc(size_t size);
 void *__wrap_malloc(size_t size) {
@@ -33,7 +41,8 @@ CURLcode __wrap_curl_easy_getinfo(CURL *curl, CURLINFO info, ...) {
     assert(info == CURLINFO_RESPONSE_CODE);
     va_list arguments;
     va_start(arguments, info);
-    *va_arg(arguments, long *) = response->response.status;
+    *va_arg(arguments, long *) =
+        not_modified ? get_response->status : response->response.status;
     va_end(arguments);
     return CURLE_OK;
 }
@@ -41,6 +50,15 @@ CURLcode __wrap_curl_easy_getinfo(CURL *curl, CURLINFO info, ...) {
 CURLcode __wrap_curl_easy_perform(CURL *curl) {
     (void) curl;
     ++requests;
+    if (not_modified) {
+        char status[] = "HTTP/1.1 304 Not Modified\r\n";
+        char end[] = "\r\n";
+        assert(s3_headers_callback(status, 1, strlen(status), get_response) ==
+               strlen(status));
+        assert(s3_headers_callback(end, 1, strlen(end), get_response) ==
+               strlen(end));
+        return CURLE_OK;
+    }
     char header[320];
     if (allocation_failure) {
         strcpy(header, "Content-Type: application/xml\r\n");
@@ -66,6 +84,24 @@ static enum s3_read_result read_empty(void *data, unsigned char *buffer,
     (void) capacity;
     *size = 0;
     return S3_READ_EOF;
+}
+
+static bool
+unexpected_properties(void *data,
+                      const struct s3_object_properties *properties) {
+    (void) data;
+    (void) properties;
+    assert(false);
+    return false;
+}
+
+static bool unexpected_write(void *data, const unsigned char *buffer,
+                             size_t size) {
+    (void) data;
+    (void) buffer;
+    (void) size;
+    assert(false);
+    return false;
 }
 
 int main(void) {
@@ -111,6 +147,18 @@ int main(void) {
         assert(strcmp(error.message,
                       "invalid or oversized S3 upload response headers") == 0);
     }
+    not_modified = true;
+    requests = 0;
+    error.result = S3_RESULT_ERROR;
+    strcpy(error.message, "stale error");
+    enum s3_result result = s3_object_get_conditional(
+        client, &error, unexpected_properties, unexpected_write, NULL, "bucket",
+        "key", "\"cached\"");
+    assert(result == S3_RESULT_NOT_MODIFIED);
+    assert(error.result == result);
+    assert(error.http_status == 304);
+    assert(error.attempts == 1 && requests == 1);
+    assert(error.message[0] == '\0');
     s3_client_close(client);
     return 0;
 }

@@ -69,6 +69,7 @@ $(LINKS): s3ar
 
 test-request-headers: $(TEST_REQUEST_HEADERS_OBJECTS) libs3.a liblog.a
 	$(CC) $(LDFLAGS) -Wl,--wrap=s3_response_memory_reset \
+		-Wl,--wrap=s3_response_reset \
 		-Wl,--wrap=curl_easy_perform -Wl,--wrap=curl_easy_getinfo \
 		-Wl,--wrap=malloc -o $@ $^ $(S3_LIBS)
 

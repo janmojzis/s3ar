@@ -288,7 +288,7 @@ s3_object_get_conditional(struct s3_client *client, struct s3_error *error,
             context.response.error_body_size == 0) {
             free(url);
             cleanup_get_context(&context);
-            return S3_RESULT_NOT_MODIFIED;
+            return s3_error_set(error, S3_RESULT_NOT_MODIFIED, NULL);
         }
         if (code == CURLE_OK && context.response.status >= 200 &&
             context.response.status < 300) {
