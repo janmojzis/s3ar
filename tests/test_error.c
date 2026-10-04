@@ -177,6 +177,52 @@ static void parse_header(struct s3_response *response, const char *text) {
     assert(s3_headers_callback(buffer, 1, size, response) == size);
 }
 
+static void test_response_take_properties(void) {
+    struct s3_response response;
+    struct s3_object_properties properties = {0};
+    s3_response_reset(&response);
+    parse_header(&response, "HTTP/1.1 200 OK\r\n");
+    parse_header(&response, "Content-Length: 42\r\n");
+    parse_header(&response, "ETag: \"owned\"\r\n");
+    parse_header(&response, "Content-Type: text/plain\r\n");
+    parse_header(&response, "Content-Encoding: identity\r\n");
+    parse_header(&response, "Cache-Control: no-cache\r\n");
+    parse_header(&response, "Content-Disposition: inline\r\n");
+    parse_header(&response, "Content-Language: cs\r\n");
+    parse_header(&response, "Expires: Thu, 01 Oct 2026 00:00:00 GMT\r\n");
+    parse_header(&response, "x-amz-meta-origin: archive\r\n");
+    parse_header(&response, "\r\n");
+    assert(!response.invalid_headers);
+    const char *content_type = response.properties.content_type;
+    const struct s3_metadata *metadata = response.properties.metadata;
+    s3_response_take_properties(&response, &properties);
+    assert(properties.content_type == content_type);
+    assert(properties.metadata == metadata);
+    assert(response.metadata == NULL && response.metadata_count == 0 &&
+           response.metadata_capacity == 0);
+    assert(response.properties.content_type == NULL &&
+           response.properties.metadata == NULL);
+    assert(response.status == 200 && response.headers_done &&
+           response.have_length && response.content_length == 42);
+    s3_response_cleanup(&response);
+    s3_response_reset(&response);
+    parse_header(&response, "Content-Type: application/xml\r\n");
+    parse_header(&response, "x-amz-meta-origin: replacement\r\n");
+    s3_response_cleanup(&response);
+    assert(properties.size == 42);
+    assert(strcmp(properties.etag, "\"owned\"") == 0);
+    assert(strcmp(properties.content_type, "text/plain") == 0);
+    assert(strcmp(properties.content_encoding, "identity") == 0);
+    assert(strcmp(properties.cache_control, "no-cache") == 0);
+    assert(strcmp(properties.content_disposition, "inline") == 0);
+    assert(strcmp(properties.content_language, "cs") == 0);
+    assert(strcmp(properties.expires, "Thu, 01 Oct 2026 00:00:00 GMT") == 0);
+    assert(properties.metadata_count == 1);
+    assert(strcmp(properties.metadata[0].name, "origin") == 0);
+    assert(strcmp(properties.metadata[0].value, "archive") == 0);
+    s3_object_properties_free(&properties);
+}
+
 static void test_content_range_bounds(void) {
     static const struct {
         const char *header;
@@ -612,6 +658,7 @@ static void test_parse_u64(void) {
 }
 
 int main(void) {
+    test_response_take_properties();
     test_content_range_bounds();
     test_parse_u64();
     test_xml_child_text();

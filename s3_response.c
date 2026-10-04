@@ -26,6 +26,15 @@ void s3_response_cleanup(struct s3_response *response) {
     response->metadata_capacity = 0;
 }
 
+void s3_response_take_properties(struct s3_response *response,
+                                 struct s3_object_properties *properties) {
+    *properties = response->properties;
+    response->properties = (struct s3_object_properties) {0};
+    response->metadata = NULL;
+    response->metadata_count = 0;
+    response->metadata_capacity = 0;
+}
+
 void s3_response_reset(struct s3_response *response) {
     memset(response, 0, sizeof(*response));
     response->range_total = UINT64_MAX;

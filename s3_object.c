@@ -37,22 +37,6 @@ static bool property_equal(const char *left, const char *right) {
     return strcmp(left != NULL ? left : "", right != NULL ? right : "") == 0;
 }
 
-static void preserve_original_properties(struct get_context *context) {
-    struct s3_response *response = &context->response;
-    context->original_properties = response->properties;
-    response->properties.content_type = NULL;
-    response->properties.content_encoding = NULL;
-    response->properties.cache_control = NULL;
-    response->properties.content_disposition = NULL;
-    response->properties.content_language = NULL;
-    response->properties.expires = NULL;
-    response->properties.metadata = NULL;
-    response->properties.metadata_count = 0;
-    response->metadata = NULL;
-    response->metadata_count = 0;
-    response->metadata_capacity = 0;
-}
-
 static void cleanup_get_context(struct get_context *context) {
     s3_response_cleanup(&context->response);
     s3_object_properties_free(&context->original_properties);
@@ -73,7 +57,8 @@ static enum s3_result validate_get_headers(struct get_context *context,
             r->properties.etag[0] == '\0')
             return s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
                                 "GET response lacks Content-Length or ETag");
-        preserve_original_properties(context);
+        s3_response_take_properties(&context->response,
+                                    &context->original_properties);
         context->original_properties.size = r->content_length;
         context->original_known = true;
     }
@@ -410,18 +395,7 @@ enum s3_result s3_object_head(struct s3_client *client, struct s3_error *error,
                 return s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
                                     "HEAD response lacks Content-Length");
             }
-            *properties = response.properties;
-            response.properties.content_type = NULL;
-            response.properties.content_encoding = NULL;
-            response.properties.cache_control = NULL;
-            response.properties.content_disposition = NULL;
-            response.properties.content_language = NULL;
-            response.properties.expires = NULL;
-            response.properties.metadata = NULL;
-            response.properties.metadata_count = 0;
-            response.metadata = NULL;
-            response.metadata_count = 0;
-            response.metadata_capacity = 0;
+            s3_response_take_properties(&response, properties);
             free(url);
             return S3_RESULT_OK;
         }

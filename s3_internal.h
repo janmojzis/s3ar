@@ -121,6 +121,10 @@ bool s3_parse_u64(const char *first, const char *last, uint64_t *value);
 
 void s3_response_reset(struct s3_response *response);
 void s3_response_cleanup(struct s3_response *response);
+/* Move properties into an empty destination. The caller owns the transferred
+ * allocations; the response retains its transport and header state. */
+void s3_response_take_properties(struct s3_response *response,
+                                 struct s3_object_properties *properties);
 size_t s3_headers_callback(char *buffer, size_t size, size_t count, void *data);
 void s3_error_parse_xml(const char *body, size_t size, struct s3_error *error);
 enum s3_result s3_result_from_response(CURLcode code,
