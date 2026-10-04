@@ -83,26 +83,45 @@ static _Noreturn void archive_fatal(struct archive *archive,
     s3ar_die(2);
 }
 
-static bool bucket_known(const struct bucket_names *buckets, const char *name) {
-    for (size_t i = 0; i < buckets->count; ++i) {
-        if (strcmp(buckets->names[i], name) == 0) { return true; }
+static size_t bucket_slot(char *const *names, size_t capacity,
+                          const char *name) {
+    /* cdb64 hash: start at 5381, then multiply by 33 and XOR each byte. */
+    uint64_t hash = UINT64_C(5381);
+    for (const unsigned char *p = (const unsigned char *) name; *p != 0; ++p) {
+        hash = (hash * UINT64_C(33)) ^ *p;
     }
-    return false;
+    size_t slot = (size_t) hash & (capacity - 1);
+    while (names[slot] != NULL && strcmp(names[slot], name) != 0)
+        slot = (slot + 1) & (capacity - 1);
+    return slot;
+}
+
+static bool bucket_known(const struct bucket_names *buckets, const char *name) {
+    return buckets->capacity != 0 &&
+           buckets->names[bucket_slot(buckets->names, buckets->capacity,
+                                      name)] != NULL;
 }
 
 static void remember_bucket(struct bucket_names *buckets, const char *name) {
-    if (buckets->count == buckets->capacity) {
-        size_t capacity = buckets->capacity == 0 ? 8 : buckets->capacity * 2;
+    if (bucket_known(buckets, name)) return;
+    /* Keep at least half the slots empty so probing always terminates. */
+    if (buckets->count >= buckets->capacity / 2) {
+        size_t capacity = buckets->capacity == 0 ? 16 : buckets->capacity * 2;
         if (capacity < buckets->capacity ||
             capacity > SIZE_MAX / sizeof(*buckets->names)) {
             log_f1("out of memory");
             s3ar_die(2);
         }
-        char **names = realloc(buckets->names, capacity * sizeof(*names));
+        char **names = calloc(capacity, sizeof(*names));
         if (names == NULL) {
             log_f1("out of memory");
             s3ar_die(2);
         }
+        for (size_t i = 0; i < buckets->capacity; ++i) {
+            char *old = buckets->names[i];
+            if (old != NULL) names[bucket_slot(names, capacity, old)] = old;
+        }
+        free(buckets->names);
         buckets->names = names;
         buckets->capacity = capacity;
     }
@@ -111,11 +130,12 @@ static void remember_bucket(struct bucket_names *buckets, const char *name) {
         log_f1("out of memory");
         s3ar_die(2);
     }
-    buckets->names[buckets->count++] = copy;
+    buckets->names[bucket_slot(buckets->names, buckets->capacity, name)] = copy;
+    ++buckets->count;
 }
 
 static void free_buckets(struct bucket_names *buckets) {
-    for (size_t i = 0; i < buckets->count; ++i) { free(buckets->names[i]); }
+    for (size_t i = 0; i < buckets->capacity; ++i) free(buckets->names[i]);
     free(buckets->names);
 }
 
@@ -498,9 +518,7 @@ static void extract_bucket(struct extract_context *context,
     char *header_key;
     read_identity(entry, false, &header_bucket, &header_key);
     const char *bucket = header_bucket;
-    if (!bucket_known(&context->archive_buckets, bucket)) {
-        remember_bucket(&context->archive_buckets, bucket);
-    }
+    remember_bucket(&context->archive_buckets, bucket);
     transform_identity(context, &header_bucket, &header_key);
     bucket = header_bucket;
     if (!s3ar_selection_set_match(&context->selections, bucket, NULL)) {

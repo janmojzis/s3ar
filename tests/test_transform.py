@@ -201,3 +201,50 @@ def test_transform_restores_to_new_bucket(
     assert [item["Key"] for item in objects] == ["renamed/key"]
     assert "s3ar: info: transform-new/renamed/key -" in result.stderr
     assert "s3://" not in result.stderr
+
+
+@pytest.mark.parametrize("merge_buckets", [False, True])
+def test_restore_many_interleaved_buckets(tmp_path, merge_buckets):
+    path = tmp_path / "many-buckets.tar"
+    buckets = [f"bucket-{i:04d}" for i in range(128)]
+    with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as archive:
+        # Repeated directory entries must not initialize a bucket twice.
+        for bucket in buckets + list(reversed(buckets)):
+            entry = tarfile.TarInfo(bucket)
+            entry.type = tarfile.DIRTYPE
+            entry.pax_headers = {
+                "SCHILY.xattr.user.s3ar.format": "1",
+                "SCHILY.xattr.user.s3ar.bucket": bucket,
+            }
+            archive.addfile(entry)
+        for round_number in range(3):
+            for bucket in reversed(buckets):
+                key = f"{bucket}-{round_number}"
+                entry = tarfile.TarInfo(f"{bucket}/{key}")
+                entry.pax_headers = {
+                    "SCHILY.xattr.user.s3ar.format": "1",
+                    "SCHILY.xattr.user.s3ar.bucket": bucket,
+                    "SCHILY.xattr.user.s3ar.key": key,
+                }
+                archive.addfile(entry)
+    environment = {
+        "S3AR_ENDPOINT": "http://localhost", "S3AR_URI_STYLE": "path",
+        "S3AR_REGION": "us-east-1", "S3AR_ACCESS_KEY": "unused",
+        "S3AR_SECRET_KEY": "unused",
+    }
+    args = ["-xf", str(path), "s3://"]
+    if merge_buckets:
+        args += ["--transform", "s|^bucket-[0-9]*/|merged/|"]
+    result = run(RESTORE_PROBE, *args, env=environment)
+    assert result.returncode == 0, result.stderr
+    lines = result.stdout.splitlines()
+    initialized = [line for line in lines if line.startswith("BUCKET ")]
+    expected = ["BUCKET merged"] if merge_buckets else [
+        f"BUCKET {bucket}" for bucket in buckets
+    ]
+    assert initialized == expected
+    uploaded = [line for line in lines if line.startswith("PUT ")]
+    assert uploaded == [
+        f"PUT {'merged' if merge_buckets else bucket}/{bucket}-{round_number} size=0"
+        for round_number in range(3) for bucket in reversed(buckets)
+    ]
