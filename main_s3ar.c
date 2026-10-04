@@ -17,8 +17,6 @@
 #include "s3.h"
 #include "s3ar.h"
 #include "main.h"
-#include "s3ar_client.h"
-#include "s3ar_config.h"
 #include "s3ar_transform.h"
 #include "sig.h"
 
@@ -26,7 +24,6 @@
 #include <getopt.h>
 #include <signal.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 static void usage(void) {
@@ -72,33 +69,25 @@ static const struct option long_options[] = {
     {NULL, 0, NULL, 0},
 };
 
-static struct s3ar_config config;
-static struct s3ar_config_env s3_config;
-
-static void debug_options(int verbosity, bool help) {
+static void debug_options(const struct s3ar_config *config, int verbosity,
+                          bool help) {
     log_d3("(option -v) verbosity = '", log_num(verbosity), "'");
     log_d3("(option -h) help = '", help ? "true" : "false", "'");
     log_d3("(option -c) create = '",
-           config.command == S3AR_COMMAND_CREATE ? "true" : "false", "'");
+           config->command == S3AR_COMMAND_CREATE ? "true" : "false", "'");
     log_d3("(option -x) extract = '",
-           config.command == S3AR_COMMAND_EXTRACT ? "true" : "false", "'");
+           config->command == S3AR_COMMAND_EXTRACT ? "true" : "false", "'");
     log_d3("(option -t) list = '",
-           config.command == S3AR_COMMAND_LIST_ARCHIVE ? "true" : "false", "'");
+           config->command == S3AR_COMMAND_LIST_ARCHIVE ? "true" : "false",
+           "'");
     log_d3("(option -f) archive-file = '",
-           config.archive_path != NULL ? config.archive_path : "-", "'");
-    log_d3("(option --zstd) zstd = '", config.zstd ? "true" : "false", "'");
-    s3ar_transform_log(config.transforms);
-}
-
-_Noreturn void s3ar_die(int status) {
-    s3ar_create_cleanup();
-    s3_client_close(config.s3);
-    s3ar_config_free(&s3_config);
-    s3ar_transform_free(config.transforms);
-    exit(status);
+           config->archive_path != NULL ? config->archive_path : "-", "'");
+    log_d3("(option --zstd) zstd = '", config->zstd ? "true" : "false", "'");
+    s3ar_transform_log(config->transforms);
 }
 
 int main_s3ar(int argc, char **argv) {
+    struct s3ar_config *config = s3ar_config_get();
     int verbosity = 0;
     log_set_name("s3ar");
     sig_ignore(SIGPIPE);
@@ -115,46 +104,46 @@ int main_s3ar(int argc, char **argv) {
 
         /* -c --create */
         if (option == 'c') {
-            if (config.command != S3AR_COMMAND_NONE) {
+            if (config->command != S3AR_COMMAND_NONE) {
                 log_f1("command specified twice");
                 s3ar_die(2);
             }
-            config.command = S3AR_COMMAND_CREATE;
+            config->command = S3AR_COMMAND_CREATE;
         }
 
         /* -x --extract */
         else if (option == 'x') {
-            if (config.command != S3AR_COMMAND_NONE) {
+            if (config->command != S3AR_COMMAND_NONE) {
                 log_f1("command specified twice");
                 s3ar_die(2);
             }
-            config.command = S3AR_COMMAND_EXTRACT;
+            config->command = S3AR_COMMAND_EXTRACT;
         }
 
         /* -t --list */
         else if (option == 't') {
-            if (config.command != S3AR_COMMAND_NONE) {
+            if (config->command != S3AR_COMMAND_NONE) {
                 log_f1("command specified twice");
                 s3ar_die(2);
             }
-            config.command = S3AR_COMMAND_LIST_ARCHIVE;
+            config->command = S3AR_COMMAND_LIST_ARCHIVE;
         }
 
         /* -f --file */
         else if (option == 'f') {
-            if (config.archive_path != NULL) {
+            if (config->archive_path != NULL) {
                 log_f1("archive file specified twice");
                 s3ar_die(2);
             }
-            config.archive_path = optarg;
+            config->archive_path = optarg;
         }
 
         /* --zstd */
-        else if (option == OPTION_ZSTD) { config.zstd = true; }
+        else if (option == OPTION_ZSTD) { config->zstd = true; }
 
         else if (option == OPTION_TRANSFORM) {
             char error[256];
-            if (!s3ar_transform_add(&config.transforms, optarg, error,
+            if (!s3ar_transform_add(&config->transforms, optarg, error,
                                     sizeof(error))) {
                 log_f2("invalid --transform: ", error);
                 s3ar_die(2);
@@ -164,13 +153,13 @@ int main_s3ar(int argc, char **argv) {
         /* -v --verbose */
         else if (option == 'v') {
             if (verbosity < 3) ++verbosity;
-            config.verbose = true;
+            config->verbose = true;
             log_inc_level(0);
         }
 
         /* -h --help */
         else if (option == 'h') {
-            debug_options(verbosity, true);
+            debug_options(config, verbosity, true);
             usage();
             s3ar_die(0);
         }
@@ -195,38 +184,38 @@ int main_s3ar(int argc, char **argv) {
         }
     }
 
-    if (config.command == S3AR_COMMAND_NONE) {
+    if (config->command == S3AR_COMMAND_NONE) {
         log_f1("specify -c, -x or -t");
         s3ar_die(2);
     }
-    if (config.command == S3AR_COMMAND_CREATE && config.transforms != NULL) {
+    if (config->command == S3AR_COMMAND_CREATE && config->transforms != NULL) {
         log_f1("--transform requires -x or -t");
         s3ar_die(2);
     }
-    if (config.archive_path != NULL &&
-        strncmp(config.archive_path, "s3://", 5) == 0) {
+    if (config->archive_path != NULL &&
+        strncmp(config->archive_path, "s3://", 5) == 0) {
         log_f1("TARFILE must be a local filesystem path or '-'");
         s3ar_die(2);
     }
-    if ((config.command == S3AR_COMMAND_CREATE ||
-         config.command == S3AR_COMMAND_EXTRACT) &&
+    if ((config->command == S3AR_COMMAND_CREATE ||
+         config->command == S3AR_COMMAND_EXTRACT) &&
         argc - optind < 1) {
         log_f1("command requires at least one S3 operand");
         s3ar_die(2);
     }
-    config.operand_count = argc - optind;
-    config.operands = &argv[optind];
+    config->operand_count = argc - optind;
+    config->operands = &argv[optind];
 
-    debug_options(verbosity, false);
-    if (config.operand_count == 0) log_d1("(argument) selection = '(all)'");
+    debug_options(config, verbosity, false);
+    if (config->operand_count == 0) log_d1("(argument) selection = '(all)'");
     for (int i = optind; i < argc; ++i) {
         bool s3_uri = strncmp(argv[i], "s3://", 5) == 0;
         log_d3("(argument) selection = '",
                s3_log_uri(NULL, s3_uri ? argv[i] + 5 : argv[i], NULL), "'");
     }
 
-    if (config.command == S3AR_COMMAND_LIST_ARCHIVE) {
-        s3ar_list_archive(&config);
+    if (config->command == S3AR_COMMAND_LIST_ARCHIVE) {
+        s3ar_list_archive(config);
         if (fflush(stdout) == EOF) {
             log_f3("unable to flush standard output", ": ", log_errno());
             s3ar_die(2);
@@ -235,15 +224,15 @@ int main_s3ar(int argc, char **argv) {
     }
 
     /* Parse environment and connect to S3. */
-    if (s3ar_client_open(&config.s3, &s3_config) != 0) s3ar_die(2);
+    if (s3ar_connect() != 0) s3ar_die(2);
 
     /* run commands */
-    switch (config.command) {
+    switch (config->command) {
         case S3AR_COMMAND_CREATE:
-            s3ar_create(&config);
+            s3ar_create(config);
             break;
         case S3AR_COMMAND_EXTRACT:
-            s3ar_extract(&config);
+            s3ar_extract(config);
             break;
         case S3AR_COMMAND_LIST_ARCHIVE:
             break;
