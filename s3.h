@@ -142,8 +142,13 @@ bool s3_uri_encode_into(char *output, size_t capacity, const char *input,
 /* Each successful open owns one independent curl handle and one balanced
  * libcurl global initialization. Close each client after its last operation.
  * Other curl users may maintain their own balanced global initialization.
- * A client may be used by only one operation at a time, including callbacks;
- * separate clients may be used concurrently. Do not close or reconfigure a
+ * A client may be used by only one operation at a time; separate clients may
+ * be used concurrently. Callbacks must not start another operation on the
+ * same client, except bucket and object callbacks passed to s3_bucket_list()
+ * and s3_object_list(): these run after the listing response has been fully
+ * received and parsed and may synchronously perform nested operations on the
+ * same client. Use a
+ * separate s3_error for each nested operation. Do not close or reconfigure a
  * client during an operation. On libcurl builds without
  * CURL_VERSION_THREADSAFE, open and close clients only while the process has a
  * single thread. */
