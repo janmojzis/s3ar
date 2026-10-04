@@ -203,6 +203,13 @@ memory_request_ex(struct s3_client *client, struct s3_error *error,
         }
         s3_trace_perform_end(client, attempt, attempts, code, &output->response,
                              error);
+        if (output->response.invalid_headers) {
+            if (completion_uncertain != NULL) *completion_uncertain = true;
+            result =
+                s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
+                             "invalid or oversized S3 upload response headers");
+            break;
+        }
         if (output->body_error != S3_RESULT_OK) {
             if (completion_uncertain != NULL) *completion_uncertain = true;
             result = s3_error_set(error, output->body_error,

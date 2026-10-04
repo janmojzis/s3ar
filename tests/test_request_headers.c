@@ -59,6 +59,15 @@ CURLcode __wrap_curl_easy_perform(CURL *curl) {
     return CURLE_OK;
 }
 
+static enum s3_read_result read_empty(void *data, unsigned char *buffer,
+                                      size_t capacity, size_t *size) {
+    (void) data;
+    (void) buffer;
+    (void) capacity;
+    *size = 0;
+    return S3_READ_EOF;
+}
+
 int main(void) {
     struct s3_client_config config;
     struct s3_client *client = NULL;
@@ -91,6 +100,16 @@ int main(void) {
         assert(error.http_status == 200);
         assert(error.attempts == 1 && requests == 1);
         assert(body == NULL && size == 0);
+
+        requests = 0;
+        result = s3_object_put(client, &error, "bucket", "key", 0, NULL,
+                               read_empty, NULL);
+        assert(result == S3_RESULT_PROTOCOL_ERROR);
+        assert(error.result == result);
+        assert(error.http_status == 200);
+        assert(error.attempts == 1 && requests == 1);
+        assert(strcmp(error.message,
+                      "invalid or oversized S3 upload response headers") == 0);
     }
     s3_client_close(client);
     return 0;
