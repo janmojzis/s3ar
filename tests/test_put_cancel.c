@@ -195,8 +195,49 @@ static void test_put_size_limit(void) {
     testing_size_limit = false;
 }
 
+static void test_put_part_size_rounding(void) {
+    const uint64_t mib = 1024 * 1024;
+    const struct {
+        uint64_t size;
+        uint64_t part_size;
+    } cases[] = {
+        {0, 1},
+        {1, 1},
+        {S3_MULTIPART_PART_SIZE - 1, S3_MULTIPART_PART_SIZE - 1},
+        {S3_MULTIPART_PART_SIZE, S3_MULTIPART_PART_SIZE},
+        {16 * mib * 10000 - 1, 16 * mib},
+        {16 * mib * 10000, 16 * mib},
+        {16 * mib * 10000 + 1, 17 * mib},
+        {17 * mib * 10000, 17 * mib},
+        {17 * mib * 10000 + 1, 18 * mib},
+        {4095 * mib * 10000, 4095 * mib},
+        {4095 * mib * 10000 + 1, 4096 * mib},
+    };
+    struct s3_client client = {0};
+    testing_size_limit = true;
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+        requested_allocation = 0;
+        struct s3_error error = {0};
+        enum s3_result result =
+            s3_object_put(&client, &error, "bucket", "key", cases[i].size, NULL,
+                          unexpected_read, NULL);
+        if (cases[i].part_size <= SIZE_MAX) {
+            assert(result == S3_RESULT_ERROR);
+            assert(strcmp(error.message, "out of memory") == 0);
+            assert(requested_allocation == cases[i].part_size);
+        }
+        else {
+            assert(result == S3_RESULT_CONFIGURATION_ERROR);
+            assert(requested_allocation == 0);
+        }
+        assert(error.result == result);
+    }
+    testing_size_limit = false;
+}
+
 int main(void) {
     test_put_size_limit();
+    test_put_part_size_rounding();
     const unsigned abort_statuses[] = {204, 404, 403};
     for (unsigned stream = 0; stream < 2; ++stream)
         for (unsigned transfer = 0; transfer < 2; ++transfer)

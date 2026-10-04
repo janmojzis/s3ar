@@ -596,12 +596,16 @@ enum s3_result s3_object_put(struct s3_client *client, struct s3_error *error,
     if (client == NULL || error == NULL || read_callback == NULL)
         return s3_error_set(error, S3_RESULT_CONFIGURATION_ERROR,
                             "invalid PutObject arguments");
-    while (size / part_size + (size % part_size != 0) > 10000) {
-        if ((uint64_t) part_size > S3_MULTIPART_MAX_PART_SIZE - 1024 * 1024 ||
-            part_size > SIZE_MAX - 1024 * 1024)
+    uint64_t required_part_size = size / 10000 + (size % 10000 != 0);
+    if (required_part_size > part_size) {
+        const uint64_t unit = 1024 * 1024;
+        uint64_t units =
+            required_part_size / unit + (required_part_size % unit != 0);
+        if (units > S3_MULTIPART_MAX_PART_SIZE / unit ||
+            units > SIZE_MAX / unit)
             return s3_error_set(error, S3_RESULT_CONFIGURATION_ERROR,
                                 "object is too large");
-        part_size += 1024 * 1024;
+        part_size = (size_t) (units * unit);
     }
     if (size < part_size) part_size = (size_t) size;
     buffer = malloc(part_size != 0 ? part_size : 1);
