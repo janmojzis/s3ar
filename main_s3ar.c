@@ -16,6 +16,7 @@
 #include "s3_log.h"
 #include "s3.h"
 #include "s3ar.h"
+#include "s3ar_archive_reader.h"
 #include "main.h"
 #include "s3ar_transform.h"
 #include "sig.h"
@@ -215,7 +216,7 @@ int main_s3ar(int argc, char **argv) {
     }
 
     if (config->command == S3AR_COMMAND_LIST_ARCHIVE) {
-        s3ar_list_archive(config);
+        s3ar_archive_reader_read(config, S3AR_ARCHIVE_READER_LIST);
         if (fflush(stdout) == EOF) {
             log_f3("unable to flush standard output", ": ", log_errno());
             s3ar_die(2);
@@ -232,7 +233,7 @@ int main_s3ar(int argc, char **argv) {
             s3ar_create(config);
             break;
         case S3AR_COMMAND_EXTRACT:
-            s3ar_extract(config);
+            s3ar_archive_reader_read(config, S3AR_ARCHIVE_READER_RESTORE);
             break;
         case S3AR_COMMAND_LIST_ARCHIVE:
             break;

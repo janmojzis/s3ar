@@ -30,8 +30,6 @@ struct s3ar_config {
 
 void s3ar_create(const struct s3ar_config *config);
 void s3ar_create_cleanup(void);
-void s3ar_extract(const struct s3ar_config *config);
-void s3ar_list_archive(const struct s3ar_config *config);
 /* Archive CLI lifecycle. Options and client configuration are owned by s3ar.c;
  * s3ar_die() releases the client, transforms and archive creation resources. */
 struct s3ar_config *s3ar_config_get(void);

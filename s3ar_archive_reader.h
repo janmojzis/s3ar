@@ -4,7 +4,13 @@
 
 #include "s3ar.h"
 
+enum s3ar_archive_reader_mode {
+    S3AR_ARCHIVE_READER_RESTORE,
+    S3AR_ARCHIVE_READER_LIST
+};
+
 /* Shared PAX reader for archive listing and restoration. */
-void s3ar_archive_reader_read(const struct s3ar_config *config, bool list_only);
+void s3ar_archive_reader_read(const struct s3ar_config *config,
+                              enum s3ar_archive_reader_mode mode);
 
 #endif

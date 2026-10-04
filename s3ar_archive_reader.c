@@ -663,7 +663,7 @@ static void extract_entry(struct extract_context *context,
 }
 
 void s3ar_archive_reader_read(const struct s3ar_config *config,
-                              bool list_only) {
+                              enum s3ar_archive_reader_mode mode) {
     struct s3ar_selection_set selections;
     if (s3ar_selection_set_parse(&selections, (size_t) config->operand_count,
                                  config->operands) != 0)
@@ -700,7 +700,7 @@ void s3ar_archive_reader_read(const struct s3ar_config *config,
     struct extract_context context = {
         .config = config,
         .archive = archive,
-        .list_only = list_only,
+        .list_only = mode == S3AR_ARCHIVE_READER_LIST,
     };
     context.selections = selections;
 
