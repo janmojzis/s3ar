@@ -172,12 +172,9 @@ static enum s3_result scan_targets(struct operation *op, const char *bucket,
                 page.next_key = page.next_id = NULL;
             }
         }
-        if (!op->dry_run && matched != 0) {
-            /* Rescan after deletion because the listing has changed. */
-            free(marker_key);
-            free(marker_id);
-            marker_key = marker_id = NULL;
-        }
+        /* After deletion, rescan from the last page without matches. Its
+         * marker belongs to an unselected neighbor and was not deleted.
+         * Never advance to a marker from a page whose targets we deleted. */
         bool again = result == S3_RESULT_OK &&
                      (op->dry_run ? page.truncated : matched != 0 || advance);
         if (again && !op->dry_run)

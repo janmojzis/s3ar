@@ -567,10 +567,9 @@ def test_selection_crosses_page_without_matches(s3_environment, uploads, dry_run
             steps.append(ResponseStep("POST", "/bucket?delete", 200,
                                       b"<DeleteResult><Deleted><Key>photo/a</Key><VersionId>id1</VersionId></Deleted></DeleteResult>",
                                       (("Connection", "close"),)))
-        steps += [
-            ResponseStep("GET", path, 200, listing("photo-old", True)),
-            ResponseStep("GET", path + f"&key-marker=photo-old&{marker}=id1", 200, listing()),
-        ]
+        steps.append(ResponseStep(
+            "GET", path + f"&key-marker=photo-old&{marker}=id1", 200, listing(),
+        ))
     if uploads:
         steps.append(ResponseStep("GET", "/bucket?versions&max-keys=1000&encoding-type=url&prefix=photo", 200, empty_versions))
     with FaultServer(steps) as server:
@@ -579,3 +578,100 @@ def test_selection_crosses_page_without_matches(s3_environment, uploads, dry_run
         result = run(*args, "s3://bucket/photo/", env=env)
         assert result.returncode == 0, result.stderr
     assert f"success: {0 if uploads else 1} versions, {1 if uploads else 0} uploads, 0 buckets" in result.stderr
+
+
+@pytest.mark.parametrize("uploads", [False, True])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_delete_does_not_rescan_unselected_neighbor_pages(
+    s3_environment, uploads, dry_run
+):
+    root = "ListMultipartUploadsResult" if uploads else "ListVersionsResult"
+    item = "Upload" if uploads else "Version"
+    identifier = "UploadId" if uploads else "VersionId"
+    next_identifier = "NextUploadIdMarker" if uploads else "NextVersionIdMarker"
+    query = "uploads&max-uploads=1000" if uploads else "versions&max-keys=1000"
+    marker = "upload-id-marker" if uploads else "version-id-marker"
+    path = f"/bucket?{query}&encoding-type=url&prefix=photo"
+
+    def listing(targets=(), truncated=False):
+        entries = "".join(
+            f"<{item}><Key>{key}</Key><{identifier}>{value}</{identifier}></{item}>"
+            for key, value in targets
+        )
+        continuation = ""
+        if truncated:
+            key, value = targets[-1]
+            continuation = (
+                f"<NextKeyMarker>{key}</NextKeyMarker>"
+                f"<{next_identifier}>{value}</{next_identifier}>"
+            )
+        return (
+            f"<{root}><EncodingType>url</EncodingType>"
+            f"<IsTruncated>{str(truncated).lower()}</IsTruncated>"
+            f"{entries}{continuation}</{root}>"
+        ).encode()
+
+    def empty(other_uploads):
+        other_root = (
+            "ListMultipartUploadsResult" if other_uploads else "ListVersionsResult"
+        )
+        return (
+            f"<{other_root}><EncodingType>url</EncodingType>"
+            f"<IsTruncated>false</IsTruncated></{other_root}>"
+        ).encode()
+
+    steps = []
+    if not uploads:
+        steps.append(ResponseStep(
+            "GET", "/bucket?uploads&max-uploads=1000&encoding-type=url&prefix=photo",
+            200, empty(True),
+        ))
+    current_path = path
+    # Two full pages of unselected neighbors precede the selected descendants.
+    for page_number in range(2):
+        neighbors = [
+            (f"photo-{page_number * 1000 + index:04d}", "keep")
+            for index in range(1000)
+        ]
+        steps.append(ResponseStep("GET", current_path, 200, listing(neighbors, True)))
+        current_path = path + (
+            f"&key-marker={neighbors[-1][0]}&{marker}=keep"
+        )
+    floor_path = current_path
+    targets = [("photo/a", "id1"), ("photo/a", "id2"), ("photo/b", "id3")]
+    for index, target in enumerate(targets):
+        steps.append(ResponseStep(
+            "GET", current_path, 200,
+            listing([target], index < len(targets) - 1),
+        ))
+        key, value = target
+        if dry_run:
+            current_path = path + f"&key-marker={quote(key, safe='')}&{marker}={value}"
+        elif uploads:
+            steps.append(ResponseStep("DELETE", f"/bucket/{key}?uploadId={value}", 204))
+        else:
+            steps.append(ResponseStep(
+                "POST", "/bucket?delete", 200,
+                (f"<DeleteResult><Deleted><Key>{key}</Key>"
+                 f"<VersionId>{value}</VersionId></Deleted></DeleteResult>").encode(),
+                (("Connection", "close"),),
+            ))
+    if not dry_run:
+        steps.append(ResponseStep("GET", floor_path, 200, listing()))
+    if uploads:
+        steps.append(ResponseStep(
+            "GET", "/bucket?versions&max-keys=1000&encoding-type=url&prefix=photo",
+            200, empty(False),
+        ))
+    with FaultServer(steps) as server:
+        environment = {**s3_environment, "S3AR_ENDPOINT": server.endpoint}
+        args = ["--dry-run"] if dry_run else []
+        result = run(*args, "s3://bucket/photo", env=environment)
+    assert result.returncode == 0, result.stderr
+    assert (
+        f"success: {0 if uploads else 3} versions, "
+        f"{3 if uploads else 0} uploads, 0 buckets"
+    ) in result.stderr
+    assert sum(request.method == "GET" for request in server.requests) == (
+        6 if dry_run else 7
+    )
