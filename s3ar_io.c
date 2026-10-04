@@ -24,9 +24,6 @@ enum s3_read_result s3ar_io_read(void *data, unsigned char *buffer,
     return amount == 0 ? S3_READ_EOF : S3_READ_DATA;
 }
 
-#include <errno.h>
-#include <unistd.h>
-
 bool s3ar_io_write(void *data, const unsigned char *buffer, size_t size) {
     const struct s3ar_io_write_context *context = data;
     while (size != 0) {
