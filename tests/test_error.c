@@ -177,6 +177,44 @@ static void parse_header(struct s3_response *response, const char *text) {
     assert(s3_headers_callback(buffer, 1, size, response) == size);
 }
 
+static void test_content_range_bounds(void) {
+    static const struct {
+        const char *header;
+        uint64_t first, last, total;
+    } valid[] = {
+        {"Content-Range: bytes 0-0/1\r\n", 0, 0, 1},
+        {"Content-Range: bytes 2-3/4\r\n", 2, 3, 4},
+        {"Content-Range: bytes 2-3/*\r\n", 2, 3, UINT64_MAX},
+        {"Content-Range: bytes 0-18446744073709551614/18446744073709551615\r\n",
+         0, UINT64_MAX - 1, UINT64_MAX},
+    };
+    for (size_t i = 0; i < sizeof(valid) / sizeof(*valid); ++i) {
+        struct s3_response response;
+        s3_response_reset(&response);
+        parse_header(&response, valid[i].header);
+        assert(response.have_content_range && !response.invalid_headers);
+        assert(response.range_first == valid[i].first);
+        assert(response.range_last == valid[i].last);
+        assert(response.range_total == valid[i].total);
+        s3_response_cleanup(&response);
+    }
+    static const char *const invalid[] = {
+        "Content-Range: bytes 3-2/4\r\n",
+        "Content-Range: bytes 2-4/4\r\n",
+        "Content-Range: bytes 2-999/4\r\n",
+        "Content-Range: bytes 0-0/0\r\n",
+        "Content-Range: bytes 3-2/*\r\n",
+        "Content-Range: bytes 0-18446744073709551615/18446744073709551615\r\n",
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(*invalid); ++i) {
+        struct s3_response response;
+        s3_response_reset(&response);
+        parse_header(&response, invalid[i]);
+        assert(!response.have_content_range && response.invalid_headers);
+        s3_response_cleanup(&response);
+    }
+}
+
 static void test_long_object_property_headers(void) {
     static const char *const names[] = {"Content-Type", "Content-Encoding",
                                         "Cache-Control"};
@@ -574,6 +612,7 @@ static void test_parse_u64(void) {
 }
 
 int main(void) {
+    test_content_range_bounds();
     test_parse_u64();
     test_xml_child_text();
     test_multipart_size_parser();

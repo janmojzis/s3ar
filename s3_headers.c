@@ -119,6 +119,13 @@ static void parse_content_range(struct s3_response *response, const char *first,
         (*(slash + 1) == '*' && slash + 2 != last))
         return;
     if (*(slash + 1) == '*') response->range_total = UINT64_MAX;
+    if (response->range_first > response->range_last ||
+        (*(slash + 1) != '*' &&
+         response->range_last >= response->range_total)) {
+        response->have_content_range = false;
+        response->invalid_headers = true;
+        return;
+    }
     response->have_content_range = true;
 }
 
