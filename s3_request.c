@@ -154,6 +154,11 @@ enum s3_result s3_request_url(struct s3_client *client, struct s3_error *error,
                            context.response.error_body_size, error);
         s3_trace_perform_end(client, attempt, client->max_attempts, code,
                              &context.response, error);
+        if (context.response.invalid_headers) {
+            result = s3_error_set(error, S3_RESULT_PROTOCOL_ERROR,
+                                  "invalid or oversized S3 response headers");
+            break;
+        }
         if (context.body_error != S3_RESULT_OK) {
             result = s3_error_set(error, context.body_error,
                                   context.body_error == S3_RESULT_ERROR
