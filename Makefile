@@ -11,7 +11,7 @@ CFLAGS += -std=c17 -Wall -Wextra -Wpedantic
 S3_LIBS ?= -lcurl -lxml2 -lcrypto -lrandombytes
 ARCHIVE_LIBS ?= -larchive
 
-S3_SOURCES = s3_client.c s3_config.c s3_error.c s3_log.c s3_result.c s3_memory.c s3_request.c s3_response.c s3_object_properties.c s3_url.c s3_uri_encode.c \
+S3_SOURCES = s3_client.c s3_config.c s3_error.c s3_log.c s3_result.c s3_memory.c s3_request.c s3_response.c s3_parse.c s3_object_properties.c s3_url.c s3_uri_encode.c \
 	s3_headers.c s3_xml.c s3_retry.c s3_trace.c s3_bucket.c s3_bucket_list.c s3_bucket_acl.c \
 	s3_object.c s3_object_list.c s3_object_put.c s3_object_delete.c s3_listing.c s3_multipart.c s3_uri.c
 S3AR_SOURCES = main_s3ar.c s3ar_log.c s3ar_config.c s3ar_interrupt.c s3ar_create.c s3ar_extract.c s3ar_selection.c \
@@ -86,9 +86,9 @@ test-get-retry: $(TEST_GET_RETRY_OBJECTS) libs3.a liblog.a s3ar_config.o s3ar_lo
 	$(CC) $(LDFLAGS) -o $@ $(TEST_GET_RETRY_OBJECTS) s3ar_config.o s3ar_log.o libs3.a liblog.a \
 		$(S3_LIBS)
 
-test-headers-alloc: $(TEST_HEADERS_ALLOC_OBJECTS) s3_headers.o s3_response.o s3_object_properties.o s3_memory.o s3_error.o s3_xml.o
+test-headers-alloc: $(TEST_HEADERS_ALLOC_OBJECTS) s3_headers.o s3_response.o s3_parse.o s3_object_properties.o s3_memory.o s3_error.o s3_xml.o
 	$(CC) $(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=realloc -o $@ \
-		$(TEST_HEADERS_ALLOC_OBJECTS) s3_headers.o s3_response.o s3_object_properties.o s3_memory.o s3_error.o s3_xml.o $(S3_LIBS)
+		$(TEST_HEADERS_ALLOC_OBJECTS) s3_headers.o s3_response.o s3_parse.o s3_object_properties.o s3_memory.o s3_error.o s3_xml.o $(S3_LIBS)
 
 test-uri-encode: $(TEST_URI_ENCODE_OBJECTS) s3_uri_encode.o
 	$(CC) $(LDFLAGS) -o $@ $(TEST_URI_ENCODE_OBJECTS) s3_uri_encode.o
