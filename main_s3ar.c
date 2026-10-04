@@ -30,9 +30,9 @@
 static void usage(void) {
     log_usage(stderr,
               "Usage: s3ar (-c | --create) [-v | --verbose] "
-              "[--zstd] [-f TARFILE] S3...\n"
+              "[--hash] [--zstd] [-f TARFILE] S3...\n"
               "       s3ar (-x | --extract) [-v | --verbose] "
-              "[--zstd] [--transform EXPR] [-f TARFILE] S3...\n"
+              "[--hash] [--zstd] [--transform EXPR] [-f TARFILE] S3...\n"
               "       s3ar (-t | --list) [-v | --verbose] "
               "[--zstd] [--transform EXPR] [-f TARFILE] [S3...]\n"
               "\n"
@@ -42,6 +42,7 @@ static void usage(void) {
               "  -t, --list  list objects in a tar archive\n"
               "  -f, --file TARFILE  read or write TARFILE\n"
               "      --zstd  use zstd archive compression\n"
+              "      --hash  compute SHA-512 during -c or verify it during -x\n"
               "      --transform EXPR  rename BUCKET/KEY during -x or -t\n"
               "                        "
               "s<delimiter>REGEX<delimiter>REPLACEMENT<delimiter>[gi]\n"
@@ -55,7 +56,7 @@ static void usage(void) {
               "  s3://BUCKET/NAME[/]   object and objects below NAME/\n");
 }
 
-enum long_option { OPTION_ZSTD = 256, OPTION_TRANSFORM };
+enum long_option { OPTION_ZSTD = 256, OPTION_TRANSFORM, OPTION_HASH };
 
 static const struct option long_options[] = {
     {"create", no_argument, NULL, 'c'},
@@ -64,6 +65,7 @@ static const struct option long_options[] = {
     {"list", no_argument, NULL, 't'},
     {"file", required_argument, NULL, 'f'},
     {"zstd", no_argument, NULL, OPTION_ZSTD},
+    {"hash", no_argument, NULL, OPTION_HASH},
     {"transform", required_argument, NULL, OPTION_TRANSFORM},
     {"verbose", no_argument, NULL, 'v'},
     {"help", no_argument, NULL, 'h'},
@@ -141,6 +143,7 @@ int main_s3ar(int argc, char **argv) {
 
         /* --zstd */
         else if (option == OPTION_ZSTD) { config->zstd = true; }
+        else if (option == OPTION_HASH) { config->hash = true; }
 
         else if (option == OPTION_TRANSFORM) {
             char error[256];
@@ -187,6 +190,10 @@ int main_s3ar(int argc, char **argv) {
 
     if (config->command == S3AR_COMMAND_NONE) {
         log_f1("specify -c, -x or -t");
+        s3ar_die(2);
+    }
+    if (config->hash && config->command == S3AR_COMMAND_LIST_ARCHIVE) {
+        log_f1("--hash requires -c or -x");
         s3ar_die(2);
     }
     if (config->command == S3AR_COMMAND_CREATE && config->transforms != NULL) {

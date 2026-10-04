@@ -5,6 +5,7 @@ s3ar \- create tar archives from S3 and extract them back to S3
 .B s3ar
 .RB ( \-c | \-\-create )
 .RB [ \-v | \-\-verbose ]
+.RB [ \-\-hash ]
 .RB [ \-\-zstd ]
 .RB [ \-f " TARFILE" ]
 .I S3...
@@ -12,6 +13,7 @@ s3ar \- create tar archives from S3 and extract them back to S3
 .B s3ar
 .RB ( \-x | \-\-extract | \-\-get )
 .RB [ \-v | \-\-verbose ]
+.RB [ \-\-hash ]
 .RB [ \-\-zstd ]
 .RB [ \-\-transform " EXPR" ]
 .RB [ \-f " TARFILE" ]
@@ -187,13 +189,25 @@ s3ar \-tf archive.tar \-\-transform='s|^uploads/|test/|'
 s3ar \-xvf archive.tar s3://test \-\-transform='s|^uploads/|test/|'
 .fi
 .TP
+.B \-\-hash
+With \-c, compute SHA-512 for objects that can be buffered. If buffering is
+unavailable, store none and warn; a successful fallback exits with status 0.
+Without this option, creation streams every object and stores none.
+With \-x, verify stored SHA-512 values before PUT or multipart completion.
+A mismatch aborts the upload and stops restoration with status 2. Objects
+with none (or legacy objects without a hash) are restored with a warning.
+Without this option, restoration does not verify object content.
+This option requires \-c or \-x.
+With \-x \-\-hash \-v, the stored hash is followed by verified or unverified.
+.TP
 .BR \-v ", " \-\-verbose
 Increase log verbosity. Use once for info, twice for debug, and three times for
 trace. During creation and extraction, info logs report each successfully
 processed entry on standard error as
 .B BUCKET/KEY
 without a URI scheme. Creation also logs object size, modification time, ETag, and a hash
-placeholder. Extraction logs names followed by the same placeholder. Archive
+(sha512: followed by 128 lowercase hex digits, or none when not computed). Extraction logs names followed by the stored hash
+value, or none when absent. Archive
 listing fields are described in
 .BR "LISTING AN ARCHIVE" .
 .B \-v
@@ -344,9 +358,13 @@ SCHILY.xattr.user.s3ar.format=1
 SCHILY.xattr.user.s3ar.bucket=URL-ENCODED-BUCKET
 SCHILY.xattr.user.s3ar.key=URL-ENCODED-KEY
 SCHILY.xattr.user.s3ar.etag="3472a7..."
+SCHILY.xattr.user.s3ar.hash=sha512:<128 lowercase hex digits>
 SCHILY.xattr.user.s3ar.bucket-acl=public-read,custom
 SCHILY.xattr.user.s3ar.metadata.NAME=VALUE
 .fi
+.PP
+The hash attribute contains sha512: followed by the hexadecimal digest,
+or none when no hash was computed.
 .PP
 Every bucket and object carries the format marker and URL-encoded bucket name.
 Object entries also carry their URL-encoded key and, when available, their
@@ -365,6 +383,7 @@ and
 for bucket directories, plus
 .BR user.s3ar.key ,
 .BR user.s3ar.etag ,
+.BR user.s3ar.hash ,
 and
 .B user.s3ar.metadata.NAME
 for objects.
@@ -506,8 +525,8 @@ from the archive member. Archives created by
 current versions store the ETag in an informational PAX attribute; older
 archives without it show
 .BR \- .
-The hash field is currently a placeholder, always
-.BR \- .
+The hash field contains the stored sha512: value, or none when no hash is
+available. Displaying the hash does not verify the object content.
 .SH LISTING LIVE S3 RESOURCES
 Use
 .BR s3ar-list (1)

@@ -26,3 +26,5 @@
 /test-selection
 /test-request-headers
 /test-list-reentrancy
+
+/test-create-hash

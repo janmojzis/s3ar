@@ -1,13 +1,14 @@
 /*
  * Create a POSIX PAX archive from selected buckets and objects in an
- * S3-compatible store. Object bodies are streamed directly from S3 GET
- * requests into an uncompressed or zstd-compressed archive.
+ * S3-compatible store. With --hash, small objects are buffered for SHA-512;
+ * larger objects and failed buffer allocations use direct streaming.
  *
  * S3 metadata is stored in PAX SCHILY extended attributes:
  * SCHILY.xattr.user.s3ar.format identifies the namespaced layout,
  * SCHILY.xattr.user.s3ar.bucket and .key preserve URL-encoded S3 names,
  * SCHILY.xattr.user.s3ar.bucket-acl records a bucket ACL summary,
  * SCHILY.xattr.user.s3ar.etag records an informational object ETag,
+ * SCHILY.xattr.user.s3ar.hash stores sha512:HEX or none for every object,
  * and SCHILY.xattr.user.s3ar.metadata.NAME preserves S3 user metadata for
  * later extraction. The UTF-8 archive pathname is informational; the PAX
  * identity attributes are authoritative.
@@ -25,6 +26,7 @@
 
 #include <archive.h>
 #include <archive_entry.h>
+#include <nettle/sha2.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -46,12 +48,19 @@ struct get_context {
     const char *bucket;
     const char *key;
     uint64_t expected;
-    uint64_t written;
+    uint64_t received;
+    unsigned char *buffer;
+    struct archive_entry *entry;
+    struct sha512_ctx hash;
+    char hash_text[136];
+    bool buffered;
+    bool properties_received;
     int64_t last_modified;
     char etag[256];
     bool header_written;
 };
 
+static struct get_context *active_get;
 static volatile sig_atomic_t interrupted_signal;
 static char *temporary_archive_path;
 static bool temporary_archive_created;
@@ -71,7 +80,16 @@ static void check_interrupted(void) {
     s3ar_die(2);
 }
 
+static void cleanup_object(struct get_context *get) {
+    free(get->buffer);
+    archive_entry_free(get->entry);
+    get->buffer = NULL;
+    get->entry = NULL;
+    active_get = NULL;
+}
+
 void s3ar_create_cleanup(void) {
+    if (active_get != NULL) cleanup_object(active_get);
     if (temporary_archive_path != NULL) {
         if (temporary_archive_created) (void) unlink(temporary_archive_path);
         free(temporary_archive_path);
@@ -212,6 +230,15 @@ static void write_bucket(struct create_context *context, const char *bucket) {
     check_interrupted();
 }
 
+static void add_object_hash(struct archive_entry *entry, const char *hash) {
+    int count = archive_entry_xattr_count(entry);
+    archive_entry_xattr_add_entry(entry, "user.s3ar.hash", hash, strlen(hash));
+    if (archive_entry_xattr_count(entry) != count + 1) {
+        log_f1("cannot allocate object hash attribute");
+        s3ar_die(2);
+    }
+}
+
 static bool write_object_header(void *callback_data,
                                 const struct s3_object_properties *object) {
     check_interrupted();
@@ -271,17 +298,33 @@ static bool write_object_header(void *callback_data,
         archive_entry_xattr_add_entry(entry, xattr, value, strlen(value));
         free(xattr);
     }
-    if (archive_write_header(get->create->archive, entry) != ARCHIVE_OK) {
-        archive_entry_free(entry);
-        free(path);
-        archive_fatal(get->create->archive, "cannot write object header");
-    }
-    archive_entry_free(entry);
     free(path);
+    get->entry = entry;
     get->expected = object->size;
     get->last_modified = (int64_t) mtime;
     memcpy(get->etag, object->etag, sizeof(get->etag));
-    get->header_written = true;
+    get->properties_received = true;
+    if (get->create->config->hash &&
+        object->size < S3_MULTIPART_MAX_PART_SIZE && object->size <= SIZE_MAX) {
+        if (object->size != 0) get->buffer = malloc((size_t) object->size);
+        get->buffered = object->size == 0 || get->buffer != NULL;
+    }
+    if (get->buffered) { sha512_init(&get->hash); }
+    else {
+        if (get->create->config->hash) {
+            const char *reason = object->size >= S3_MULTIPART_MAX_PART_SIZE
+                                     ? "object reaches the 5 GiB buffer limit"
+                                 : object->size > SIZE_MAX
+                                     ? "object exceeds addressable buffer size"
+                                     : "buffer allocation failed";
+            log_w4("cannot compute SHA-512 for ",
+                   s3_log_uri(NULL, get->bucket, get->key), ": ", reason);
+        }
+        add_object_hash(entry, "none");
+        if (archive_write_header(get->create->archive, entry) != ARCHIVE_OK)
+            archive_fatal(get->create->archive, "cannot write object header");
+        get->header_written = true;
+    }
     return true;
 }
 
@@ -292,20 +335,28 @@ static bool write_object_data(void *callback_data, const unsigned char *data,
         errno = EINTR;
         return false;
     }
-    if (!get->header_written ||
-        (uint64_t) size > get->expected - get->written) {
+    if (!get->properties_received || get->received > get->expected ||
+        (uint64_t) size > get->expected - get->received) {
         errno = EIO;
         return false;
     }
-    la_ssize_t written = archive_write_data(get->create->archive, data, size);
-    if (written < 0 || (size_t) written != size) {
-        archive_fatal(get->create->archive, "cannot write object data");
+    if (get->buffered) {
+        if (size != 0) {
+            memcpy(get->buffer + (size_t) get->received, data, size);
+            sha512_update(&get->hash, size, data);
+        }
+    }
+    else {
+        la_ssize_t written =
+            archive_write_data(get->create->archive, data, size);
+        if (written < 0 || (size_t) written != size)
+            archive_fatal(get->create->archive, "cannot write object data");
     }
     if (interrupted_signal != 0) {
         errno = EINTR;
         return false;
     }
-    get->written += (uint64_t) size;
+    get->received += (uint64_t) size;
     return true;
 }
 
@@ -317,12 +368,14 @@ static bool write_object(struct create_context *context, const char *bucket,
         .bucket = bucket,
         .key = key,
     };
+    active_get = &get;
     struct s3_error error = {0};
     enum s3_result result =
         s3_object_get(context->config->s3, &error, write_object_header,
                       write_object_data, &get, bucket, key);
     check_interrupted();
-    if (optional && result == S3_RESULT_NOT_FOUND && !get.header_written) {
+    if (optional && result == S3_RESULT_NOT_FOUND && !get.properties_received) {
+        cleanup_object(&get);
         return false;
     }
     if (result != S3_RESULT_OK) {
@@ -330,18 +383,47 @@ static bool write_object(struct create_context *context, const char *bucket,
                s3ar_log_error(&error));
         s3ar_die(2);
     }
-    if (!get.header_written || get.written != get.expected) {
+    if (!get.properties_received || get.received != get.expected) {
         log_f3("incomplete S3 object", " ", s3_log_uri(NULL, bucket, key));
         s3ar_die(2);
+    }
+    if (get.buffered) {
+        unsigned char digest[SHA512_DIGEST_SIZE];
+        static const char hex[] = "0123456789abcdef";
+        sha512_digest(&get.hash, sizeof(digest), digest);
+        memcpy(get.hash_text, "sha512:", 7);
+        for (size_t i = 0; i < sizeof(digest); ++i) {
+            get.hash_text[7 + 2 * i] = hex[digest[i] >> 4];
+            get.hash_text[8 + 2 * i] = hex[digest[i] & 15];
+        }
+        get.hash_text[135] = '\0';
+        add_object_hash(get.entry, get.hash_text);
+        if (archive_write_header(context->archive, get.entry) != ARCHIVE_OK)
+            archive_fatal(context->archive, "cannot write object header");
+        get.header_written = true;
+        for (size_t offset = 0; offset < (size_t) get.expected;) {
+            check_interrupted();
+            size_t size = (size_t) get.expected - offset;
+            if (size > 1024 * 1024) size = 1024 * 1024;
+            la_ssize_t written =
+                archive_write_data(context->archive, get.buffer + offset, size);
+            if (written < 0 || (size_t) written != size)
+                archive_fatal(context->archive, "cannot write object data");
+            offset += size;
+        }
+        check_interrupted();
     }
     if (archive_write_finish_entry(context->archive) != ARCHIVE_OK) {
         archive_fatal(context->archive, "cannot finish object entry");
     }
-    /* TODO: Replace the trailing hash placeholder with the object's SHA-512. */
+    cleanup_object(&get);
+    char hash_field[137];
+    (void) snprintf(hash_field, sizeof(hash_field), " %s",
+                    get.buffered ? get.hash_text : "none");
     log_i8(s3_log_uri(NULL, bucket, key), " ",
            log_num((long long) get.expected), " ",
            log_num((long long) get.last_modified), " ",
-           get.etag[0] != '\0' ? get.etag : "-", " -");
+           get.etag[0] != '\0' ? get.etag : "-", hash_field);
     return true;
 }
 

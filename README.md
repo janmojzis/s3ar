@@ -19,7 +19,7 @@ libcurl 8.19.0 or newer is required; use `make install PREFIX=/path` to
 choose another installation directory.
 
 ```sh
-sudo apt install build-essential libarchive-dev libcurl4-openssl-dev librandombytes-dev libssl-dev libxml2-dev
+sudo apt install build-essential libarchive-dev nettle-dev libcurl4-openssl-dev librandombytes-dev libssl-dev libxml2-dev
 make
 sudo make install
 ```
@@ -92,7 +92,8 @@ The options are:
 For `s3ar`, `-v` enables info messages, `-vv` debug, and `-vvv` trace. During
 execution, `SIGUSR1` raises the log level by one step and `SIGUSR2` lowers it.
 The archive listing option `-v` also adds object size, modification time as a
-Unix timestamp, ETag, and a `-` placeholder for the hash to its stdout rows.
+Unix timestamp, ETag, and the stored hash (`sha512:…` or `none`) to its stdout
+rows.
 
 `--create` and `--extract` need at least one S3 URI. Use `s3://` to select
 everything explicitly. `--list` processes the whole archive without a URI.
@@ -253,6 +254,7 @@ SCHILY.xattr.user.s3ar.format=1
 SCHILY.xattr.user.s3ar.bucket=BUCKET
 SCHILY.xattr.user.s3ar.key=URL-ENCODED-KEY
 SCHILY.xattr.user.s3ar.etag="3472a7..."
+SCHILY.xattr.user.s3ar.hash=sha512:<128 lowercase hex digits>
 SCHILY.xattr.user.s3ar.bucket-acl=public-read,custom
 SCHILY.xattr.user.s3ar.metadata.NAME=VALUE
 ```

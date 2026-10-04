@@ -1,3 +1,4 @@
+import hashlib
 import io
 import os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -322,6 +323,7 @@ def test_create_archives_object_after_interrupted_get(
         environment["S3AR_ENDPOINT"] = server.endpoint
         result = run(
             executable,
+        "--hash",
             "-cf",
             str(target),
             f"s3://{bucket}/",
@@ -336,6 +338,9 @@ def test_create_archives_object_after_interrupted_get(
     assert set(members) == {bucket, item_name}
     item = members[item_name]
     assert item.size == len(data)
+    assert item.pax_headers["SCHILY.xattr.user.s3ar.hash"] == (
+        "sha512:" + hashlib.sha512(data).hexdigest()
+    )
     assert item.pax_headers["SCHILY.xattr.user.s3ar.etag"] == etag
     assert (
         item.pax_headers["SCHILY.xattr.user.s3ar.metadata.source"]
@@ -1288,6 +1293,7 @@ def test_verbose_create_lists_archived_objects(
 
     result = run(
         executable,
+        "--hash",
         "-c",
         "-v",
         "-f",
@@ -1300,9 +1306,9 @@ def test_verbose_create_lists_archived_objects(
     assert result.stdout == ""
     assert result.stderr == (
         "s3ar: info: verbose-create\n"
-        f"s3ar: info: verbose-create/first 1 {listed['first']} {first_put['ETag']} -\n"
+        f"s3ar: info: verbose-create/first 1 {listed['first']} {first_put['ETag']} sha512:{hashlib.sha512(b'1').hexdigest()}\n"
         "s3ar: info: verbose-create/folder/second 1 "
-        f"{listed['folder/second']} {second_put['ETag']} -\n"
+        f"{listed['folder/second']} {second_put['ETag']} sha512:{hashlib.sha512(b'2').hexdigest()}\n"
     )
 
 
@@ -1317,7 +1323,7 @@ def test_verbose_create_to_stdout_lists_objects_on_stderr(
     listed = client.list_objects_v2(Bucket="verbose-create-stdout")["Contents"][0]
 
     result = subprocess.run(
-        [str(executable), "-cvf", "-", "s3://verbose-create-stdout/"],
+        [str(executable), "--hash", "-cvf", "-", "s3://verbose-create-stdout/"],
         env=s3_environment,
         capture_output=True,
         check=False,
@@ -1327,7 +1333,7 @@ def test_verbose_create_to_stdout_lists_objects_on_stderr(
     assert result.stderr.decode() == (
         "s3ar: info: verbose-create-stdout\n"
         "s3ar: info: verbose-create-stdout/item 4 "
-        f"{int(listed['LastModified'].timestamp())} {put['ETag']} -\n"
+        f"{int(listed['LastModified'].timestamp())} {put['ETag']} sha512:{hashlib.sha512(b'data').hexdigest()}\n"
     )
     with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r:") as archive:
         assert archive.getnames() == [
@@ -1349,6 +1355,7 @@ def test_repeated_operands_create_repeated_listing_and_archive_blocks(
 
     created = run(
         executable,
+        "--hash",
         "-vcf",
         str(archive_path),
         operand,
@@ -1360,7 +1367,7 @@ def test_repeated_operands_create_repeated_listing_and_archive_blocks(
     block = (
         f"s3ar: info: {bucket}\n"
         f"s3ar: info: {bucket}/item 4 {int(listed['LastModified'].timestamp())} "
-        f"{put['ETag']} -\n"
+        f"{put['ETag']} sha512:{hashlib.sha512(b'data').hexdigest()}\n"
     )
     assert created.returncode == 0, created.stderr
     assert created.stderr == block * 3
@@ -1372,7 +1379,7 @@ def test_repeated_operands_create_repeated_listing_and_archive_blocks(
     assert archived.stdout == (
         f"{bucket}\n"
         f"{bucket}/item 4 {int(listed['LastModified'].timestamp())} "
-        f"{put['ETag']} -\n"
+        f"{put['ETag']} sha512:{hashlib.sha512(b'data').hexdigest()}\n"
     ) * 3
 
     client.delete_object(Bucket=bucket, Key="item")
@@ -1572,3 +1579,30 @@ def test_long_key_round_trip(
     assert extracted.returncode == 0, extracted.stderr
     response = client.get_object(Bucket=source_bucket, Key=key)
     assert response["Body"].read() == body
+
+
+@pytest.mark.parametrize(
+    "body", [b"", bytes(range(256)) * 5000], ids=["empty", "binary"]
+)
+@pytest.mark.parametrize("zstd", [False, True])
+def test_create_hash_payload(
+    executable, s3_server, s3_environment, tmp_path, body, zstd
+):
+    _, client = s3_server
+    bucket = "hash-payload"
+    client.create_bucket(Bucket=bucket)
+    client.put_object(Bucket=bucket, Key="key", Body=body)
+    path = tmp_path / "hash.tar"
+    result = run(
+        executable, "--hash", "-cvf", str(path), *(["--zstd"] if zstd else []),
+        f"s3://{bucket}/key", env=s3_environment,
+    )
+    assert result.returncode == 0, result.stderr
+    payload = decompress_zstd(path) if zstd else path.read_bytes()
+    expected = "sha512:" + hashlib.sha512(body).hexdigest()
+    with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as archive:
+        assert "SCHILY.xattr.user.s3ar.hash" not in archive.getmember(bucket).pax_headers
+        entry = archive.getmember(f"{bucket}/key")
+        assert entry.pax_headers["SCHILY.xattr.user.s3ar.hash"] == expected
+        assert archive.extractfile(entry).read() == body
+    assert result.stderr.rstrip().endswith(expected)

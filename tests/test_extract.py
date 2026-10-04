@@ -57,6 +57,7 @@ def archive_bytes(buckets):
                     "SCHILY.xattr.user.s3ar.bucket": urllib.parse.quote(
                         bucket, safe="/-._~"
                     ),
+                    "SCHILY.xattr.user.s3ar.hash": "none",
                     "SCHILY.xattr.user.s3ar.key": urllib.parse.quote(
                         key, safe="/-._~"
                     ),
@@ -338,6 +339,7 @@ def test_extract_prefers_url_encoded_identity_headers_over_path(
         entry.pax_headers = {
             "SCHILY.xattr.user.s3ar.format": "1",
             "SCHILY.xattr.user.s3ar.bucket": bucket_name,
+            "SCHILY.xattr.user.s3ar.hash": "none",
             "SCHILY.xattr.user.s3ar.key": urllib.parse.quote(
                 key, safe="/-._~"
             ),
@@ -642,7 +644,7 @@ def test_extract_prefix_initializes_bucket_from_bucket_member(
     assert result.returncode == 0, result.stderr
     assert result.stderr.splitlines() == [
         "s3ar: info: prefix-bucket-member",
-        "s3ar: info: prefix-bucket-member/selected/item -",
+        "s3ar: info: prefix-bucket-member/selected/item none",
     ]
     restored = client.get_object(
         Bucket="prefix-bucket-member", Key="selected/item"
@@ -684,6 +686,7 @@ def test_extract_rejects_metadata_with_http_line_breaks(
         }
         if namespaced:
             entry.pax_headers["SCHILY.xattr.user.s3ar.format"] = "1"
+            entry.pax_headers["SCHILY.xattr.user.s3ar.hash"] = "none"
         tar.addfile(entry, io.BytesIO(b"x"))
     archive.write_bytes(data.getvalue())
 
@@ -784,8 +787,8 @@ def test_verbose_extract_lists_restored_objects(
     assert result.stdout == ""
     assert result.stderr == (
         "s3ar: info: verbose-objects\n"
-        "s3ar: info: verbose-objects/first -\n"
-        "s3ar: info: verbose-objects/folder/second -\n"
+        "s3ar: info: verbose-objects/first none\n"
+        "s3ar: info: verbose-objects/folder/second none\n"
     )
 
 
@@ -856,10 +859,10 @@ def test_extract_multiple_filters_deduplicate_overlaps(
     assert result.stdout == ""
     assert result.stderr.splitlines() == [
         "s3ar: info: extract-multiple-first",
-        "s3ar: info: extract-multiple-first/selected/a -",
-        "s3ar: info: extract-multiple-first/selected/deeper/b -",
+        "s3ar: info: extract-multiple-first/selected/a none",
+        "s3ar: info: extract-multiple-first/selected/deeper/b none",
         "s3ar: info: extract-multiple-second",
-        "s3ar: info: extract-multiple-second/selected/c -",
+        "s3ar: info: extract-multiple-second/selected/c none",
     ]
     first = client.list_objects_v2(Bucket="extract-multiple-first")[
         "Contents"

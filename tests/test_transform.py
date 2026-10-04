@@ -29,6 +29,7 @@ def make_archive(path, buckets, misleading_names=False):
                 entry.pax_headers = {
                     "SCHILY.xattr.user.s3ar.format": "1",
                     "SCHILY.xattr.user.s3ar.bucket": urllib.parse.quote(bucket, safe="/-._~"),
+                    "SCHILY.xattr.user.s3ar.hash": "none",
                     "SCHILY.xattr.user.s3ar.key": urllib.parse.quote(key, safe="/-._~"),
                     "SCHILY.xattr.user.s3ar.metadata.origin": "transform-test",
                 }
@@ -178,7 +179,7 @@ def test_transform_restore_streams_to_transformed_identity(
     assert "META origin=transform-test\n" in result.stdout
     assert data.decode() + "\n" in result.stdout
     assert "other" not in result.stdout
-    assert f"s3ar: info: {destination} -\n" in result.stderr
+    assert f"s3ar: info: {destination} none\n" in result.stderr
     assert "s3://" not in result.stderr
 
 
@@ -199,7 +200,7 @@ def test_transform_restores_to_new_bucket(
     assert response["Metadata"] == {"origin": "transform-test"}
     objects = client.list_objects_v2(Bucket="transform-new")["Contents"]
     assert [item["Key"] for item in objects] == ["renamed/key"]
-    assert "s3ar: info: transform-new/renamed/key -" in result.stderr
+    assert "s3ar: info: transform-new/renamed/key none" in result.stderr
     assert "s3://" not in result.stderr
 
 
@@ -224,6 +225,7 @@ def test_restore_many_interleaved_buckets(tmp_path, merge_buckets):
                 entry.pax_headers = {
                     "SCHILY.xattr.user.s3ar.format": "1",
                     "SCHILY.xattr.user.s3ar.bucket": bucket,
+                    "SCHILY.xattr.user.s3ar.hash": "none",
                     "SCHILY.xattr.user.s3ar.key": key,
                 }
                 archive.addfile(entry)

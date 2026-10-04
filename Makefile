@@ -10,6 +10,9 @@ CFLAGS ?= -O2 -g
 CFLAGS += -std=c17 -Wall -Wextra -Wpedantic
 S3_LIBS ?= -lcurl -lxml2 -lcrypto -lrandombytes
 ARCHIVE_LIBS ?= -larchive
+HASH_CPPFLAGS ?=
+HASH_LIBS ?= -lnettle
+CPPFLAGS += $(HASH_CPPFLAGS)
 
 S3_SOURCES = s3_client.c s3_config.c s3_error.c s3_log.c s3_result.c s3_memory.c s3_request.c s3_response.c s3_parse.c s3_object_properties.c s3_url.c s3_uri_encode.c s3_uri_decode.c s3_query.c \
 	s3_headers.c s3_xml.c s3_retry.c s3_trace.c s3_bucket.c s3_bucket_list.c s3_bucket_acl.c \
@@ -36,13 +39,13 @@ TEST_PUT_CANCEL_OBJECTS = tests/test_put_cancel.o
 TEST_SELECTION_OBJECTS = tests/test_selection.o
 TEST_TRANSFORM_OBJECTS = tests/test_transform.o
 TEST_TRANSFORM_RESTORE_OBJECTS = tests/transform_restore_probe.o
-TEST_OBJECTS = $(TEST_LIST_REENTRANCY_OBJECTS) $(TEST_REQUEST_HEADERS_OBJECTS) $(TEST_ERROR_OBJECTS) $(TEST_GET_RETRY_OBJECTS) \
+TEST_OBJECTS = tests/test_create_hash.o $(TEST_LIST_REENTRANCY_OBJECTS) $(TEST_REQUEST_HEADERS_OBJECTS) $(TEST_ERROR_OBJECTS) $(TEST_GET_RETRY_OBJECTS) \
 	$(TEST_HEADERS_ALLOC_OBJECTS) $(TEST_URI_ENCODE_OBJECTS) \
 	$(TEST_LOG_SIGNAL_OBJECTS) $(TEST_LOG_ESCAPE_OBJECTS) $(TEST_DELETE_BATCH_OBJECTS) $(TEST_SIGNAL_IO_OBJECTS) \
 	$(TEST_PUT_CANCEL_OBJECTS) $(TEST_SELECTION_OBJECTS) $(TEST_TRANSFORM_OBJECTS) $(TEST_TRANSFORM_RESTORE_OBJECTS)
 OBJECTS = $(PROGRAM_OBJECTS) $(S3_OBJECTS) log.o $(TEST_OBJECTS)
 DEPENDENCIES = $(OBJECTS:.o=.d)
-C_SOURCES = $(S3_SOURCES) $(S3AR_SOURCES) main.c main_s3ar_put.c main_s3ar_get.c \
+C_SOURCES = tests/test_create_hash.c $(S3_SOURCES) $(S3AR_SOURCES) main.c main_s3ar_put.c main_s3ar_get.c \
 	s3ar_io.c log.c sig.c main_s3ar_delete.c main_s3ar_list.c main_s3ar_copy.c \
 	tests/test_list_reentrancy.c tests/test_request_headers.c tests/test_error.c tests/get_retry_probe.c tests/test_headers_alloc.c \
 	tests/test_uri_encode.c tests/test_log_signal.c tests/test_log_escape.c tests/test_delete_batch.c \
@@ -63,7 +66,7 @@ liblog.a: log.o
 
 s3ar: $(PROGRAM_OBJECTS) libs3.a liblog.a
 	$(CC) $(LDFLAGS) -o $@ $(PROGRAM_OBJECTS) libs3.a liblog.a \
-		$(ARCHIVE_LIBS) $(S3_LIBS)
+		$(ARCHIVE_LIBS) $(HASH_LIBS) $(S3_LIBS)
 
 $(LINKS): s3ar
 	ln -sfn s3ar $@
@@ -105,10 +108,13 @@ test-selection: $(TEST_SELECTION_OBJECTS) s3ar_selection.o s3ar_log.o libs3.a li
 test-transform: $(TEST_TRANSFORM_OBJECTS) s3ar_transform.o liblog.a
 	$(CC) $(LDFLAGS) -o $@ $(TEST_TRANSFORM_OBJECTS) s3ar_transform.o liblog.a
 
+test-create-hash: tests/test_create_hash.o $(filter-out main.o s3ar_create.o,$(PROGRAM_OBJECTS)) libs3.a liblog.a
+	$(CC) $(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=s3_object_get -o $@ $^ $(ARCHIVE_LIBS) $(HASH_LIBS) $(S3_LIBS)
+
 test-transform-restore: $(TEST_TRANSFORM_RESTORE_OBJECTS) $(filter-out main.o,$(PROGRAM_OBJECTS)) libs3.a liblog.a
 	$(CC) $(LDFLAGS) -Wl,--wrap=s3_bucket_ensure -Wl,--wrap=s3_object_put -o $@ \
 		$(TEST_TRANSFORM_RESTORE_OBJECTS) $(filter-out main.o,$(PROGRAM_OBJECTS)) libs3.a liblog.a \
-		$(ARCHIVE_LIBS) $(S3_LIBS)
+		$(ARCHIVE_LIBS) $(HASH_LIBS) $(S3_LIBS)
 
 test-delete-batch: $(TEST_DELETE_BATCH_OBJECTS) $(filter-out s3_object_delete.o,$(S3_OBJECTS)) log.o
 	$(CC) $(LDFLAGS) -Wl,--wrap=s3_request_bucket -Wl,--wrap=s3_request_url -o $@ $(TEST_DELETE_BATCH_OBJECTS) $(filter-out s3_object_delete.o,$(S3_OBJECTS)) log.o $(S3_LIBS)
@@ -128,7 +134,7 @@ test-put-cancel: $(TEST_PUT_CANCEL_OBJECTS) libs3.a liblog.a
 TEST_PROGRAMS ?= all
 
 test: CFLAGS += -Werror
-test: test-list-reentrancy test-request-headers $(TEST_PROGRAMS) test-error test-get-retry test-headers-alloc test-uri-encode test-log-signal test-log-escape test-delete-batch test-signal-io test-put-cancel test-selection test-transform test-transform-restore
+test: test-create-hash test-list-reentrancy test-request-headers $(TEST_PROGRAMS) test-error test-get-retry test-headers-alloc test-uri-encode test-log-signal test-log-escape test-delete-batch test-signal-io test-put-cancel test-selection test-transform test-transform-restore
 	./test-list-reentrancy
 	./test-request-headers
 	./test-error
@@ -141,6 +147,7 @@ test: test-list-reentrancy test-request-headers $(TEST_PROGRAMS) test-error test
 	./test-put-cancel
 	./test-selection
 	./test-transform
+	./test-create-hash
 	pytest -q
 
 format-check:
@@ -164,7 +171,7 @@ install: all install-libs
 		$(DESTDIR)$(PREFIX)/share/man/man1/
 
 clean:
-	rm -f -- test-list-reentrancy test-request-headers s3ar $(LINKS) libs3.a liblog.a test-error test-get-retry test-headers-alloc test-uri-encode test-log-signal test-log-escape test-delete-batch test-signal-io test-put-cancel test-selection test-transform test-transform-restore $(OBJECTS) \
+	rm -f -- test-create-hash test-list-reentrancy test-request-headers s3ar $(LINKS) libs3.a liblog.a test-error test-get-retry test-headers-alloc test-uri-encode test-log-signal test-log-escape test-delete-batch test-signal-io test-put-cancel test-selection test-transform test-transform-restore $(OBJECTS) \
 		$(DEPENDENCIES)
 	rm -rf -- __pycache__ tests/__pycache__ .pytest_cache
 

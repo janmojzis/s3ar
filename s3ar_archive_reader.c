@@ -27,6 +27,7 @@
 
 #include <archive.h>
 #include <archive_entry.h>
+#include <nettle/sha2.h>
 
 #include <errno.h>
 #include <signal.h>
@@ -54,11 +55,16 @@ struct extract_context {
 struct put_context {
     struct archive *archive;
     uint64_t remaining;
+    bool verify_hash;
+    bool hash_verified;
+    struct sha512_ctx hash;
+    const char *expected_hash;
     enum {
         PUT_READ_OK = 0,
         PUT_READ_ARCHIVE_ERROR,
         PUT_READ_TRUNCATED,
         PUT_READ_INTERRUPTED,
+        PUT_READ_HASH_MISMATCH,
     } read_status;
     char archive_error[256];
 };
@@ -214,6 +220,45 @@ static bool metadata_format(struct archive_entry *entry) {
     return false;
 }
 
+/* Validate the format-1 object contract; payload verification is separate. */
+static void read_object_hash(struct archive_entry *entry, char *output) {
+    bool found = false;
+    const char *name;
+    const void *value;
+    size_t size;
+    archive_entry_xattr_reset(entry);
+    while (archive_entry_xattr_next(entry, &name, &value, &size) ==
+           ARCHIVE_OK) {
+        if (name == NULL || (strcmp(name, "user.s3ar.hash") != 0 &&
+                             strcmp(name, "SCHILY.xattr.user.s3ar.hash") != 0))
+            continue;
+        bool valid =
+            value != NULL && size == 4 && memcmp(value, "none", 4) == 0;
+        if (value != NULL && size == 135 && memcmp(value, "sha512:", 7) == 0) {
+            const unsigned char *text = value;
+            valid = true;
+            for (size_t i = 7; i < size; ++i) {
+                if (!((text[i] >= '0' && text[i] <= '9') ||
+                      (text[i] >= 'a' && text[i] <= 'f')))
+                    valid = false;
+            }
+        }
+        if (found || !valid) {
+            log_f1("invalid or duplicate object hash in archive");
+            s3ar_die(2);
+        }
+        if (output != NULL) {
+            memcpy(output, value, size);
+            output[size] = '\0';
+        }
+        found = true;
+    }
+    if (!found) {
+        log_f1("missing object hash in format-1 archive");
+        s3ar_die(2);
+    }
+}
+
 static bool identity_safe(unsigned char value) {
     return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z') ||
            (value >= '0' && value <= '9') || value == '-' || value == '.' ||
@@ -299,7 +344,7 @@ static void read_identity(struct archive_entry *entry, bool object,
     static const char key_name[] = "user.s3ar.key";
     *bucket = NULL;
     *key = NULL;
-    (void) metadata_format(entry);
+    if (metadata_format(entry) && object) read_object_hash(entry, NULL);
     *bucket = read_identity_header(entry, bucket_name);
     *key = read_identity_header(entry, key_name);
     if (*bucket == NULL || (object ? *key == NULL : *key != NULL) ||
@@ -412,7 +457,25 @@ static enum s3_read_result read_object_data(void *callback_data,
         errno = EINTR;
         return S3_READ_ERROR;
     }
-    if (put->remaining == 0) { return S3_READ_EOF; }
+    if (put->remaining == 0) {
+        /* The upload layer checks EOF before PUT or multipart completion.
+         * Retries replay its part buffer, without re-reading archive data. */
+        if (put->verify_hash && !put->hash_verified) {
+            unsigned char digest[SHA512_DIGEST_SIZE];
+            static const char hex[] = "0123456789abcdef";
+            sha512_digest(&put->hash, sizeof(digest), digest);
+            for (size_t i = 0; i < sizeof(digest); ++i) {
+                if (put->expected_hash[2 * i] != hex[digest[i] >> 4] ||
+                    put->expected_hash[2 * i + 1] != hex[digest[i] & 15]) {
+                    put->read_status = PUT_READ_HASH_MISMATCH;
+                    errno = EIO;
+                    return S3_READ_ERROR;
+                }
+            }
+            put->hash_verified = true;
+        }
+        return S3_READ_EOF;
+    }
     size_t wanted = (uint64_t) capacity < put->remaining
                         ? capacity
                         : (size_t) put->remaining;
@@ -436,6 +499,7 @@ static enum s3_read_result read_object_data(void *callback_data,
         errno = EIO;
         return S3_READ_ERROR;
     }
+    if (put->verify_hash) sha512_update(&put->hash, (size_t) amount, data);
     put->remaining -= (uint64_t) amount;
     *size = (size_t) amount;
     return S3_READ_DATA;
@@ -562,6 +626,8 @@ static void extract_object(struct extract_context *context,
         free(header_key);
         return;
     }
+    char hash_field[137] = " none";
+    if (metadata_format(entry)) read_object_hash(entry, hash_field + 1);
     if (context->list_only) {
         la_int64_t archive_size = archive_entry_size(entry);
         if (archive_size < 0) {
@@ -571,11 +637,10 @@ static void extract_object(struct extract_context *context,
         }
         char *etag = context->config->verbose ? read_etag(entry) : NULL;
         if (context->config->verbose) {
-            /* TODO: Replace the trailing hash placeholder with SHA-512. */
             log_o8(s3_log_uri(NULL, bucket, key), " ",
                    log_num((long long) archive_size), " ",
                    log_num((long long) archive_entry_mtime(entry)), " ",
-                   etag != NULL ? etag : "-", " -");
+                   etag != NULL ? etag : "-", hash_field);
         }
         else
             log_o1(s3_log_uri(NULL, bucket, key));
@@ -606,6 +671,17 @@ static void extract_object(struct extract_context *context,
         .archive = context->archive,
         .remaining = (uint64_t) archive_size,
     };
+    if (context->config->hash) {
+        if (strcmp(hash_field + 1, "none") == 0) {
+            log_w2("hash unavailable; content not verified for ",
+                   s3_log_uri(NULL, bucket, key));
+        }
+        else {
+            put.verify_hash = true;
+            put.expected_hash = hash_field + 1 + 7;
+            sha512_init(&put.hash);
+        }
+    }
     struct s3_object_properties properties = {
         .metadata = metadata,
         .metadata_count = metadata_count,
@@ -624,6 +700,10 @@ static void extract_object(struct extract_context *context,
                s3_log_uri(NULL, bucket, key), ": ", s3ar_log_error(&error));
         s3ar_die(2);
     }
+    if (put.read_status == PUT_READ_HASH_MISMATCH) {
+        log_f2("SHA-512 mismatch for ", s3_log_uri(NULL, bucket, key));
+        s3ar_die(2);
+    }
     if (put.read_status != PUT_READ_OK) report_put_read_error(&put);
     if (result != S3_RESULT_OK) {
         log_f4("unable to write object ", s3_log_uri(NULL, bucket, key), ": ",
@@ -635,8 +715,10 @@ static void extract_object(struct extract_context *context,
                s3_log_uri(NULL, bucket, key));
         s3ar_die(2);
     }
-    /* TODO: Replace the hash placeholder with SHA-512 of the uploaded data. */
-    log_i2(s3_log_uri(NULL, bucket, key), " -");
+    log_i3(s3_log_uri(NULL, bucket, key), hash_field,
+           context->config->hash
+               ? (put.hash_verified ? " verified" : " unverified")
+               : "");
     free(header_bucket);
     free(header_key);
 }

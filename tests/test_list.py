@@ -124,6 +124,7 @@ def test_list_archive_uses_pax_identity_without_s3_configuration(
         member.pax_headers = {
             "SCHILY.xattr.user.s3ar.format": "1",
             "SCHILY.xattr.user.s3ar.bucket": "archive-bucket",
+            "SCHILY.xattr.user.s3ar.hash": "none",
             "SCHILY.xattr.user.s3ar.key": "folder/key%20name%2B%25%C5%BE",
         }
         archive.addfile(member, io.BytesIO(b"data"))
@@ -132,6 +133,7 @@ def test_list_archive_uses_pax_identity_without_s3_configuration(
         current.pax_headers = {
             "SCHILY.xattr.user.s3ar.format": "1",
             "SCHILY.xattr.user.s3ar.bucket": "archive-bucket",
+            "SCHILY.xattr.user.s3ar.hash": "none",
             "SCHILY.xattr.user.s3ar.key": "current",
             "SCHILY.xattr.user.s3ar.etag": '"3472a7"',
         }
@@ -153,8 +155,8 @@ def test_list_archive_uses_pax_identity_without_s3_configuration(
     assert verbose.returncode == 0, verbose.stderr
     assert verbose.stdout == (
         "archive-bucket\n"
-        "archive-bucket/folder/key%20name%2B%25%C5%BE 4 123 - -\n"
-        'archive-bucket/current 0 456 "3472a7" -\n'
+        "archive-bucket/folder/key%20name%2B%25%C5%BE 4 123 - none\n"
+        'archive-bucket/current 0 456 "3472a7" none\n'
     )
 
 
@@ -192,3 +194,67 @@ def test_rejected_archive_link_quotes_path(executable):
     assert result.returncode == 2
     assert b"\x1b" not in result.stderr
     assert b"\\x1B[2JFORGED" in result.stderr
+
+
+@pytest.mark.parametrize("hash_value, valid", [
+    (None, False), ("", False), ("null", False), ("NONE", False),
+    ("none", True), ("sha512:" + "0" * 128, True),
+    ("sha512:" + "a" * 127, False), ("sha512:" + "a" * 129, False),
+    ("sha512:" + "A" * 128, False), ("sha512:" + "g" * 128, False),
+    ("sha256:" + "a" * 128, False), ("none\x00", False),
+])
+@pytest.mark.parametrize("mode", ["-t", "-x"])
+def test_format_one_requires_object_hash(
+    executable, tmp_path, s3_environment, hash_value, valid, mode
+):
+    path = tmp_path / "hash-contract.tar"
+    with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as archive:
+        directory = tarfile.TarInfo("bucket")
+        directory.type = tarfile.DIRTYPE
+        directory.pax_headers = {"SCHILY.xattr.user.s3ar.bucket": "bucket"}
+        archive.addfile(directory)
+        entry = tarfile.TarInfo("bucket/key")
+        entry.pax_headers = {
+            "SCHILY.xattr.user.s3ar.format": "1",
+            "SCHILY.xattr.user.s3ar.bucket": "bucket",
+            "SCHILY.xattr.user.s3ar.key": "key",
+        }
+        if hash_value is not None:
+            entry.pax_headers["SCHILY.xattr.user.s3ar.hash"] = hash_value
+        archive.addfile(entry)
+    args = [str(executable), mode, "-v", "-f", str(path)]
+    if mode == "-x":
+        args.append("s3://")
+    result = subprocess.run(
+        args, capture_output=True, text=True, env=s3_environment
+    )
+    assert result.returncode == (0 if valid else 2), result.stderr
+    if valid:
+        output = result.stdout if mode == "-t" else result.stderr
+        assert output.rstrip().endswith(" " + hash_value)
+    else:
+        assert "object hash" in result.stderr
+
+
+def test_format_one_rejects_duplicate_hash(executable, tmp_path):
+    path = tmp_path / "duplicate-hash.tar"
+    with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as archive:
+        directory = tarfile.TarInfo("bucket")
+        directory.type = tarfile.DIRTYPE
+        directory.pax_headers = {"SCHILY.xattr.user.s3ar.bucket": "bucket"}
+        archive.addfile(directory)
+        entry = tarfile.TarInfo("bucket/key")
+        entry.pax_headers = {
+            "SCHILY.xattr.user.s3ar.format": "1",
+            "SCHILY.xattr.user.s3ar.bucket": "bucket",
+            "SCHILY.xattr.user.s3ar.key": "key",
+            "SCHILY.xattr.user.s3ar.hash": "none",
+            "SCHILY.xattr.SCHILY.xattr.user.s3ar.hash": "none",
+        }
+        archive.addfile(entry)
+    result = subprocess.run(
+        [str(executable), "-tf", str(path)],
+        capture_output=True, text=True, env={},
+    )
+    assert result.returncode == 2
+    assert "duplicate object hash" in result.stderr
