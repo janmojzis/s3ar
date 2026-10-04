@@ -2,6 +2,7 @@
 #include "main.h"
 #include "s3ar_client.h"
 #include "s3ar_config.h"
+#include "s3ar_parse.h"
 #include "s3ar_interrupt.h"
 #include "s3ar_log.h"
 #include "log.h"

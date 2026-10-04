@@ -3,6 +3,7 @@
 #include "s3_xml.h"
 #include "s3_log.h"
 #include "s3ar_config.h"
+#include "s3ar_parse.h"
 
 #include <assert.h>
 #include <errno.h>
