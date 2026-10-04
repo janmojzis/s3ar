@@ -14,7 +14,7 @@ ARCHIVE_LIBS ?= -larchive
 S3_SOURCES = s3_client.c s3_config.c s3_error.c s3_log.c s3_result.c s3_memory.c s3_request.c s3_response.c s3_parse.c s3_object_properties.c s3_url.c s3_uri_encode.c s3_uri_decode.c s3_query.c \
 	s3_headers.c s3_xml.c s3_retry.c s3_trace.c s3_bucket.c s3_bucket_list.c s3_bucket_acl.c \
 	s3_object.c s3_object_list.c s3_object_put.c s3_object_copy.c s3_upload.c s3_object_delete.c s3_listing.c s3_multipart.c s3_uri.c
-S3AR_SOURCES = main_s3ar.c s3ar.c s3ar_log.c s3ar_config.c s3ar_parse.c s3ar_client.c s3ar_interrupt.c s3ar_create.c s3ar_extract.c s3ar_selection.c \
+S3AR_SOURCES = main_s3ar.c s3ar.c s3ar_log.c s3ar_config.c s3ar_parse.c s3ar_client.c s3ar_interrupt.c s3ar_create.c s3ar_extract.c s3ar_list_archive.c s3ar_archive_reader.c s3ar_selection.c \
 	s3ar_transform.c fsyncfile.c
 S3_OBJECTS = $(S3_SOURCES:.c=.o)
 S3AR_OBJECTS = $(S3AR_SOURCES:.c=.o)
@@ -146,7 +146,7 @@ test: test-list-reentrancy test-request-headers $(TEST_PROGRAMS) test-error test
 format-check:
 	clang-format --dry-run --Werror $(C_SOURCES) $(PUBLIC_HEADERS) \
 		s3_internal.h s3_xml.h s3_upload.h s3ar.h s3ar_io.h s3ar_config.h s3ar_parse.h s3ar_client.h \
-		s3ar_log.h s3ar_interrupt.h s3ar_transform.h s3ar_selection.h fsyncfile.h main.h sig.h
+		s3ar_log.h s3ar_interrupt.h s3ar_transform.h s3ar_selection.h s3ar_archive_reader.h fsyncfile.h main.h sig.h
 
 install-libs: libs3.a liblog.a
 	install -d $(DESTDIR)$(LIBDIR)/s3ar \
