@@ -17,6 +17,7 @@
 #include "s3.h"
 #include "s3ar.h"
 #include "main.h"
+#include "s3ar_client.h"
 #include "s3ar_config.h"
 #include "s3ar_transform.h"
 #include "sig.h"

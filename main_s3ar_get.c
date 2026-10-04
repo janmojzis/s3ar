@@ -5,6 +5,7 @@
 #include "s3ar_log.h"
 #include "s3ar.h"
 #include "main.h"
+#include "s3ar_client.h"
 #include "s3ar_config.h"
 #include "s3ar_interrupt.h"
 #include "sig.h"

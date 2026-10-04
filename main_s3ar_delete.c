@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT-0 */
 #include "main.h"
+#include "s3ar_client.h"
 #include "s3ar_config.h"
 #include "s3ar.h"
 #include "log.h"
