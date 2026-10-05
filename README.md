@@ -407,7 +407,7 @@ for year in 2026 2027; do
 done
 
 python3 -m pip install -r requirements-test.txt
-python3 ./s3testserver.py "$test_data" --host 127.0.0.1 --port 9000
+python3 ./tests/s3testserver.py "$test_data" --host 127.0.0.1 --port 9000
 ```
 
 In another shell, configure and run `s3ar`:
