@@ -491,6 +491,87 @@ def test_server_version_deletion_mirrors_visible_object(tmp_path, batch, deleted
     assert_restarted_objects(tmp_path, bucket, {key: expected})
 
 
+@pytest.mark.parametrize("mode", ["plain", "batch", "version"])
+def test_server_deletion_prunes_empty_parents_within_bucket(tmp_path, mode):
+    store = FilesystemStore(tmp_path)
+    server = FilesystemMotoServer(store, "127.0.0.1", 0)
+    server.start()
+    _, client = server_client(server)
+    bucket = "prune-delete"
+
+    def delete(key):
+        if mode == "batch":
+            response = client.delete_objects(
+                Bucket=bucket, Delete={"Objects": [{"Key": key}]}
+            )
+            assert not response.get("Errors")
+        elif mode == "version":
+            client.delete_object(Bucket=bucket, Key=key, VersionId="null")
+        else:
+            client.delete_object(Bucket=bucket, Key=key)
+
+    try:
+        client.create_bucket(Bucket=bucket)
+        client.create_bucket(Bucket="prune-other")
+        client.put_object(Bucket="prune-other", Key="dir/keep", Body=b"other")
+        for key in ["dir/deep/one", "dir/deep/two", "dir/keep"]:
+            client.put_object(Bucket=bucket, Key=key, Body=b"data")
+        delete("dir/deep/one")
+        assert (tmp_path / bucket / "dir/deep/two").read_bytes() == b"data"
+        delete("dir/deep/two")
+        assert not (tmp_path / bucket / "dir/deep").exists()
+        assert (tmp_path / bucket / "dir/keep").read_bytes() == b"data"
+        delete("dir/keep")
+        delete("missing/path/object")
+        assert (tmp_path / bucket).is_dir()
+        assert not list((tmp_path / bucket).iterdir())
+        assert not client.list_objects_v2(Bucket=bucket).get("Contents")
+        client.delete_bucket(Bucket=bucket)
+        assert not (tmp_path / bucket).exists()
+        assert (tmp_path / "prune-other/dir/keep").read_bytes() == b"other"
+        assert (tmp_path / ".s3testserver/metadata.sqlite3").is_file()
+    finally:
+        server.stop()
+        store.database.close()
+
+
+def test_cli_delete_removes_nested_bucket_across_restart(tmp_path):
+    store = FilesystemStore(tmp_path)
+    server = FilesystemMotoServer(store, "127.0.0.1", 0)
+    server.start()
+    endpoint, client = server_client(server)
+    bucket = "cli-delete-nested-bucket"
+    try:
+        client.create_bucket(Bucket=bucket)
+        for key in ["dir/deep/one", "dir/café %2F?key"]:
+            client.put_object(Bucket=bucket, Key=key, Body=b"data")
+        result = subprocess.run(
+            [str(Path(__file__).resolve().parents[1] / "s3ar-delete"), f"s3://{bucket}"],
+            env={**os.environ, "S3AR_ENDPOINT": endpoint, "S3AR_URI_STYLE": "path",
+                 "S3AR_REGION": "us-east-1", "S3AR_ACCESS_KEY": ACCESS_KEY,
+                 "S3AR_SECRET_KEY": SECRET_KEY, "S3AR_SESSION_TOKEN": ""},
+            capture_output=True, timeout=30,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        assert not (tmp_path / bucket).exists()
+        assert bucket not in {item["Name"] for item in client.list_buckets()["Buckets"]}
+    finally:
+        server.stop()
+        store.database.close()
+
+    s3_backends.reset()
+    store = FilesystemStore(tmp_path)
+    server = FilesystemMotoServer(store, "127.0.0.1", 0)
+    server.start()
+    endpoint, client = server_client(server)
+    try:
+        load_filesystem_into_moto(store, endpoint)
+        assert bucket not in {item["Name"] for item in client.list_buckets()["Buckets"]}
+    finally:
+        server.stop()
+        store.database.close()
+
+
 def test_cli_delete_persists_prefix_deletion_across_restart(tmp_path):
     store = FilesystemStore(tmp_path)
     server = FilesystemMotoServer(store, "127.0.0.1", 0)
@@ -515,6 +596,7 @@ def test_cli_delete_persists_prefix_deletion_across_restart(tmp_path):
         for key in deleted_keys:
             assert not (tmp_path / bucket / key).exists()
             assert store.metadata_for(bucket, key) == {}
+        assert not (tmp_path / bucket / "prefix").exists()
     finally:
         server.stop()
         store.database.close()
@@ -637,7 +719,7 @@ def test_server_persistence_failure_rolls_back_disk_and_blocks_requests(
     server = FilesystemMotoServer(store, "127.0.0.1", 0)
     server.start()
     _, client = server_client(server, config=Config(retries={"max_attempts": 0}))
-    bucket, key = "persistence-failure", "object"
+    bucket, key = "persistence-failure", "nested/path/object"
     original = (b"original", {"source": "original"})
     try:
         client.create_bucket(Bucket=bucket)
@@ -669,7 +751,7 @@ def test_server_persistence_failure_rolls_back_disk_and_blocks_requests(
             assert failure.value.response["ResponseMetadata"]["HTTPStatusCode"] == 503
         assert (tmp_path / bucket / key).read_bytes() == original[0]
         assert store.metadata_for(bucket, key) == original[1]
-        assert not list((tmp_path / bucket).glob(".s3-object-*"))
+        assert not list((tmp_path / bucket).rglob(".s3-object-*"))
         for request in (
             lambda: client.get_object(Bucket=bucket, Key=key),
             lambda: client.list_objects_v2(Bucket=bucket),

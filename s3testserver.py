@@ -2,6 +2,7 @@
 """Run a filesystem-backed S3-compatible Moto server for s3ar testing."""
 
 import argparse
+import errno
 import json
 import os
 import signal
@@ -276,6 +277,19 @@ class FilesystemStore:
         with self._object_change(target):
             target.unlink(missing_ok=True)
             self._replace_metadata(bucket, key, {})
+        # The rollback backup must be gone before pruning its directory.
+        bucket_root = (self.root / bucket).resolve(strict=False)
+        parent = target.parent
+        while parent != bucket_root:
+            try:
+                parent.rmdir()
+            except FileNotFoundError:
+                pass
+            except OSError as error:
+                if error.errno in {errno.ENOTEMPTY, errno.EEXIST}:
+                    break
+                raise
+            parent = parent.parent
 
     def _initiate_upload(self, bucket, key, headers, response_body):
         root = ET.fromstring(response_body)
