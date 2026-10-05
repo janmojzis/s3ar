@@ -85,13 +85,17 @@ def test_server_persists_completed_multipart_upload_across_restart(tmp_path):
         )
     finally:
         server.stop()
+        store.database.close()
 
     assert (tmp_path / "multipart-test" / "large.bin").read_bytes() == first + second
+    # Stopping the HTTP server leaves Moto's in-process backend alive.
+    s3_backends.reset()
     restarted_store = FilesystemStore(tmp_path)
     restarted = FilesystemMotoServer(restarted_store, "127.0.0.1", 0)
     restarted.start()
     endpoint, restarted_client = server_client(restarted)
     try:
+        assert restarted_client.list_buckets()["Buckets"] == []
         load_filesystem_into_moto(restarted_store, endpoint)
         response = restarted_client.get_object(
             Bucket="multipart-test", Key="large.bin"
@@ -100,6 +104,7 @@ def test_server_persists_completed_multipart_upload_across_restart(tmp_path):
         assert response["Metadata"] == {"source": "multipart"}
     finally:
         restarted.stop()
+        restarted_store.database.close()
 
 
 def test_server_preserves_metadata_header_spelling(tmp_path):
