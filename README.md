@@ -350,7 +350,14 @@ buckets remain visible.
 
 `s3ar` also includes utilities for working directly with S3:
 
-- `s3ar-get`: download an object to a file or standard output.
+- `s3ar-get`: download an object to a file or standard output. With `--hash`,
+  compute SHA-512 and save `user.s3ar.hash` in the archive-compatible format.
+  Verify existing `-f FILE` contents before using its ETag cache; unavailable
+  or mismatching hashes trigger a full download. Redirected stdout also receives
+  hash and identity attributes when the regular file contains exactly the
+  downloaded object. Before downloading to redirected regular-file stdout,
+  all existing `user.s3ar.*` attributes are removed.
+  Without `--hash`, complete downloaded files receive `user.s3ar.hash=none`.
 - `s3ar-put`: upload a file or standard input.
 - `s3ar-copy`: copy one object between buckets on the same S3 endpoint.
 - `s3ar-delete`: remove objects or buckets.

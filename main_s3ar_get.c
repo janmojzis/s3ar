@@ -7,7 +7,9 @@
 #include "main.h"
 #include "s3ar_client.h"
 #include "s3ar_config.h"
+#include "s3ar_hash.h"
 #include "s3ar_interrupt.h"
+#include "s3ar_xattr.h"
 #include "sig.h"
 
 #include <errno.h>
@@ -20,11 +22,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/xattr.h>
 #include <unistd.h>
 
 static void usage(FILE *stream) {
-    log_usage(stream, "Usage: s3ar-get [-v|-vv] [-f FILE [-t TEMP]] "
+    log_usage(stream, "Usage: s3ar-get [-v|-vv] [--hash] [-f FILE [-t TEMP]] "
                       "s3://BUCKET/KEY\n"
                       "Download to FILE or standard output.\n");
 }
@@ -66,6 +67,11 @@ static char encoded_bucket[S3_URI_ENCODED_MAX_BYTES];
 static char encoded_key[S3_URI_ENCODED_MAX_BYTES];
 static char xattr_value[S3_URI_ENCODED_MAX_BYTES];
 static bool tmpfn_created = false;
+static bool hash_enabled;
+static struct sha512_ctx download_hash;
+static char downloaded_hash[S3AR_HASH_TEXT_SIZE] = "none";
+static uint64_t downloaded_size;
+static off_t stdout_start = -1;
 static struct s3ar_config_env config;
 static struct s3_client *client = NULL;
 static struct s3_uri_buffer uri;
@@ -79,6 +85,7 @@ static void handle_interrupt(int signal_number) {
 
 static int option;
 static const struct option long_options[] = {
+    {"hash", no_argument, NULL, 256},
     {"file", required_argument, NULL, 'f'},
     {"temporary", required_argument, NULL, 't'},
     {"verbose", no_argument, NULL, 'v'},
@@ -122,54 +129,77 @@ static bool etag_isvalid(const char *etag, size_t size) {
     return true;
 }
 
-struct xattr_log_value {
-    const char *value;
-    size_t size;
-    const char *status;
-};
-
-static void format_xattr_value(FILE *stream, const void *data) {
-    const struct xattr_log_value *value = data;
-    if (value->value == NULL)
-        (void) fputs(" = (unavailable)", stream);
-    else {
-        (void) fputs(" = '", stream);
-        for (size_t i = 0; i < value->size; ++i) {
-            if (value->value[i] == '\'') (void) fputc('\\', stream);
-            log_write_data(stream, value->value + i, 1);
-        }
-        (void) fputc('\'', stream);
-    }
-    (void) fputs(" (", stream);
-    log_write_text(stream, value->status);
-    (void) fputc(')', stream);
-}
-
-static void debug_xattr(const char *name, const char *value, size_t size,
-                        const char *status) {
-    struct xattr_log_value data = {value, size, status};
-    log_d3("xattr ", name, log_custom(format_xattr_value, &data));
-}
-
 static bool read_xattr_exact(int source_fd, const char *name,
                              const char *expected) {
     size_t length = strlen(expected);
-    ssize_t size = fgetxattr(source_fd, name, xattr_value, length + 1);
+    ssize_t size = s3ar_xattr_get(source_fd, name, xattr_value, length + 1);
     if (size < 0) {
         if (errno == ENODATA)
-            debug_xattr(name, NULL, 0, "missing");
+            s3ar_xattr_debug(name, NULL, 0, "missing");
         else if (errno == ERANGE)
-            debug_xattr(name, NULL, 0, "mismatch");
+            s3ar_xattr_debug(name, NULL, 0, "mismatch");
         else
             log_w4("xattr ", name, ": read failed: ", log_errno());
         return false;
     }
     if (size != (ssize_t) length ||
         memcmp(xattr_value, expected, length) != 0) {
-        debug_xattr(name, xattr_value, (size_t) size, "mismatch");
+        s3ar_xattr_debug(name, xattr_value, (size_t) size, "mismatch");
         return false;
     }
-    debug_xattr(name, xattr_value, (size_t) size, "match");
+    s3ar_xattr_debug(name, xattr_value, (size_t) size, "match");
+    return true;
+}
+
+static bool verify_cached_hash(int source_fd) {
+    char expected[S3AR_HASH_TEXT_SIZE], actual[S3AR_HASH_TEXT_SIZE];
+    unsigned char buffer[65536];
+    struct sha512_ctx hash;
+    struct stat before, after;
+    ssize_t size =
+        s3ar_xattr_get(source_fd, "user.s3ar.hash", expected, sizeof(expected));
+    if (size < 0 || !s3ar_hash_valid(expected, (size_t) size)) {
+        log_w1(
+            "xattr cache: SHA-512 unavailable or invalid; downloading again");
+        return false;
+    }
+    expected[S3AR_HASH_TEXT_LENGTH] = '\0';
+    if (fstat(source_fd, &before) != 0) goto read_error;
+    sha512_init(&hash);
+    for (;;) {
+        check_interrupted();
+        size = read(source_fd, buffer, sizeof(buffer));
+        if (size < 0) {
+            if (errno == EINTR) continue;
+            goto read_error;
+        }
+        if (size == 0) break;
+        sha512_update(&hash, (size_t) size, buffer);
+    }
+    if (fstat(source_fd, &after) != 0) goto read_error;
+    s3ar_hash_text(&hash, actual);
+    if (strcmp(expected, actual) != 0 || before.st_size != after.st_size ||
+        before.st_mtim.tv_sec != after.st_mtim.tv_sec ||
+        before.st_mtim.tv_nsec != after.st_mtim.tv_nsec ||
+        before.st_ctim.tv_sec != after.st_ctim.tv_sec ||
+        before.st_ctim.tv_nsec != after.st_ctim.tv_nsec) {
+        log_w1(
+            "xattr cache: SHA-512 mismatch or file changed; downloading again");
+        return false;
+    }
+    s3ar_xattr_debug("user.s3ar.hash", expected, S3AR_HASH_TEXT_LENGTH,
+                      "verified");
+    return true;
+read_error:
+    log_w2("xattr cache: cannot verify SHA-512: ", log_errno());
+    return false;
+}
+
+static bool write_download(void *data, const unsigned char *buffer,
+                           size_t size) {
+    if (!s3ar_io_write(data, buffer, size)) return false;
+    if (hash_enabled) sha512_update(&download_hash, size, buffer);
+    downloaded_size += size;
     return true;
 }
 
@@ -202,11 +232,11 @@ static void load_cached_etag(void) {
         read_xattr_exact(source_fd, "user.s3ar.bucket", encoded_bucket);
     key_match = read_xattr_exact(source_fd, "user.s3ar.key", encoded_key);
     if (!format_match || !bucket_match || !key_match) goto close_source;
-    size = fgetxattr(source_fd, "user.s3ar.etag", cached_etag,
-                     sizeof(cached_etag) - 1);
+    size = s3ar_xattr_get(source_fd, "user.s3ar.etag", cached_etag,
+                          sizeof(cached_etag) - 1);
     if (size < 0) {
         if (errno == ENODATA)
-            debug_xattr("user.s3ar.etag", NULL, 0, "missing");
+            s3ar_xattr_debug("user.s3ar.etag", NULL, 0, "missing");
         else if (errno == ERANGE)
             log_w1("xattr user.s3ar.etag: too long");
         else
@@ -220,7 +250,8 @@ static void load_cached_etag(void) {
         goto close_source;
     }
     cached_etag[size] = '\0';
-    debug_xattr("user.s3ar.etag", cached_etag, (size_t) size, "valid");
+    s3ar_xattr_debug("user.s3ar.etag", cached_etag, (size_t) size, "valid");
+    if (hash_enabled && !verify_cached_hash(source_fd)) cached_etag[0] = '\0';
 close_source:
     if (close(source_fd) != 0)
         log_w2("xattr cache: close failed: ", log_errno());
@@ -234,23 +265,39 @@ static bool remember_etag(void *data,
     return true;
 }
 
-static void save_xattr(int output_fd, const char *name, const char *value) {
-    if (fsetxattr(output_fd, name, value, strlen(value), 0) == 0)
-        debug_xattr(name, value, strlen(value), "saved");
-    else
-        log_w4("xattr ", name, ": write failed: ", log_errno());
+static bool output_accepts_xattrs(void) {
+    if (fn != NULL) return true;
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        log_w2("cannot inspect stdout for xattrs: ", log_errno());
+        return false;
+    }
+    if (!S_ISREG(st.st_mode)) return false;
+    int flags = fcntl(fd, F_GETFL);
+    if (stdout_start != 0 || flags < 0 || (flags & O_APPEND) != 0 ||
+        st.st_size < 0 || (uint64_t) st.st_size != downloaded_size ||
+        lseek(fd, 0, SEEK_CUR) != st.st_size) {
+        log_w1("stdout does not contain exactly the downloaded object; "
+               "skipping xattrs");
+        return false;
+    }
+    return true;
 }
 
 static void save_xattrs(void) {
-    if (fn == NULL) return;
+    (void) s3ar_xattr_set(fd, "user.s3ar.hash", downloaded_hash,
+                         strlen(downloaded_hash));
     if (!etag_isvalid(downloaded_etag, strlen(downloaded_etag))) {
-        log_w1("response ETag missing or invalid; skipping xattrs");
+        log_w1("response ETag missing or invalid; skipping identity xattrs");
         return;
     }
-    save_xattr(fd, "user.s3ar.format", S3AR_XATTR_FORMAT_VERSION);
-    save_xattr(fd, "user.s3ar.bucket", encoded_bucket);
-    save_xattr(fd, "user.s3ar.key", encoded_key);
-    save_xattr(fd, "user.s3ar.etag", downloaded_etag);
+    (void) s3ar_xattr_set(fd, "user.s3ar.format", S3AR_XATTR_FORMAT_VERSION,
+                         sizeof(S3AR_XATTR_FORMAT_VERSION) - 1);
+    (void) s3ar_xattr_set(fd, "user.s3ar.bucket", encoded_bucket,
+                         strlen(encoded_bucket));
+    (void) s3ar_xattr_set(fd, "user.s3ar.key", encoded_key, strlen(encoded_key));
+    (void) s3ar_xattr_set(fd, "user.s3ar.etag", downloaded_etag,
+                         strlen(downloaded_etag));
 }
 
 int main_s3ar_get(int argc, char **argv) {
@@ -271,7 +318,9 @@ int main_s3ar_get(int argc, char **argv) {
     opterr = 0;
     while ((option = getopt_long(argc, argv, "f:t:vh", long_options, NULL)) !=
            -1) {
-        if (option == 'f') {
+        if (option == 256)
+            hash_enabled = true;
+        else if (option == 'f') {
             if (fn != NULL) {
                 log_f1("output file specified twice");
                 die(2);
@@ -373,6 +422,25 @@ int main_s3ar_get(int argc, char **argv) {
     log_d3("(option -t) temporary-file = '", fn != NULL ? tmpfn : "(none)",
            "'");
 
+    /* Redirection preserves xattrs. Clear old s3ar metadata before writing,
+     * even without --hash or if the download subsequently fails. */
+    if (fn == NULL) {
+        struct stat st;
+        if (fstat(fd, &st) != 0) {
+            log_f2("cannot inspect stdout: ", log_errno());
+            die(2);
+        }
+        if (S_ISREG(st.st_mode) &&
+            s3ar_xattr_reset(fd, &interrupted_signal) != 0) {
+            check_interrupted();
+            log_f2("cannot reset stdout s3ar xattrs: ", log_errno());
+            die(2);
+        }
+    }
+
+    if (hash_enabled) sha512_init(&download_hash);
+    if (fn == NULL) stdout_start = lseek(fd, 0, SEEK_CUR);
+
     /* download or reuse cached output */
     if (cached_etag[0] != '\0')
         log_d2("If-None-Match: ", cached_etag);
@@ -381,7 +449,7 @@ int main_s3ar_get(int argc, char **argv) {
     struct s3ar_io_write_context output = {.fd = &fd,
                                            .interrupted = &interrupted_signal};
     result = s3_object_get_conditional(
-        client, &error, fn != NULL ? remember_etag : NULL, s3ar_io_write,
+        client, &error, remember_etag, write_download,
         &output, uri.bucket, uri.key,
         cached_etag[0] != '\0' ? cached_etag : NULL);
     check_interrupted();
@@ -408,8 +476,13 @@ int main_s3ar_get(int argc, char **argv) {
         die(2);
     }
 
+    if (hash_enabled) {
+        s3ar_hash_text(&download_hash, downloaded_hash);
+        log_i2("download hash: ", downloaded_hash);
+    }
+
     /* store xattrs before closing output */
-    save_xattrs();
+    if (output_accepts_xattrs()) save_xattrs();
 
     /* sync and close output before reporting success */
     const char *output_name = fn != NULL ? tmpfn : "standard output";

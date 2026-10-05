@@ -21,12 +21,12 @@
 #include "s3ar_log.h"
 #include "s3.h"
 #include "s3ar.h"
+#include "s3ar_hash.h"
 #include "s3ar_interrupt.h"
 #include "sig.h"
 
 #include <archive.h>
 #include <archive_entry.h>
-#include <nettle/sha2.h>
 
 #include <errno.h>
 #include <fcntl.h>
@@ -52,7 +52,7 @@ struct get_context {
     unsigned char *buffer;
     struct archive_entry *entry;
     struct sha512_ctx hash;
-    char hash_text[136];
+    char hash_text[S3AR_HASH_TEXT_SIZE];
     bool buffered;
     bool properties_received;
     int64_t last_modified;
@@ -388,15 +388,7 @@ static bool write_object(struct create_context *context, const char *bucket,
         s3ar_die(2);
     }
     if (get.buffered) {
-        unsigned char digest[SHA512_DIGEST_SIZE];
-        static const char hex[] = "0123456789abcdef";
-        sha512_digest(&get.hash, sizeof(digest), digest);
-        memcpy(get.hash_text, "sha512:", 7);
-        for (size_t i = 0; i < sizeof(digest); ++i) {
-            get.hash_text[7 + 2 * i] = hex[digest[i] >> 4];
-            get.hash_text[8 + 2 * i] = hex[digest[i] & 15];
-        }
-        get.hash_text[135] = '\0';
+        s3ar_hash_text(&get.hash, get.hash_text);
         add_object_hash(get.entry, get.hash_text);
         if (archive_write_header(context->archive, get.entry) != ARCHIVE_OK)
             archive_fatal(context->archive, "cannot write object header");

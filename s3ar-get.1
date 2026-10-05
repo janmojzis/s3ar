@@ -4,6 +4,7 @@ s3ar-get \- download an S3 object
 .SH SYNOPSIS
 .B s3ar-get
 .RB [ \-v | \-vv | \-vvv ]
+.RB [ \-\-hash ]
 .RB [ \-f " FILE" " [" \-t " TEMP]" ]
 .I s3://BUCKET/KEY
 .SH DESCRIPTION
@@ -33,7 +34,7 @@ archives created by
 .BR s3ar (1).
 An HTTP 304 response leaves FILE unchanged. A downloaded replacement receives
 these attributes when the filesystem supports them; otherwise future calls
-download normally. The attributes do not verify local file contents.
+download normally. Without \fB--hash\fR, the attributes do not verify local file contents.
 A success summary is always written to standard error. With
 .BR \-v ,
 an additional message distinguishes downloaded from not modified.
@@ -70,6 +71,34 @@ file; devices, directories, and symbolic links are rejected.
 Use TEMP as the temporary file when writing to FILE. TEMP must not exist and
 must be on the same filesystem as FILE. On success, TEMP replaces FILE
 atomically. TEMP is removed if the download fails.
+.TP
+.B \-\-hash
+Compute SHA-512 while downloading and store
+.B user.s3ar.hash
+as sha512: followed by 128 lowercase hexadecimal digits, without a terminating
+NUL. The hash covers the object contents and is reported at info verbosity.
+Without this option, a downloaded FILE receives the hash value none.
+.IP
+Before using FILE's cached ETag, verify its contents against its SHA-512
+attribute. Missing, invalid, unavailable, or mismatching hashes disable the
+conditional GET and cause a full download. Matching format, bucket, key, and
+valid ETag attributes are still required. HTTP 304 preserves the verified FILE.
+.IP
+Before downloading to a regular file through standard output, remove all
+existing user.s3ar.* attributes, even without --hash. Other attributes are
+preserved. Failure to list or remove the old attributes aborts the download;
+filesystems without xattr support are allowed.
+After a successful download, store the new format, bucket, key, ETag, and hash
+attributes only when writing began at offset zero without append mode, and the
+final position and file size equal the downloaded length. Without --hash,
+the hash value is none. If these file conditions are not met, a regular-file
+output gets a warning and no new attributes. Missing or invalid response ETags
+prevent storing identity attributes. Failed downloads leave the old attributes
+removed.
+Pipes and terminals receive no attributes. Attribute write failures are warnings.
+.IP
+The downloaded hash is computed, not checked against an independent S3 digest.
+No second read of newly downloaded data is performed.
 .TP
 .BR \-v , " \-vv" , " \-vvv" , " \-\-verbose"
 Increase diagnostic verbosity to info, debug, or HTTP trace. Further repetitions of

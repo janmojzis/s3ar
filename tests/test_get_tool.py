@@ -568,7 +568,8 @@ def test_get_does_not_emit_bytes_beyond_content_length(s3_environment):
     assert result.stderr == GET_STDOUT_SUCCESS
 
 
-def test_get_resumes_after_truncated_response(s3_environment):
+@pytest.mark.parametrize("hash_enabled", [False, True])
+def test_get_resumes_after_truncated_response(s3_environment, hash_enabled):
     data = bytes(range(251)) * 301
     cutoff = 12347
     etag = '"download"'
@@ -602,7 +603,7 @@ def test_get_resumes_after_truncated_response(s3_environment):
         environment = s3_environment.copy()
         environment["S3AR_ENDPOINT"] = server.endpoint
         result = subprocess.run(
-            [str(EXECUTABLE), "s3://bucket/key"],
+            [str(EXECUTABLE), *(["--hash", "-v"] if hash_enabled else []), "s3://bucket/key"],
             capture_output=True,
             env=environment,
             timeout=10,
@@ -610,7 +611,10 @@ def test_get_resumes_after_truncated_response(s3_environment):
 
     assert result.returncode == 0, result.stderr.decode()
     assert result.stdout == data
-    assert result.stderr == GET_STDOUT_SUCCESS
+    if hash_enabled:
+        assert hash_value(data) in result.stderr
+    else:
+        assert result.stderr == GET_STDOUT_SUCCESS
 
 
 @pytest.mark.parametrize("header_name", [
@@ -1164,7 +1168,8 @@ def test_get_rejects_inconsistent_resumed_response(
     assert not temporary.exists()
 
 
-def test_get_reports_object_change_during_resume(s3_environment, tmp_path):
+@pytest.mark.parametrize("hash_enabled", [False, True])
+def test_get_reports_object_change_during_resume(s3_environment, tmp_path, hash_enabled):
     data = bytes(range(227)) * 197
     cutoff = 11239
     etag = '"original-object"'
@@ -1197,6 +1202,7 @@ def test_get_reports_object_change_during_resume(s3_environment, tmp_path):
     temporary = tmp_path / f"{destination.name}.tmp"
     original = b"existing destination"
     destination.write_bytes(original)
+    os.setxattr(destination, "user.s3ar.hash", hash_value(original))
 
     with FaultServer(steps) as server:
         environment = s3_environment.copy()
@@ -1204,6 +1210,7 @@ def test_get_reports_object_change_during_resume(s3_environment, tmp_path):
         result = subprocess.run(
             [
                 str(EXECUTABLE),
+                *(["--hash"] if hash_enabled else []),
                 "-f",
                 str(destination),
                 "-t",
@@ -1222,6 +1229,7 @@ def test_get_reports_object_change_during_resume(s3_environment, tmp_path):
     assert b"HTTP 412" in result.stderr
     assert b"after 2 attempts" in result.stderr
     assert destination.read_bytes() == original
+    assert os.getxattr(destination, "user.s3ar.hash") == hash_value(original)
     assert not temporary.exists()
 
 
@@ -1749,3 +1757,190 @@ def test_get_overwrite_uses_temporary_mode(s3_environment, tmp_path):
     assert result.returncode == 0, result.stderr.decode()
     assert destination.read_bytes() == b"new data"
     assert stat.S_IMODE(destination.stat().st_mode) == 0o600
+
+
+def hash_value(body):
+    import hashlib
+    return ("sha512:" + hashlib.sha512(body).hexdigest()).encode()
+
+
+@pytest.mark.parametrize("body", [b"", bytes(range(256)) * 300], ids=["empty", "binary"])
+@pytest.mark.parametrize("output", ["file", "stdout", "pipe", "disabled"])
+def test_get_saves_hash(s3_environment, tmp_path, body, output):
+    path = tmp_path / "download"
+    steps = [ResponseStep("GET", "/bucket/key", 200, body,
+                          headers=(("ETag", '"download"'),))]
+    args = [str(EXECUTABLE), "-v"]
+    if output != "disabled":
+        args.append("--hash")
+    if output in ("file", "disabled"):
+        args.extend(["-f", str(path)])
+    args.append("s3://bucket/key")
+    with FaultServer(steps) as server:
+        environment = {**s3_environment, "S3AR_ENDPOINT": server.endpoint}
+        if output == "stdout":
+            with path.open("wb") as stream:
+                result = subprocess.run(args, stdout=stream, stderr=subprocess.PIPE,
+                                        env=environment, timeout=10)
+        else:
+            result = subprocess.run(args, capture_output=True,
+                                    env=environment, timeout=10)
+    assert result.returncode == 0, result.stderr.decode()
+    assert b"warning:" not in result.stderr
+    if output == "pipe":
+        assert result.stdout == body
+    else:
+        assert path.read_bytes() == body
+        assert os.getxattr(path, "user.s3ar.hash") == (
+            b"none" if output == "disabled" else hash_value(body))
+    if output != "disabled":
+        assert hash_value(body) in result.stderr
+
+
+@pytest.mark.parametrize("cached_hash", ["valid", "mismatch", "missing", "none",
+                                        "invalid", "uppercase", "oversized"])
+def test_get_hash_controls_conditional_cache(s3_environment, tmp_path, cached_hash):
+    path = tmp_path / "download"
+    path.write_bytes(b"old")
+    for name, value in (("format", b"1"), ("bucket", b"bucket"),
+                        ("key", b"key"), ("etag", b'"old"')):
+        os.setxattr(path, "user.s3ar." + name, value)
+    values = {"valid": hash_value(b"old"), "mismatch": hash_value(b"other"),
+              "none": b"none", "invalid": b"sha512:" + b"z" * 128,
+              "uppercase": hash_value(b"old").upper(), "oversized": b"x" * 200}
+    if cached_hash != "missing":
+        os.setxattr(path, "user.s3ar.hash", values[cached_hash])
+    before = path.stat()
+    matching = cached_hash == "valid"
+    steps = [ResponseStep("GET", "/bucket/key", 304 if matching else 200,
+                          b"" if matching else b"new",
+                          headers=() if matching else (("ETag", '"new"'),),
+                          expected_headers=(("If-None-Match", '"old"'),) if matching else (),
+                          absent_headers=() if matching else ("If-None-Match",))]
+    with FaultServer(steps) as server:
+        result = subprocess.run(
+            [str(EXECUTABLE), "--hash", "-f", str(path), "s3://bucket/key"],
+            capture_output=True, timeout=10,
+            env={**s3_environment, "S3AR_ENDPOINT": server.endpoint})
+    assert result.returncode == 0, result.stderr.decode()
+    assert path.read_bytes() == (b"old" if matching else b"new")
+    assert os.getxattr(path, "user.s3ar.hash") == hash_value(path.read_bytes())
+    assert os.getxattr(path, "user.s3ar.etag") == (b'"old"' if matching else b'"new"')
+    if matching:
+        assert path.stat().st_ino == before.st_ino
+        assert path.stat().st_mtime_ns == before.st_mtime_ns
+    assert not list(tmp_path.glob("download.tmp.*"))
+
+
+@pytest.mark.parametrize("hash_enabled", [False, True])
+@pytest.mark.parametrize("mode", ["append", "offset", "tail"])
+def test_get_hash_skips_partial_stdout(s3_environment, tmp_path, mode, hash_enabled):
+    path = tmp_path / "download"
+    path.write_bytes(b"original content")
+    seed_stdout_xattrs(path)
+    steps = [ResponseStep("GET", "/bucket/key", 200, b"new",
+                          headers=(("ETag", '"new"'),))]
+    with FaultServer(steps) as server, path.open("ab" if mode == "append" else "r+b") as stream:
+        if mode == "offset":
+            stream.seek(2)
+        result = subprocess.run(
+            [str(EXECUTABLE), *(["--hash"] if hash_enabled else []), "s3://bucket/key"], stdout=stream,
+            stderr=subprocess.PIPE, timeout=10,
+            env={**s3_environment, "S3AR_ENDPOINT": server.endpoint})
+    assert result.returncode == 0, result.stderr.decode()
+    assert b"skipping xattrs" in result.stderr
+    assert os.listxattr(path) == ["user.other"]
+    assert os.getxattr(path, "user.other") == b"preserved"
+
+
+@pytest.mark.parametrize("hash_enabled", [False, True])
+@pytest.mark.parametrize("body", [b"", b"object B"])
+def test_get_stdout_invalidates_cached_identity(
+    s3_environment, tmp_path, hash_enabled, body
+):
+    path = tmp_path / "download"
+    original = b"object A"
+    steps = [
+        ResponseStep("GET", "/bucket/a", 200, original,
+                     headers=(("ETag", '"etag-a"'),)),
+        ResponseStep("GET", "/bucket/b", 200, body,
+                     headers=(("ETag", '"etag-b"'),)),
+        ResponseStep("GET", "/bucket/a", 200, original,
+                     headers=(("ETag", '"etag-a"'),),
+                     absent_headers=("If-None-Match",)),
+    ]
+    with FaultServer(steps) as server:
+        environment = {**s3_environment, "S3AR_ENDPOINT": server.endpoint}
+        file_args = [str(EXECUTABLE), "--hash", "-f", str(path), "s3://bucket/a"]
+        result = subprocess.run(file_args, capture_output=True,
+                                env=environment, timeout=10)
+        assert result.returncode == 0, result.stderr.decode()
+        os.setxattr(path, "user.s3ar.metadata.old", b"stale")
+        os.setxattr(path, "user.s3ar.future-attribute", b"stale")
+        os.setxattr(path, "user.other", b"preserved")
+        with path.open("wb") as stream:
+            result = subprocess.run(
+                [str(EXECUTABLE), *(["--hash"] if hash_enabled else []),
+                 "s3://bucket/b"], stdout=stream, stderr=subprocess.PIPE,
+                env=environment, timeout=10)
+        assert result.returncode == 0, result.stderr.decode()
+        assert path.read_bytes() == body
+        assert {name: os.getxattr(path, name) for name in os.listxattr(path)} == {
+            "user.s3ar.format": b"1", "user.s3ar.bucket": b"bucket",
+            "user.s3ar.key": b"b", "user.s3ar.etag": b'"etag-b"',
+            "user.s3ar.hash": hash_value(body) if hash_enabled else b"none",
+            "user.other": b"preserved",
+        }
+        result = subprocess.run(file_args, capture_output=True,
+                                env=environment, timeout=10)
+        assert result.returncode == 0, result.stderr.decode()
+    assert path.read_bytes() == original
+    assert os.getxattr(path, "user.s3ar.hash") == hash_value(original)
+
+
+@pytest.mark.parametrize("hash_enabled", [False, True])
+def test_get_failed_stdout_invalidates_cached_identity(s3_environment, tmp_path, hash_enabled):
+    path = tmp_path / "download"
+    path.write_bytes(b"previous object")
+    seed_stdout_xattrs(path)
+    steps = [ResponseStep("GET", "/bucket/key", 404)]
+    with FaultServer(steps) as server, path.open("wb") as stream:
+        result = subprocess.run(
+            [str(EXECUTABLE), *(["--hash"] if hash_enabled else []), "s3://bucket/key"], stdout=stream,
+            stderr=subprocess.PIPE, timeout=10,
+            env={**s3_environment, "S3AR_ENDPOINT": server.endpoint})
+    assert result.returncode != 0
+    assert os.listxattr(path) == ["user.other"]
+    assert os.getxattr(path, "user.other") == b"preserved"
+
+
+def seed_stdout_xattrs(path):
+    for name in ("format", "bucket", "key", "etag", "hash", "bucket-acl",
+                 "metadata.old", "future-attribute"):
+        os.setxattr(path, "user.s3ar." + name, b"stale")
+    os.setxattr(path, "user.other", b"preserved")
+
+
+@pytest.mark.parametrize("etag", [None, "invalid"])
+def test_get_stdout_without_valid_etag_drops_old_identity(s3_environment, tmp_path, etag):
+    path = tmp_path / "download"
+    path.write_bytes(b"old")
+    seed_stdout_xattrs(path)
+    body = b"new"
+    steps = [ResponseStep("GET", "/bucket/key", 200, body,
+                          headers=() if etag is None else (("ETag", etag),))]
+    with FaultServer(steps) as server, path.open("wb") as stream:
+        result = subprocess.run(
+            [str(EXECUTABLE), "--hash", "s3://bucket/key"], stdout=stream,
+            stderr=subprocess.PIPE, timeout=10,
+            env={**s3_environment, "S3AR_ENDPOINT": server.endpoint})
+    if etag is None:
+        assert result.returncode != 0
+        assert b"lacks Content-Length or ETag" in result.stderr
+        assert os.listxattr(path) == ["user.other"]
+        return
+    assert result.returncode == 0, result.stderr.decode()
+    assert path.read_bytes() == body
+    assert {name: os.getxattr(path, name) for name in os.listxattr(path)} == {
+        "user.s3ar.hash": hash_value(body), "user.other": b"preserved",
+    }
