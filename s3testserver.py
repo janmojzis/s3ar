@@ -12,7 +12,7 @@ import threading
 import warnings
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from urllib.parse import parse_qs, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 
 import boto3
 from botocore.exceptions import ClientError
@@ -201,6 +201,13 @@ class FilesystemStore:
             raise
         self._replace_metadata(bucket, key, metadata)
 
+    def _delete_object(self, bucket, key):
+        target = self.object_path(bucket, key)
+        if target is None:
+            raise OSError("object key cannot be represented on the filesystem")
+        target.unlink(missing_ok=True)
+        self._replace_metadata(bucket, key, {})
+
     def _initiate_upload(self, bucket, key, headers, response_body):
         root = ET.fromstring(response_body)
         upload_id = next(
@@ -316,14 +323,7 @@ class FilesystemStore:
             elif method == "PUT" and not query:
                 self._write_object(bucket, key, body, self._metadata(headers))
             elif method == "DELETE" and not query:
-                target = self.object_path(bucket, key)
-                if target is None:
-                    raise OSError("object key cannot be represented on the filesystem")
-                try:
-                    target.unlink()
-                except FileNotFoundError:
-                    pass
-                self._replace_metadata(bucket, key, {})
+                self._delete_object(bucket, key)
 
 
 class PersistenceMiddleware:
@@ -331,8 +331,8 @@ class PersistenceMiddleware:
         self.app = app
         self.store = store
 
-    def _read_copy(self, environ, source, multipart):
-        """Read copied bytes from Moto directly, without re-entering persistence."""
+    def _read_object(self, environ, source=None, byte_range=None, etag=None):
+        """Read the visible object from Moto without re-entering persistence."""
         read_environ = environ.copy()
         read_environ["REQUEST_METHOD"] = "GET"
         read_environ["CONTENT_LENGTH"] = "0"
@@ -343,7 +343,7 @@ class PersistenceMiddleware:
             }:
                 del read_environ[name]
         read_environ["QUERY_STRING"] = ""
-        if multipart:
+        if source is not None:
             parsed = urlsplit(source)
             read_environ["PATH_INFO"] = (
                 ("/" + unquote(parsed.path).lstrip("/")).encode("utf-8").decode("latin-1")
@@ -351,12 +351,10 @@ class PersistenceMiddleware:
             read_environ["QUERY_STRING"] = parsed.query
             read_environ["RAW_URI"] = "/" + source.lstrip("/")
             read_environ["REQUEST_URI"] = read_environ["RAW_URI"]
-            if "HTTP_X_AMZ_COPY_SOURCE_RANGE" in environ:
-                read_environ["HTTP_RANGE"] = environ["HTTP_X_AMZ_COPY_SOURCE_RANGE"]
-            if "HTTP_X_AMZ_COPY_SOURCE_IF_MATCH" in environ:
-                read_environ["HTTP_IF_MATCH"] = environ["HTTP_X_AMZ_COPY_SOURCE_IF_MATCH"]
-        # CopyObject reads its completed destination, including COPY/REPLACE
-        # metadata. UploadPartCopy reads the source version and requested range.
+        if byte_range is not None:
+            read_environ["HTTP_RANGE"] = byte_range
+        if etag is not None:
+            read_environ["HTTP_IF_MATCH"] = etag
         captured = {}
         with tempfile.TemporaryFile() as empty_input:
             read_environ["wsgi.input"] = empty_input
@@ -376,13 +374,61 @@ class PersistenceMiddleware:
                     close = getattr(response, "close", None)
                     if close is not None:
                         close()
-                if int(captured["status"].split(" ", 1)[0]) not in {200, 206}:
-                    raise OSError("cannot read copied object from Moto")
+                status = int(captured["status"].split(" ", 1)[0])
+                if status == 404:
+                    copied.close()
+                    return None, captured["headers"]
+                if status not in {200, 206}:
+                    raise OSError("cannot read object from Moto")
                 copied.seek(0)
                 return copied, captured["headers"]
             except BaseException:
                 copied.close()
                 raise
+
+    def _persist_deletions(self, environ, body, response_body):
+        parameters = parse_qs(environ.get("QUERY_STRING", ""), keep_blank_values=True)
+        path = environ["PATH_INFO"].encode("latin-1").decode("utf-8")
+        bucket, _, key = path.lstrip("/").partition("/")
+        keys = set()
+        if environ["REQUEST_METHOD"] == "POST" and not key and "delete" in parameters:
+            # Quiet replies omit successful items. Subtract only explicit errors
+            # from the request, then reconcile each affected key once.
+            body.seek(0)
+            request = ET.parse(body).getroot()
+            response = ET.fromstring(response_body)
+
+            def identity(node):
+                fields = {child.tag.rsplit("}", 1)[-1]: child.text for child in node}
+                return fields.get("Key"), fields.get("VersionId")
+
+            errors = {
+                identity(node) for node in response
+                if node.tag.rsplit("}", 1)[-1] == "Error"
+            }
+            keys = {
+                identity(node)[0] for node in request
+                if node.tag.rsplit("}", 1)[-1] == "Object" and identity(node) not in errors
+            }
+        elif (
+            environ["REQUEST_METHOD"] == "DELETE" and key
+            and set(parameters) == {"versionId"}
+        ):
+            keys.add(key)
+        for key in keys:
+            if not key:
+                raise OSError("delete request has no object key")
+            source = "/" + quote(bucket, safe="") + "/" + quote(key, safe="/")
+            current, headers = self._read_object(environ, source)
+            if current is None:
+                self.store._delete_object(bucket, key)
+            else:
+                # Deleting a version can expose an older object. The disk store
+                # mirrors the visible object, rather than a version history.
+                with current:
+                    self.store._write_object(
+                        bucket, key, current, self.store._metadata(headers)
+                    )
 
     def __call__(self, environ, start_response):
         if environ.get("REQUEST_METHOD", "") not in {"PUT", "POST", "DELETE"}:
@@ -439,11 +485,18 @@ class PersistenceMiddleware:
                 if method == "PUT" and source is not None:
                     parameters = parse_qs(environ.get("QUERY_STRING", ""))
                     multipart = "uploadId" in parameters
-                    copied, copied_headers = self._read_copy(environ, source, multipart)
+                    copied, copied_headers = self._read_object(
+                        environ, source if multipart else None,
+                        environ.get("HTTP_X_AMZ_COPY_SOURCE_RANGE") if multipart else None,
+                        environ.get("HTTP_X_AMZ_COPY_SOURCE_IF_MATCH") if multipart else None,
+                    )
+                    if copied is None:
+                        raise OSError("cannot read copied object from Moto")
                     body.close()
                     body = copied
                     if not multipart:
                         headers = copied_headers
+                self._persist_deletions(environ, body, response_body)
                 self.store.apply(
                     method,
                     environ.get("PATH_INFO", ""),

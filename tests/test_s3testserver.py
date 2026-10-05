@@ -1,3 +1,4 @@
+import io
 import json
 import os
 import subprocess
@@ -13,6 +14,7 @@ from s3testserver import (
     SECRET_KEY,
     FilesystemMotoServer,
     FilesystemStore,
+    PersistenceMiddleware,
     load_filesystem_into_moto,
 )
 
@@ -385,4 +387,172 @@ def test_cli_copy_persists_to_filesystem(tmp_path, size):
         assert store.metadata_for("cli-copy", "copied") == {"source": "cli"}
     finally:
         server.stop()
+        store.database.close()
+
+
+def assert_restarted_objects(root, bucket, expected):
+    s3_backends.reset()
+    store = FilesystemStore(root)
+    server = FilesystemMotoServer(store, "127.0.0.1", 0)
+    server.start()
+    endpoint, client = server_client(server)
+    try:
+        load_filesystem_into_moto(store, endpoint)
+        objects = client.list_objects_v2(Bucket=bucket).get("Contents", [])
+        assert {item["Key"] for item in objects} == set(expected)
+        for key, (body, metadata) in expected.items():
+            response = client.get_object(Bucket=bucket, Key=key)
+            assert response["Body"].read() == body
+            assert response["Metadata"] == metadata
+    finally:
+        server.stop()
+        store.database.close()
+
+
+@pytest.mark.parametrize("mode", ["version", "batch", "quiet-batch"])
+@pytest.mark.parametrize("key", ["plain", "prefix/café %2F?key"])
+def test_server_persists_null_version_deletion_across_restart(tmp_path, mode, key):
+    store = FilesystemStore(tmp_path)
+    server = FilesystemMotoServer(store, "127.0.0.1", 0)
+    server.start()
+    _, client = server_client(server)
+    bucket = "persist-delete"
+    survivor = (b"keep", {"source": "untouched"})
+    try:
+        client.create_bucket(Bucket=bucket)
+        client.put_object(Bucket=bucket, Key=key, Body=b"delete", Metadata={"source": "deleted"})
+        client.put_object(Bucket=bucket, Key="keep", Body=survivor[0], Metadata=survivor[1])
+        if mode == "version":
+            client.delete_object(Bucket=bucket, Key=key, VersionId="null")
+        else:
+            response = client.delete_objects(
+                Bucket=bucket, Delete={"Objects": [{"Key": key, "VersionId": "null"},
+                                                  {"Key": "missing"}],
+                                       "Quiet": mode == "quiet-batch"},
+            )
+            assert not response.get("Errors")
+        assert not (tmp_path / bucket / key).exists()
+        assert store.metadata_for(bucket, key) == {}
+        assert client.get_object(Bucket=bucket, Key="keep")["Body"].read() == survivor[0]
+    finally:
+        server.stop()
+        store.database.close()
+    assert_restarted_objects(tmp_path, bucket, {"keep": survivor})
+
+
+@pytest.mark.parametrize("batch", [False, True])
+@pytest.mark.parametrize("deleted", ["older", "latest", "marker"])
+def test_server_version_deletion_mirrors_visible_object(tmp_path, batch, deleted):
+    store = FilesystemStore(tmp_path)
+    server = FilesystemMotoServer(store, "127.0.0.1", 0)
+    server.start()
+    _, client = server_client(server)
+    bucket, key = "persist-version-delete", "object"
+    older = (b"old", {"source": "older"})
+    latest = (b"new", {"source": "latest"})
+    try:
+        client.create_bucket(Bucket=bucket)
+        client.put_bucket_versioning(Bucket=bucket, VersioningConfiguration={"Status": "Enabled"})
+        versions = []
+        for body, metadata in (older, latest):
+            versions.append(client.put_object(
+                Bucket=bucket, Key=key, Body=body, Metadata=metadata
+            )["VersionId"])
+        if deleted == "marker":
+            version_id = client.delete_object(Bucket=bucket, Key=key)["VersionId"]
+            expected = latest
+        else:
+            version_id = versions[0 if deleted == "older" else 1]
+            expected = latest if deleted == "older" else older
+        if batch:
+            response = client.delete_objects(
+                Bucket=bucket, Delete={"Objects": [{"Key": key, "VersionId": version_id}]}
+            )
+            assert not response.get("Errors")
+        else:
+            client.delete_object(Bucket=bucket, Key=key, VersionId=version_id)
+        response = client.get_object(Bucket=bucket, Key=key)
+        assert response["Body"].read() == expected[0]
+        assert response["Metadata"] == expected[1]
+        assert (tmp_path / bucket / key).read_bytes() == expected[0]
+        assert store.metadata_for(bucket, key) == expected[1]
+    finally:
+        server.stop()
+        store.database.close()
+    assert_restarted_objects(tmp_path, bucket, {key: expected})
+
+
+def test_cli_delete_persists_prefix_deletion_across_restart(tmp_path):
+    store = FilesystemStore(tmp_path)
+    server = FilesystemMotoServer(store, "127.0.0.1", 0)
+    server.start()
+    endpoint, client = server_client(server)
+    bucket = "cli-persist-delete"
+    deleted_keys = ["prefix/one", "prefix/café %2F?key"]
+    survivor = (b"keep", {"source": "untouched"})
+    try:
+        client.create_bucket(Bucket=bucket)
+        for key in deleted_keys:
+            client.put_object(Bucket=bucket, Key=key, Body=b"delete", Metadata={"source": "cli"})
+        client.put_object(Bucket=bucket, Key="prefix-other", Body=survivor[0], Metadata=survivor[1])
+        result = subprocess.run(
+            [str(Path(__file__).resolve().parents[1] / "s3ar-delete"), f"s3://{bucket}/prefix"],
+            env={**os.environ, "S3AR_ENDPOINT": endpoint, "S3AR_URI_STYLE": "path",
+                 "S3AR_REGION": "us-east-1", "S3AR_ACCESS_KEY": ACCESS_KEY,
+                 "S3AR_SECRET_KEY": SECRET_KEY, "S3AR_SESSION_TOKEN": ""},
+            capture_output=True, timeout=30,
+        )
+        assert result.returncode == 0, result.stderr.decode()
+        for key in deleted_keys:
+            assert not (tmp_path / bucket / key).exists()
+            assert store.metadata_for(bucket, key) == {}
+    finally:
+        server.stop()
+        store.database.close()
+    assert_restarted_objects(tmp_path, bucket, {"prefix-other": survivor})
+
+
+@pytest.mark.parametrize("quiet", [False, True])
+def test_batch_delete_preserves_failed_items(tmp_path, quiet):
+    from werkzeug.test import Client
+    from werkzeug.wrappers import Response
+
+    store = FilesystemStore(tmp_path)
+    metadata = {"source": "failed item"}
+    store._write_object("partial-delete", "failed", io.BytesIO(b"keep"), metadata)
+    store._write_object("partial-delete", "deleted", io.BytesIO(b"remove"), {})
+    reads = []
+
+    def app(environ, start_response):
+        if environ["REQUEST_METHOD"] == "POST":
+            successful = "" if quiet else "<Deleted><Key>deleted</Key></Deleted>"
+            body = (
+                '<DeleteResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+                + successful + '<Error><Key>failed</Key><VersionId>null</VersionId>'
+                '<Code>AccessDenied</Code></Error></DeleteResult>'
+            ).encode()
+            start_response("200 OK", [("Content-Type", "application/xml")])
+            return [body]
+        assert environ["PATH_INFO"] == "/partial-delete/deleted"
+        reads.append(environ["PATH_INFO"])
+        start_response("404 Not Found", [])
+        return [b""]
+
+    client = Client(PersistenceMiddleware(app, store), Response)
+    try:
+        request = (
+            '<Delete xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+            '<Object><Key>failed</Key><VersionId>null</VersionId></Object>'
+            '<Object><Key>deleted</Key></Object><Object><Key>deleted</Key></Object>'
+            f'<Quiet>{str(quiet).lower()}</Quiet></Delete>'
+        )
+        response = client.post("/partial-delete?delete", data=request,
+                               content_type="application/xml")
+        assert response.status_code == 200
+        assert b"AccessDenied" in response.data
+        assert reads == ["/partial-delete/deleted"]
+        assert not (tmp_path / "partial-delete/deleted").exists()
+        assert (tmp_path / "partial-delete/failed").read_bytes() == b"keep"
+        assert store.metadata_for("partial-delete", "failed") == metadata
+    finally:
         store.database.close()

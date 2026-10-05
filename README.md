@@ -431,6 +431,8 @@ export S3AR_SECRET_KEY='test-secret'
 
 The test server reads the filesystem tree only at startup. Restart it after
 changing anything directly in the test-data directory.
+The filesystem store mirrors currently visible objects. Object version history
+and bucket versioning settings are not preserved across restarts.
 
 The directory tree cannot represent every valid S3 key. In particular, an
 object named `a` cannot coexist with an object below `a/`, and keys containing
