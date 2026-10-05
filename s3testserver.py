@@ -12,7 +12,7 @@ import threading
 import warnings
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, unquote, urlsplit
 
 import boto3
 from botocore.exceptions import ClientError
@@ -177,7 +177,10 @@ class FilesystemStore:
 
     @staticmethod
     def _copy_source(headers):
-        return any(name.lower() == "x-amz-copy-source" for name, _value in headers)
+        return next(
+            (value for name, value in headers if name.lower() == "x-amz-copy-source"),
+            None,
+        )
 
     def _write_object(self, bucket, key, body, metadata):
         target = self.object_path(bucket, key)
@@ -310,7 +313,7 @@ class FilesystemStore:
                 self._complete_upload(upload_id, body)
             elif method == "DELETE" and upload_id is not None:
                 self._remove_upload(upload_id)
-            elif method == "PUT" and not query and not self._copy_source(headers):
+            elif method == "PUT" and not query:
                 self._write_object(bucket, key, body, self._metadata(headers))
             elif method == "DELETE" and not query:
                 target = self.object_path(bucket, key)
@@ -328,9 +331,69 @@ class PersistenceMiddleware:
         self.app = app
         self.store = store
 
+    def _read_copy(self, environ, source, multipart):
+        """Read copied bytes from Moto directly, without re-entering persistence."""
+        read_environ = environ.copy()
+        read_environ["REQUEST_METHOD"] = "GET"
+        read_environ["CONTENT_LENGTH"] = "0"
+        # Keep the host and authorization so the read uses the same S3 account.
+        for name in list(read_environ):
+            if name.startswith("HTTP_") and name not in {
+                "HTTP_HOST", "HTTP_AUTHORIZATION", "HTTP_X_AMZ_SECURITY_TOKEN"
+            }:
+                del read_environ[name]
+        read_environ["QUERY_STRING"] = ""
+        if multipart:
+            parsed = urlsplit(source)
+            read_environ["PATH_INFO"] = (
+                ("/" + unquote(parsed.path).lstrip("/")).encode("utf-8").decode("latin-1")
+            )
+            read_environ["QUERY_STRING"] = parsed.query
+            read_environ["RAW_URI"] = "/" + source.lstrip("/")
+            read_environ["REQUEST_URI"] = read_environ["RAW_URI"]
+            if "HTTP_X_AMZ_COPY_SOURCE_RANGE" in environ:
+                read_environ["HTTP_RANGE"] = environ["HTTP_X_AMZ_COPY_SOURCE_RANGE"]
+            if "HTTP_X_AMZ_COPY_SOURCE_IF_MATCH" in environ:
+                read_environ["HTTP_IF_MATCH"] = environ["HTTP_X_AMZ_COPY_SOURCE_IF_MATCH"]
+        # CopyObject reads its completed destination, including COPY/REPLACE
+        # metadata. UploadPartCopy reads the source version and requested range.
+        captured = {}
+        with tempfile.TemporaryFile() as empty_input:
+            read_environ["wsgi.input"] = empty_input
+
+            def remember_status(status, headers, exc_info=None):
+                captured["status"] = status
+                captured["headers"] = headers
+                return copied.write
+
+            copied = tempfile.TemporaryFile()
+            try:
+                response = self.app(read_environ, remember_status)
+                try:
+                    for chunk in response:
+                        copied.write(chunk)
+                finally:
+                    close = getattr(response, "close", None)
+                    if close is not None:
+                        close()
+                if int(captured["status"].split(" ", 1)[0]) not in {200, 206}:
+                    raise OSError("cannot read copied object from Moto")
+                copied.seek(0)
+                return copied, captured["headers"]
+            except BaseException:
+                copied.close()
+                raise
+
     def __call__(self, environ, start_response):
+        if environ.get("REQUEST_METHOD", "") not in {"PUT", "POST", "DELETE"}:
+            return self.app(environ, start_response)
+        # Keep the Moto mutation and its copy snapshot in the same critical
+        # section: another write must not replace the source between them.
+        with self.store.lock:
+            return self._persist_request(environ, start_response)
+
+    def _persist_request(self, environ, start_response):
         method = environ.get("REQUEST_METHOD", "")
-        mutating = method in {"PUT", "POST", "DELETE"}
         body = None
         if method in {"PUT", "POST"}:
             body = tempfile.TemporaryFile()
@@ -359,9 +422,7 @@ class PersistenceMiddleware:
             captured["exc_info"] = exc_info
             return lambda _data: None
 
-        response = self.app(environ, remember_status if mutating else start_response)
-        if not mutating:
-            return response
+        response = self.app(environ, remember_status)
         try:
             response_body = b"".join(response)
         finally:
@@ -373,11 +434,21 @@ class PersistenceMiddleware:
             try:
                 if body is None:
                     body = tempfile.TemporaryFile()
+                headers = environ.get("s3test.raw_headers", [])
+                source = self.store._copy_source(headers)
+                if method == "PUT" and source is not None:
+                    parameters = parse_qs(environ.get("QUERY_STRING", ""))
+                    multipart = "uploadId" in parameters
+                    copied, copied_headers = self._read_copy(environ, source, multipart)
+                    body.close()
+                    body = copied
+                    if not multipart:
+                        headers = copied_headers
                 self.store.apply(
                     method,
                     environ.get("PATH_INFO", ""),
                     environ.get("QUERY_STRING", ""),
-                    environ.get("s3test.raw_headers", []),
+                    headers,
                     body,
                     response_body,
                 )
