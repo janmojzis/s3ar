@@ -11,6 +11,7 @@ import tempfile
 import threading
 import warnings
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 
@@ -145,7 +146,73 @@ class FilesystemStore:
             "INSERT INTO metadata VALUES (?, ?, ?, ?)",
             ((bucket, key, name, value) for name, value in metadata.items()),
         )
-        self.database.commit()
+
+    @contextmanager
+    def _object_change(self, target):
+        """Roll back a file change if writing or committing metadata fails."""
+        backup = None
+        if target.exists():
+            fd, name = tempfile.mkstemp(prefix=".s3-object-", dir=target.parent)
+            os.close(fd)
+            backup = Path(name)
+            try:
+                backup.unlink()
+                os.link(target, backup)
+            except BaseException:
+                backup.unlink(missing_ok=True)
+                raise
+        try:
+            with self.database:
+                yield
+        except BaseException:
+            if backup is None:
+                target.unlink(missing_ok=True)
+            else:
+                os.replace(backup, target)
+            raise
+        finally:
+            if backup is not None:
+                backup.unlink(missing_ok=True)
+
+    def validate_request(self, method, path, query, body):
+        bucket, _, key = path.encode("latin-1").decode("utf-8").lstrip("/").partition("/")
+        if not bucket:
+            return
+        if bucket in {".", "..", STATE_DIRECTORY}:
+            raise OSError("bucket cannot be represented on the filesystem")
+        bucket_path = self.root / bucket
+        if bucket_path.is_symlink() or (bucket_path.exists() and not bucket_path.is_dir()):
+            raise OSError("bucket path is not a directory")
+        parameters = parse_qs(query, keep_blank_values=True)
+        # Aborting an upload only removes staged parts, even if its destination
+        # has since become impossible to represent on disk.
+        if method == "DELETE" and "uploadId" in parameters:
+            return
+        keys = [key] if key else []
+        if method == "POST" and not key and "delete" in parameters:
+            body.seek(0)
+            request = ET.parse(body).getroot()
+            for node in request:
+                if node.tag.rsplit("}", 1)[-1] == "Object":
+                    keys.extend(child.text for child in node
+                                if child.tag.rsplit("}", 1)[-1] == "Key")
+            body.seek(0)
+        for key in keys:
+            target = self.object_path(bucket, key)
+            if target is None:
+                raise OSError("object key cannot be represented on the filesystem")
+            # Check original components as well as the resolved target: aliases
+            # through symlinks must not change a different persisted object.
+            original = bucket_path / key
+            if any(component.is_symlink() for component in [original, *original.parents]):
+                raise OSError("object path contains a symlink")
+            if target.exists() and not target.is_file():
+                raise OSError("object path is not a regular file")
+            if any(parent.exists() and not parent.is_dir() for parent in target.parents):
+                raise OSError("object parent path is not a directory")
+        if method == "DELETE" and not key and not query and bucket_path.exists():
+            if any(bucket_path.iterdir()):
+                raise OSError("bucket directory is not empty")
 
     def object_path(self, bucket, key):
         if not bucket or not key or bucket in {".", "..", STATE_DIRECTORY}:
@@ -192,21 +259,23 @@ class FilesystemStore:
             with os.fdopen(fd, "wb") as stream:
                 body.seek(0)
                 shutil.copyfileobj(body, stream)
-            os.replace(temporary_name, target)
+            with self._object_change(target):
+                os.replace(temporary_name, target)
+                self._replace_metadata(bucket, key, metadata)
         except BaseException:
             try:
                 os.unlink(temporary_name)
             except FileNotFoundError:
                 pass
             raise
-        self._replace_metadata(bucket, key, metadata)
 
     def _delete_object(self, bucket, key):
         target = self.object_path(bucket, key)
         if target is None:
             raise OSError("object key cannot be represented on the filesystem")
-        target.unlink(missing_ok=True)
-        self._replace_metadata(bucket, key, {})
+        with self._object_change(target):
+            target.unlink(missing_ok=True)
+            self._replace_metadata(bucket, key, {})
 
     def _initiate_upload(self, bucket, key, headers, response_body):
         root = ET.fromstring(response_body)
@@ -330,6 +399,14 @@ class PersistenceMiddleware:
     def __init__(self, app, store):
         self.app = app
         self.store = store
+        self.persistence_failed = False
+
+    @staticmethod
+    def _error_response(start_response, status, message):
+        body = (message + "\n").encode()
+        start_response(status, [("Content-Type", "text/plain; charset=utf-8"),
+                                ("Content-Length", str(len(body)))])
+        return [body]
 
     def _read_object(self, environ, source=None, byte_range=None, etag=None):
         """Read the visible object from Moto without re-entering persistence."""
@@ -431,11 +508,13 @@ class PersistenceMiddleware:
                     )
 
     def __call__(self, environ, start_response):
-        if environ.get("REQUEST_METHOD", "") not in {"PUT", "POST", "DELETE"}:
-            return self.app(environ, start_response)
-        # Keep the Moto mutation and its copy snapshot in the same critical
-        # section: another write must not replace the source between them.
         with self.store.lock:
+            if self.persistence_failed:
+                return self._error_response(start_response, "503 Service Unavailable",
+                                            "filesystem persistence failed; restart required")
+            if environ.get("REQUEST_METHOD", "") not in {"PUT", "POST", "DELETE"}:
+                return self.app(environ, start_response)
+            # Serialize validation, Moto mutations and persistence snapshots.
             return self._persist_request(environ, start_response)
 
     def _persist_request(self, environ, start_response):
@@ -459,6 +538,15 @@ class PersistenceMiddleware:
             environ["wsgi.input"] = body
             environ["CONTENT_LENGTH"] = str(body.seek(0, os.SEEK_END))
             body.seek(0)
+
+        try:
+            self.store.validate_request(method, environ.get("PATH_INFO", ""),
+                                        environ.get("QUERY_STRING", ""), body)
+        except (OSError, ValueError, ET.ParseError) as error:
+            if body is not None:
+                body.close()
+            return self._error_response(start_response, "409 Conflict",
+                                        f"filesystem request rejected: {error}")
 
         captured = {}
 
@@ -506,8 +594,11 @@ class PersistenceMiddleware:
                     response_body,
                 )
             except (OSError, ValueError, ET.ParseError, sqlite3.Error) as error:
-                response_body = f"filesystem persistence failed: {error}\n".encode()
-                captured["status"] = "409 Conflict"
+                # Moto may already have changed versions or uploads. Stop
+                # serving its state until a restart reloads the disk mirror.
+                self.persistence_failed = True
+                response_body = f"filesystem persistence failed; restart required: {error}\n".encode()
+                captured["status"] = "503 Service Unavailable"
                 captured["headers"] = [
                     ("Content-Type", "text/plain; charset=utf-8"),
                     ("Content-Length", str(len(response_body))),

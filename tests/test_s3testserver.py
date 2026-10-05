@@ -19,7 +19,7 @@ from s3testserver import (
 )
 
 
-def server_client(server):
+def server_client(server, **options):
     host, port = server.get_host_and_port()
     endpoint = f"http://{host}:{port}"
     return endpoint, boto3.client(
@@ -28,6 +28,7 @@ def server_client(server):
         region_name="us-east-1",
         aws_access_key_id=ACCESS_KEY,
         aws_secret_access_key=SECRET_KEY,
+        **options,
     )
 
 
@@ -134,6 +135,11 @@ def test_server_returns_clean_error_for_filesystem_collision(tmp_path):
         with pytest.raises(ClientError) as failure:
             client.put_object(Bucket="collision-test", Key="a/b", Body=b"child")
         assert failure.value.response["ResponseMetadata"]["HTTPStatusCode"] == 409
+        assert client.get_object(Bucket="collision-test", Key="a")["Body"].read() == b"file"
+        with pytest.raises(ClientError) as missing:
+            client.get_object(Bucket="collision-test", Key="a/b")
+        assert missing.value.response["ResponseMetadata"]["HTTPStatusCode"] == 404
+        assert [item["Key"] for item in client.list_objects_v2(Bucket="collision-test")["Contents"]] == ["a"]
     finally:
         server.stop()
 
@@ -178,10 +184,12 @@ def test_server_rejects_normalized_aliases_without_overwriting_files(tmp_path, k
             client.put_object(Bucket=bucket, Key=key, Body=b"replacement")
         assert failure.value.response["ResponseMetadata"]["HTTPStatusCode"] == 409
         assert (tmp_path / bucket / "path/object").read_bytes() == b"original"
+        assert [item["Key"] for item in client.list_objects_v2(Bucket=bucket)["Contents"]] == ["path/object"]
         with pytest.raises(ClientError) as failure:
             client.delete_object(Bucket=bucket, Key=key)
         assert failure.value.response["ResponseMetadata"]["HTTPStatusCode"] == 409
         assert (tmp_path / bucket / "path/object").read_bytes() == b"original"
+        assert client.get_object(Bucket=bucket, Key="path/object")["Body"].read() == b"original"
     finally:
         server.stop()
 
@@ -198,6 +206,7 @@ def test_server_rejects_reserved_temporary_filenames(tmp_path, key):
             client.put_object(Bucket="reserved-key-test", Key=key, Body=b"data")
         assert failure.value.response["ResponseMetadata"]["HTTPStatusCode"] == 409
         assert not (tmp_path / "reserved-key-test" / key).exists()
+        assert not client.list_objects_v2(Bucket="reserved-key-test").get("Contents")
     finally:
         server.stop()
 
@@ -556,3 +565,164 @@ def test_batch_delete_preserves_failed_items(tmp_path, quiet):
         assert store.metadata_for("partial-delete", "failed") == metadata
     finally:
         store.database.close()
+
+
+@pytest.mark.parametrize("operation", ["copy", "multipart", "batch"])
+def test_server_rejects_collision_before_mutating_moto(tmp_path, operation):
+    store = FilesystemStore(tmp_path)
+    server = FilesystemMotoServer(store, "127.0.0.1", 0)
+    server.start()
+    _, client = server_client(server)
+    bucket = "preflight-collision"
+    try:
+        client.create_bucket(Bucket=bucket)
+        client.put_object(Bucket=bucket, Key="a", Body=b"original")
+        with pytest.raises(ClientError) as failure:
+            if operation == "copy":
+                client.copy_object(Bucket=bucket, Key="a/child",
+                                   CopySource={"Bucket": bucket, "Key": "a"})
+            elif operation == "multipart":
+                client.create_multipart_upload(Bucket=bucket, Key="a/child")
+            else:
+                client.delete_objects(Bucket=bucket, Delete={"Objects": [
+                    {"Key": "a"}, {"Key": "a/child"}
+                ]})
+        assert failure.value.response["ResponseMetadata"]["HTTPStatusCode"] == 409
+        assert client.get_object(Bucket=bucket, Key="a")["Body"].read() == b"original"
+        assert [item["Key"] for item in client.list_objects_v2(Bucket=bucket)["Contents"]] == ["a"]
+        assert not client.list_multipart_uploads(Bucket=bucket).get("Uploads")
+        assert (tmp_path / bucket / "a").read_bytes() == b"original"
+    finally:
+        server.stop()
+        store.database.close()
+
+
+def test_server_rejected_completion_keeps_upload_abortable(tmp_path):
+    store = FilesystemStore(tmp_path)
+    server = FilesystemMotoServer(store, "127.0.0.1", 0)
+    server.start()
+    _, client = server_client(server)
+    bucket, key = "preflight-complete", "parent/child"
+    try:
+        client.create_bucket(Bucket=bucket)
+        upload_id = client.create_multipart_upload(Bucket=bucket, Key=key)["UploadId"]
+        part = client.upload_part(Bucket=bucket, Key=key, UploadId=upload_id,
+                                  PartNumber=1, Body=b"part")
+        client.put_object(Bucket=bucket, Key="parent", Body=b"collision")
+        with pytest.raises(ClientError) as failure:
+            client.complete_multipart_upload(
+                Bucket=bucket, Key=key, UploadId=upload_id,
+                MultipartUpload={"Parts": [{"PartNumber": 1, "ETag": part["ETag"]}]},
+            )
+        assert failure.value.response["ResponseMetadata"]["HTTPStatusCode"] == 409
+        assert [item["Key"] for item in client.list_objects_v2(Bucket=bucket)["Contents"]] == ["parent"]
+        assert client.list_multipart_uploads(Bucket=bucket)["Uploads"][0]["UploadId"] == upload_id
+        client.abort_multipart_upload(Bucket=bucket, Key=key, UploadId=upload_id)
+        assert not client.list_multipart_uploads(Bucket=bucket).get("Uploads")
+        assert not list((tmp_path / ".s3testserver").glob("upload-part.*"))
+    finally:
+        server.stop()
+        store.database.close()
+
+
+@pytest.mark.parametrize("operation", ["put", "delete"])
+@pytest.mark.parametrize("failure_stage", ["metadata", "commit"])
+def test_server_persistence_failure_rolls_back_disk_and_blocks_requests(
+    tmp_path, monkeypatch, operation, failure_stage
+):
+    import sqlite3
+    from botocore.config import Config
+
+    store = FilesystemStore(tmp_path)
+    server = FilesystemMotoServer(store, "127.0.0.1", 0)
+    server.start()
+    _, client = server_client(server, config=Config(retries={"max_attempts": 0}))
+    bucket, key = "persistence-failure", "object"
+    original = (b"original", {"source": "original"})
+    try:
+        client.create_bucket(Bucket=bucket)
+        client.put_object(Bucket=bucket, Key=key, Body=original[0], Metadata=original[1])
+        if failure_stage == "commit":
+            store.database.execute("PRAGMA foreign_keys = ON")
+            store.database.execute("CREATE TABLE failure_parent (id INTEGER PRIMARY KEY)")
+            store.database.execute(
+                "CREATE TABLE failure_child (id INTEGER REFERENCES failure_parent(id) "
+                "DEFERRABLE INITIALLY DEFERRED)"
+            )
+        replace_metadata = store._replace_metadata
+
+        def fail_metadata(bucket, key, metadata):
+            replace_metadata(bucket, key, metadata)
+            if failure_stage == "metadata":
+                raise sqlite3.OperationalError("injected metadata failure")
+            # A deferred foreign key fails at the real SQLite commit, after
+            # the file operation and all metadata statements have succeeded.
+            store.database.execute("INSERT INTO failure_child VALUES (1)")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(store, "_replace_metadata", fail_metadata)
+            with pytest.raises(ClientError) as failure:
+                if operation == "put":
+                    client.put_object(Bucket=bucket, Key=key, Body=b"replacement")
+                else:
+                    client.delete_object(Bucket=bucket, Key=key)
+            assert failure.value.response["ResponseMetadata"]["HTTPStatusCode"] == 503
+        assert (tmp_path / bucket / key).read_bytes() == original[0]
+        assert store.metadata_for(bucket, key) == original[1]
+        assert not list((tmp_path / bucket).glob(".s3-object-*"))
+        for request in (
+            lambda: client.get_object(Bucket=bucket, Key=key),
+            lambda: client.list_objects_v2(Bucket=bucket),
+            lambda: client.put_object(Bucket=bucket, Key="another", Body=b"new"),
+        ):
+            with pytest.raises(ClientError) as failure:
+                request()
+            assert failure.value.response["ResponseMetadata"]["HTTPStatusCode"] == 503
+        assert not (tmp_path / bucket / "another").exists()
+    finally:
+        server.stop()
+        store.database.close()
+    assert_restarted_objects(tmp_path, bucket, {key: original})
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_server_file_write_failure_restores_disk_state(tmp_path, monkeypatch, existing):
+    from botocore.config import Config
+
+    store = FilesystemStore(tmp_path)
+    server = FilesystemMotoServer(store, "127.0.0.1", 0)
+    server.start()
+    _, client = server_client(server, config=Config(retries={"max_attempts": 0}))
+    bucket, key = "file-write-failure", "object"
+    original = (b"original", {"source": "original"})
+    target = tmp_path / bucket / key
+    replace = os.replace
+    try:
+        client.create_bucket(Bucket=bucket)
+        if existing:
+            client.put_object(Bucket=bucket, Key=key, Body=original[0], Metadata=original[1])
+        failed = False
+
+        def fail_replace(source, destination):
+            nonlocal failed
+            if Path(destination) == target and not failed:
+                failed = True
+                raise OSError("injected file write failure")
+            return replace(source, destination)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(os, "replace", fail_replace)
+            with pytest.raises(ClientError) as failure:
+                client.put_object(Bucket=bucket, Key=key, Body=b"replacement")
+            assert failure.value.response["ResponseMetadata"]["HTTPStatusCode"] == 503
+        if existing:
+            assert target.read_bytes() == original[0]
+            assert store.metadata_for(bucket, key) == original[1]
+        else:
+            assert not target.exists()
+            assert store.metadata_for(bucket, key) == {}
+        assert not list((tmp_path / bucket).glob(".s3-object-*"))
+    finally:
+        server.stop()
+        store.database.close()
+    assert_restarted_objects(tmp_path, bucket, {key: original} if existing else {})

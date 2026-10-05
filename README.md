@@ -438,7 +438,11 @@ The directory tree cannot represent every valid S3 key. In particular, an
 object named `a` cannot coexist with an object below `a/`, and keys containing
 empty, `.` or `..` path components are rejected. Final path components starting
 with `.s3-object-` are reserved for temporary files and are also rejected.
-Such writes return HTTP 409.
+Such requests return HTTP 409 before changing the Moto state.
+Unexpected filesystem or metadata database failures return HTTP 503. The server
+then refuses further reads and writes until its process is restarted and reloads
+the disk mirror. Failed object changes roll back their file and metadata;
+earlier successful items in a batch may already have been persisted.
 S3 user metadata is stored in `.s3testserver/metadata.sqlite3`; an existing
 `.s3testserver/metadata.json` is imported automatically on first use.
 
