@@ -1,6 +1,7 @@
 CC ?= cc
 .DEFAULT_GOAL := all
 AR ?= ar
+NM ?= nm
 PREFIX ?= /usr/local
 LIBDIR ?= $(PREFIX)/lib
 PANDOC ?= pandoc
@@ -56,7 +57,7 @@ DEPENDENCIES = $(OBJECTS:.o=.d)
 C_SOURCES = $(sort $(OBJECTS:.o=.c))
 PUBLIC_HEADERS = s3.h s3_log.h log.h
 
-.PHONY: all clean format-check install test install-libs man check-man
+.PHONY: all clean format-check install test install-libs man check-man check-symbols
 
 all: s3ar libs3.a liblog.a $(LINKS)
 
@@ -136,8 +137,11 @@ test-put-cancel: $(test-put-cancel_OBJECTS) libs3.a liblog.a
 
 TEST_PROGRAMS ?= all
 
+check-symbols: libs3.a liblog.a
+	NM="$(NM)" python3 tests/check_archive_symbols.py libs3.a liblog.a
+
 test: CFLAGS += -Werror
-test: $(C_TEST_PROGRAMS) $(TEST_PROGRAMS)
+test: $(C_TEST_PROGRAMS) $(TEST_PROGRAMS) check-symbols
 	@set -e; for program in $(C_TESTS); do ./$$program; done
 	pytest -q
 
