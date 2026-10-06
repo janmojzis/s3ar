@@ -3,6 +3,10 @@ CC ?= cc
 AR ?= ar
 PREFIX ?= /usr/local
 LIBDIR ?= $(PREFIX)/lib
+PANDOC ?= pandoc
+PANDOC_VERSION ?= 3.1.11.1
+# Markdown is the source of truth for all installed manuals.
+MAN_MARKDOWN = s3ar.md s3ar-copy.md s3ar-delete.md s3ar-get.md s3ar-list.md s3ar-put.md
 
 LIBXML_CPPFLAGS ?= -I/usr/include/libxml2
 CPPFLAGS += -D_POSIX_C_SOURCE=200809L -I. $(LIBXML_CPPFLAGS)
@@ -52,7 +56,7 @@ DEPENDENCIES = $(OBJECTS:.o=.d)
 C_SOURCES = $(sort $(OBJECTS:.o=.c))
 PUBLIC_HEADERS = s3.h s3_log.h log.h
 
-.PHONY: all clean format-check install test install-libs
+.PHONY: all clean format-check install test install-libs man check-man
 
 all: s3ar libs3.a liblog.a $(LINKS)
 
@@ -141,6 +145,13 @@ format-check:
 	clang-format --dry-run --Werror $(C_SOURCES) $(PUBLIC_HEADERS) \
 		s3_internal.h s3_xml.h s3_upload.h s3ar.h s3ar_io.h s3ar_config.h s3ar_parse.h s3ar_client.h \
 		s3ar_log.h s3ar_hash.h s3ar_xattr.h s3ar_interrupt.h s3ar_transform.h s3ar_selection.h s3ar_archive_reader.h fsyncfile.h main.h sig.h secure_free.h
+
+# Kept separate from all/install so building from Git needs no Pandoc.
+man:
+	PANDOC="$(PANDOC)" PANDOC_VERSION="$(PANDOC_VERSION)" sh scripts/generate-man.sh build $(MAN_MARKDOWN)
+
+check-man:
+	PANDOC="$(PANDOC)" PANDOC_VERSION="$(PANDOC_VERSION)" sh scripts/generate-man.sh check $(MAN_MARKDOWN)
 
 install-libs: libs3.a liblog.a
 	install -d $(DESTDIR)$(LIBDIR)/s3ar \
