@@ -61,16 +61,18 @@ static const struct option long_options[] = {
 };
 
 static void usage(void) {
-    log_usage(stderr, "Usage: s3ar-list [-v] [-b] [-o] [FIELDS] s3://[BUCKET[/KEY]]...\n"
-                      "List buckets and objects by default; -b lists only buckets,\n"
-                      "-o only objects, and -bo both. Bucket-only mode requires s3://.\n"
-                      "Fields: --object-size --object-mtime --object-etag --bucket-acl\n"
-                      "        --object-metadata --object-meta NAME (repeatable)\n"
-                      "  --delimiter STRING  Field separator (default: space)\n"
-                      "  -b, --buckets   Include buckets\n"
-                      "  -o, --objects   Include objects\n"
-                      "  -v, --verbose   Increase diagnostic verbosity only\n"
-                      "  -h, --help      Show this help\n");
+    log_usage(
+        stderr,
+        "Usage: s3ar-list [-v] [-b] [-o] [FIELDS] s3://[BUCKET[/KEY]]...\n"
+        "List buckets and objects by default; -b lists only buckets,\n"
+        "-o only objects, and -bo both. Bucket-only mode requires s3://.\n"
+        "Fields: --object-size --object-mtime --object-etag --bucket-acl\n"
+        "        --object-metadata --object-meta NAME (repeatable)\n"
+        "  --delimiter STRING  Field separator (default: space)\n"
+        "  -b, --buckets   Include buckets\n"
+        "  -o, --objects   Include objects\n"
+        "  -v, --verbose   Increase diagnostic verbosity only\n"
+        "  -h, --help      Show this help\n");
 }
 
 static _Noreturn void s3ar_list_exit(int status) {
@@ -125,14 +127,22 @@ static void set_delimiter(const char *value) {
         char c = *p;
         if (c == '\\') {
             switch (*++p) {
-            case 't': c = '\t'; break;
-            case 'n': c = '\n'; break;
-            case '0': c = '\0'; break;
-            case '\\': c = '\\'; break;
-            default:
-                free(decoded);
-                log_f1("invalid escape in --delimiter");
-                s3ar_list_exit(2);
+                case 't':
+                    c = '\t';
+                    break;
+                case 'n':
+                    c = '\n';
+                    break;
+                case '0':
+                    c = '\0';
+                    break;
+                case '\\':
+                    c = '\\';
+                    break;
+                default:
+                    free(decoded);
+                    log_f1("invalid escape in --delimiter");
+                    s3ar_list_exit(2);
             }
         }
         decoded[length++] = c;
@@ -196,26 +206,27 @@ static void output_object(const struct s3_object *object,
         const struct output_field *field = &fields[i];
         output_separator();
         switch (field->option) {
-        case OPT_OBJECT_SIZE:
-            fprintf(stdout, "%" PRIu64, object->size);
-            break;
-        case OPT_OBJECT_MTIME:
-            fprintf(stdout, "%" PRId64, object->last_modified);
-            break;
-        case OPT_OBJECT_ETAG:
-            if (object->etag != NULL) fputs(object->etag, stdout);
-            break;
-        case OPT_OBJECT_METADATA:
-            output_metadata(properties);
-            break;
-        case OPT_OBJECT_META:
-            for (size_t j = 0; j < properties->metadata_count; ++j) {
-                if (strcasecmp(field->name, properties->metadata[j].name) == 0) {
-                    fputs(properties->metadata[j].value, stdout);
-                    break;
+            case OPT_OBJECT_SIZE:
+                fprintf(stdout, "%" PRIu64, object->size);
+                break;
+            case OPT_OBJECT_MTIME:
+                fprintf(stdout, "%" PRId64, object->last_modified);
+                break;
+            case OPT_OBJECT_ETAG:
+                if (object->etag != NULL) fputs(object->etag, stdout);
+                break;
+            case OPT_OBJECT_METADATA:
+                output_metadata(properties);
+                break;
+            case OPT_OBJECT_META:
+                for (size_t j = 0; j < properties->metadata_count; ++j) {
+                    if (strcasecmp(field->name, properties->metadata[j].name) ==
+                        0) {
+                        fputs(properties->metadata[j].value, stdout);
+                        break;
+                    }
                 }
-            }
-            break;
+                break;
         }
     }
     fputc('\n', stdout);
@@ -272,8 +283,7 @@ static bool list_object(void *callback_data, const struct s3_object *object) {
 }
 
 static void list_selected_bucket(void *data, const struct s3_bucket *bucket) {
-    if (buckets)
-        (void) list_bucket_name(data, bucket);
+    if (buckets) (void) list_bucket_name(data, bucket);
 }
 
 static void s3ar_list_objects(const struct s3ar_config *config,
@@ -368,8 +378,7 @@ int main_s3ar_list(int argc, char **argv) {
     }
 
     /* validate selection */
-    if (!buckets && !objects)
-        buckets = objects = true;
+    if (!buckets && !objects) buckets = objects = true;
     if (!objects && field_count > 0) {
         log_f1("object fields require object output");
         s3ar_list_exit(2);

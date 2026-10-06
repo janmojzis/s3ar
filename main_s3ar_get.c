@@ -188,7 +188,7 @@ static bool verify_cached_hash(int source_fd) {
         return false;
     }
     s3ar_xattr_debug("user.s3ar.hash", expected, S3AR_HASH_TEXT_LENGTH,
-                      "verified");
+                     "verified");
     return true;
 read_error:
     log_w2("xattr cache: cannot verify SHA-512: ", log_errno());
@@ -286,18 +286,19 @@ static bool output_accepts_xattrs(void) {
 
 static void save_xattrs(void) {
     (void) s3ar_xattr_set(fd, "user.s3ar.hash", downloaded_hash,
-                         strlen(downloaded_hash));
+                          strlen(downloaded_hash));
     if (!etag_isvalid(downloaded_etag, strlen(downloaded_etag))) {
         log_w1("response ETag missing or invalid; skipping identity xattrs");
         return;
     }
     (void) s3ar_xattr_set(fd, "user.s3ar.format", S3AR_XATTR_FORMAT_VERSION,
-                         sizeof(S3AR_XATTR_FORMAT_VERSION) - 1);
+                          sizeof(S3AR_XATTR_FORMAT_VERSION) - 1);
     (void) s3ar_xattr_set(fd, "user.s3ar.bucket", encoded_bucket,
-                         strlen(encoded_bucket));
-    (void) s3ar_xattr_set(fd, "user.s3ar.key", encoded_key, strlen(encoded_key));
+                          strlen(encoded_bucket));
+    (void) s3ar_xattr_set(fd, "user.s3ar.key", encoded_key,
+                          strlen(encoded_key));
     (void) s3ar_xattr_set(fd, "user.s3ar.etag", downloaded_etag,
-                         strlen(downloaded_etag));
+                          strlen(downloaded_etag));
 }
 
 int main_s3ar_get(int argc, char **argv) {
@@ -449,9 +450,8 @@ int main_s3ar_get(int argc, char **argv) {
     struct s3ar_io_write_context output = {.fd = &fd,
                                            .interrupted = &interrupted_signal};
     result = s3_object_get_conditional(
-        client, &error, remember_etag, write_download,
-        &output, uri.bucket, uri.key,
-        cached_etag[0] != '\0' ? cached_etag : NULL);
+        client, &error, remember_etag, write_download, &output, uri.bucket,
+        uri.key, cached_etag[0] != '\0' ? cached_etag : NULL);
     check_interrupted();
     if (result == S3_RESULT_NOT_MODIFIED) {
         log_d1("S3 object not modified; keeping output");
