@@ -1,17 +1,50 @@
-.TH S3AR-COPY 1 "September 2026" "s3ar" "User Commands"
+.TH S3AR-COPY 1 "October 2026" "s3ar" "User Commands"
 .SH NAME
-s3ar-copy \- copy one S3 object on the server
+s3ar-copy \- copy S3 objects and prefix contents on the server
 .SH SYNOPSIS
 .B s3ar-copy
-.RB [ \-v | \-vv | \-vvv ]
-.RB [ \-\-create-bucket ]
-.RB [ \-\-multipart-size " SIZE" ]
-.I s3://SOURCE_BUCKET/SOURCE_KEY s3://DESTINATION_BUCKET/DESTINATION_KEY
+.RI [ OPTIONS ]
+.I SOURCE... DEST
+.br
+.B s3ar-copy
+.RI [ OPTIONS ]
+.BI \-t " DEST"
+.I SOURCE...
 .SH DESCRIPTION
 .B s3ar-copy
-copies one object using S3 multipart copy. Object data does not pass through
-the client. An empty object uses CopyObject. An existing destination key is
-overwritten. Source and destination must differ.
+copies objects on the configured S3 endpoint using server-side multipart copy.
+Object data does not pass through the client. An empty object uses CopyObject.
+Existing destination keys are overwritten; other destination objects remain.
+.PP
+Operands use s3://BUCKET/KEY. A bucket root can be written as s3://BUCKET or
+s3://BUCKET/. Bucket sources require \-r. With \-r, a source ending in /
+selects all objects under that literal prefix; other sources select exact
+objects. Without \-r, a source ending in / is an exact object key.
+.PP
+A destination bucket root, a destination ending in /, or a destination supplied
+with \-t is a target prefix. For an exact source, its basename is appended to
+the target prefix (preserving trailing slashes of literal source objects).
+For a recursive source, the source prefix is removed from each key and the
+remainder is appended to the target prefix. Unlike cp, the source prefix's
+last component is not automatically inserted into the destination.
+Recursive copies and multiple sources require a target prefix.
+.PP
+Use \-T to treat the destination as an exact object key even when it ends in /.
+This requires one exact source object and a nonempty destination key.
+An object cannot be copied onto itself or onto another exact source operand.
+Overlapping recursive source and destination prefixes in the same bucket are
+rejected. Multiple sources run in argument order; repeated target keys are
+errors and the later write is not performed, even if the earlier copy failed.
+.PP
+Object errors are diagnosed and copying continues with other objects. A listing
+error stops the affected source. Completed copies remain after a failure.
+An empty source bucket succeeds; an unmatched source prefix fails. Objects
+ending in / are copied too, except prefix markers that would map to an empty
+key, which are skipped with a warning. The summary reports copied (or planned),
+skipped, and failed operations. Only current objects are copied; bucket settings
+and version history are not copied. Listings are processed one page at a time;
+with multiple sources, destination keys are retained in memory to detect
+collisions.
 .PP
 The source is checked with HEAD. Each copied part uses the source ETag as a
 condition; if the source ETag changes, copying stops. User metadata, content
@@ -26,9 +59,27 @@ s3:PutObjectTagging on AWS S3). If reading tags fails, the copy fails.
 Metadata and tags are read before copying; ETag conditions do not detect
 changes to metadata or tags that leave object data unchanged.
 .PP
-Keys are literal, not URL-decoded. A trailing slash is part of a key. Quote
-operands containing spaces or shell metacharacters.
+Keys are literal, not URL-decoded. Slashes and dot components are not normalized.
+For a key beginning with /, use two slashes after the bucket name.
+Quote operands containing spaces or shell metacharacters. Wildcards are not
+expanded by s3ar-copy.
 .SH OPTIONS
+.TP
+.BR \-r ", " \-R ", " \-\-recursive
+Copy bucket or prefix contents recursively. Source prefixes must end in /.
+.TP
+.BR \-t ", " \-\-target-directory " URI"
+Copy all sources into this bucket or prefix. A nonempty prefix missing a
+trailing slash gets one appended. Cannot be combined with \-T.
+.TP
+.BR \-T ", " \-\-no-target-directory
+Treat the destination as an exact object key, including a trailing slash.
+.TP
+.B \-\-dry-run
+Print planned source-to-target mappings to standard output without writing.
+Exact sources are checked with HEAD; recursive sources are listed. This does
+not verify that later copying will succeed or that destination writes are
+permitted. Does not create the destination bucket, even with \-\-create-bucket.
 .TP
 .B \-\-create-bucket
 Create the destination bucket if it does not exist.
@@ -43,7 +94,24 @@ trace. Further repetitions have no effect.
 .TP
 .BR \-h ", " \-\-help
 Display command usage on standard output and exit successfully.
+.SH EXAMPLES
+.nf
+s3ar-copy -r s3://bucket1/ s3://bucket2/
+s3ar-copy -r s3://a/photos/ s3://b/backup/
+s3ar-copy -t s3://b/backup/ s3://a/x.txt s3://a/y.txt
+s3ar-copy -T s3://a/dir/file.txt s3://b/backup/
+s3ar-copy -T s3://a//dir/file.txt s3://b//backup/
+s3ar-copy --dry-run -r s3://a/ s3://b/
+.fi
+.SH OUTPUT
+Normal copies emit diagnostics and summaries to standard error. With \-v,
+each successful copy is reported. Dry-run mappings are written to standard
+output using URL-escaped names, as in other s3ar listings. Those escaped names
+are display output; command operands still use literal keys.
 .SH SIGNALS
+.TP
+.BR SIGINT ", " SIGTERM
+Stop copying and attempt to abort an unfinished multipart upload.
 .TP
 .B SIGUSR1
 Increase diagnostic verbosity by one level.
@@ -63,7 +131,8 @@ configure the S3 connection as for
 .SH EXIT STATUS
 .TP
 .B 0
-The copy or help completed successfully.
+All copies (or dry-run mappings) or help completed successfully. An empty
+bucket or skipped root prefix marker does not cause failure.
 .TP
 .B 2
 Invalid arguments, configuration error, or S3 failure.

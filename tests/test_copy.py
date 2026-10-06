@@ -327,3 +327,361 @@ def test_copy_multipart_completion_with_encoded_upload_id(s3_environment, outcom
         assert b"completion outcome uncertain" in result.stderr
     elif outcome == "denied":
         assert b"AccessDenied" in result.stderr
+
+
+def copy_command(environment, *arguments):
+    return subprocess.run([str(EXECUTABLE), *arguments], capture_output=True,
+                          env=environment, timeout=20)
+
+
+@pytest.fixture
+def copy_buckets(s3_server):
+    import uuid
+    _endpoint, client = s3_server
+    suffix = uuid.uuid4().hex
+    source, destination = f"copy-src-{suffix}", f"copy-dst-{suffix}"
+    for bucket in (source, destination):
+        client.create_bucket(Bucket=bucket)
+    return client, source, destination
+
+
+def object_keys(client, bucket):
+    return {item["Key"] for page in client.get_paginator("list_objects_v2").paginate(
+        Bucket=bucket) for item in page.get("Contents", [])}
+
+
+@pytest.mark.parametrize("options,source_key,target,target_key", [
+    ([], "dir/file.txt", "backup/", "backup/file.txt"),
+    (["-T"], "dir/file.txt", "backup/", "backup/"),
+    (["--no-target-directory"], "/dir/file.txt", "/backup/", "/backup/"),
+    ([], "dir/file.txt", "", "file.txt"),
+    ([], "dir/", "markers/", "markers/dir/"),
+    ([], "dir/file.txt", "literal", "literal"),
+    (["-r"], "dir/file.txt", "backup/", "backup/file.txt"),
+])
+def test_copy_target_mapping(s3_environment, copy_buckets, options, source_key,
+                             target, target_key):
+    client, source, destination = copy_buckets
+    client.put_object(Bucket=source, Key=source_key, Body=b"data")
+    client.put_object(Bucket=destination, Key=target_key, Body=b"old")
+    result = copy_command(s3_environment, *options, f"s3://{source}/{source_key}",
+                          f"s3://{destination}/{target}")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == b""
+    assert client.get_object(Bucket=destination, Key=target_key)["Body"].read() == b"data"
+    assert b"1 copied, 0 skipped, 0 failed" in result.stderr
+
+
+@pytest.mark.parametrize("recursive_option", ["-r", "-R", "--recursive"])
+def test_copy_recursive_prefix(s3_environment, copy_buckets, recursive_option):
+    client, source, destination = copy_buckets
+    keys = {"photos/": b"", "photos/a.jpg": b"a", "photos/sub/b.jpg": b"b",
+            "photos//a b%?.jpg": b"special", "photos/./../literal": b"dots",
+            "photos-old/no.jpg": b"neighbor", "photos": b"exact"}
+    for key, body in keys.items():
+        client.put_object(Bucket=source, Key=key, Body=body)
+    client.put_object(Bucket=destination, Key="extra", Body=b"keep")
+    result = copy_command(s3_environment, recursive_option,
+                          f"s3://{source}/photos/", f"s3://{destination}/backup/")
+    assert result.returncode == 0, result.stderr
+    expected = {"backup/" + key[len("photos/"):] for key in keys
+                if key.startswith("photos/")} | {"extra"}
+    assert object_keys(client, destination) == expected
+    for key, body in keys.items():
+        if key.startswith("photos/"):
+            target = "backup/" + key[len("photos/"):]
+            assert client.get_object(Bucket=destination, Key=target)["Body"].read() == body
+
+
+@pytest.mark.parametrize("root_suffix,target", [("/", ""), ("", "backup/")])
+def test_copy_whole_bucket(s3_environment, copy_buckets, root_suffix, target):
+    client, source, destination = copy_buckets
+    for key in ("file", "dir/file", "/leading", "marker/"):
+        client.put_object(Bucket=source, Key=key, Body=b"")
+    result = copy_command(s3_environment, "-r", f"s3://{source}{root_suffix}",
+                          f"s3://{destination}/{target}")
+    assert result.returncode == 0, result.stderr
+    assert object_keys(client, destination) == {
+        target + key for key in ("file", "dir/file", "/leading", "marker/")}
+
+
+@pytest.mark.parametrize("target_option", [False, True])
+def test_copy_multiple_objects(s3_environment, copy_buckets, target_option):
+    client, source, destination = copy_buckets
+    for key in ("dir/x", "other/y"):
+        client.put_object(Bucket=source, Key=key, Body=key.encode())
+    operands = [f"s3://{source}/dir/x", f"s3://{source}/other/y"]
+    arguments = (["-t", f"s3://{destination}/backup", *operands] if target_option
+                 else [*operands, f"s3://{destination}/backup/"])
+    result = copy_command(s3_environment, *arguments)
+    assert result.returncode == 0, result.stderr
+    assert object_keys(client, destination) == {"backup/x", "backup/y"}
+
+
+def test_copy_multiple_prefix_collision_and_continue(s3_environment, copy_buckets):
+    client, source, destination = copy_buckets
+    for key in ("first/x", "second/x", "second/y"):
+        client.put_object(Bucket=source, Key=key, Body=key.encode())
+    result = copy_command(s3_environment, "-r", f"s3://{source}/first/",
+                          f"s3://{source}/second/", f"s3://{destination}/")
+    assert result.returncode == 2
+    assert b"collision" in result.stderr
+    assert b"2 copied, 0 skipped, 1 failed" in result.stderr
+    assert client.get_object(Bucket=destination, Key="x")["Body"].read() == b"first/x"
+    assert object_keys(client, destination) == {"x", "y"}
+
+
+def test_copy_missing_object_continues(s3_environment, copy_buckets):
+    client, source, destination = copy_buckets
+    client.put_object(Bucket=source, Key="good", Body=b"ok")
+    result = copy_command(s3_environment, f"s3://{source}/missing",
+                          f"s3://{source}/good", f"s3://{destination}/")
+    assert result.returncode == 2
+    assert b"1 copied, 0 skipped, 1 failed" in result.stderr
+    assert object_keys(client, destination) == {"good"}
+
+
+@pytest.mark.parametrize("recursive", [False, True])
+def test_copy_dry_run_never_creates_bucket(s3_environment, copy_buckets, recursive):
+    client, source, destination = copy_buckets
+    client.delete_bucket(Bucket=destination)
+    client.put_object(Bucket=source, Key="dir/a b%?", Body=b"data")
+    arguments = ["--dry-run", "--create-bucket"]
+    arguments += (["-r", f"s3://{source}/dir/"] if recursive
+                  else [f"s3://{source}/dir/a b%?"])
+    result = copy_command(s3_environment, *arguments, f"s3://{destination}/backup/")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (f"s3://{source}/dir/a%20b%25%3F -> "
+                             f"s3://{destination}/backup/a%20b%25%3F\n").encode()
+    assert b"1 planned, 0 skipped, 0 failed" in result.stderr
+    assert destination not in {bucket["Name"] for bucket in client.list_buckets()["Buckets"]}
+
+
+@pytest.mark.parametrize("prefix,status", [("", 0), ("missing/", 2)])
+def test_copy_empty_selection(s3_environment, copy_buckets, prefix, status):
+    _client, source, destination = copy_buckets
+    result = copy_command(s3_environment, "-r", f"s3://{source}/{prefix}",
+                          f"s3://{destination}/")
+    assert result.returncode == status, result.stderr
+
+
+def test_copy_root_marker_skipped(s3_environment, copy_buckets):
+    client, source, destination = copy_buckets
+    client.put_object(Bucket=source, Key="dir/", Body=b"")
+    client.put_object(Bucket=source, Key="dir/x", Body=b"x")
+    result = copy_command(s3_environment, "-r", f"s3://{source}/dir/",
+                          f"s3://{destination}/")
+    assert result.returncode == 0, result.stderr
+    assert b"1 copied, 1 skipped, 0 failed" in result.stderr
+    assert object_keys(client, destination) == {"x"}
+
+
+@pytest.mark.parametrize("arguments,diagnostic", [
+    (["s3://a/", "s3://b/"], b"requires -r"),
+    (["-r", "s3://a/p/", "s3://b/key"], b"require a destination"),
+    (["-r", "s3://a/p/", "s3://a/p/sub/"], b"overlap"),
+    (["-r", "s3://a/p/sub/", "s3://a/p/"], b"overlap"),
+    (["-r", "s3://a/", "s3://a/"], b"overlap"),
+    (["s3://a/x", "s3://a/y", "s3://b/key"], b"multiple sources"),
+    (["-T", "s3://a/x", "s3://a/y", "s3://b/key"], b"requires one"),
+    (["-T", "s3://a/x", "s3://b/"], b"requires one"),
+    (["-t", "s3://b/", "-T", "s3://a/x"], b"cannot be combined"),
+    (["-t", "s3://b/", "-t", "s3://c/", "s3://a/x"], b"specified twice"),
+    (["s3://a/x", "https://b/x"], b"invalid S3 operand"),
+])
+def test_copy_invalid_arguments_before_network(arguments, diagnostic):
+    result = copy_command({}, *arguments)
+    assert result.returncode == 2
+    assert diagnostic in result.stderr
+    assert b"invalid configuration" not in result.stderr
+
+
+def test_copy_protects_other_exact_source(s3_environment, copy_buckets):
+    client, source, _destination = copy_buckets
+    client.put_object(Bucket=source, Key="original/x", Body=b"first")
+    client.put_object(Bucket=source, Key="target/x", Body=b"second")
+    result = copy_command(s3_environment, f"s3://{source}/original/x",
+                          f"s3://{source}/target/x", f"s3://{source}/target/")
+    assert result.returncode == 2
+    assert b"overwrite another source" in result.stderr
+    assert client.get_object(Bucket=source, Key="target/x")["Body"].read() == b"second"
+
+
+def listing_xml(keys, token=None):
+    import html
+    from urllib.parse import quote
+    contents = "".join(
+        f"<Contents><Key>{html.escape(quote(key, safe=''))}</Key><Size>0</Size>"
+        "<LastModified>2026-01-01T00:00:00Z</LastModified><ETag>empty</ETag></Contents>"
+        for key in keys)
+    more = "true" if token else "false"
+    continuation = f"<NextContinuationToken>{html.escape(token)}</NextContinuationToken>" if token else ""
+    return (f"<ListBucketResult><EncodingType>url</EncodingType>"
+            f"<IsTruncated>{more}</IsTruncated>{contents}{continuation}"
+            "</ListBucketResult>").encode()
+
+
+def test_copy_dry_run_pages_over_1000_objects(s3_environment):
+    base = "/copy-source?list-type=2&max-keys=1000&encoding-type=url&prefix=dir%2F"
+    keys = [f"dir/{index:04}" for index in range(1000)]
+    steps = [ResponseStep("GET", base, 200, listing_xml(keys, "next+/?")),
+             ResponseStep("GET", base + "&continuation-token=next%2B%2F%3F", 200,
+                          listing_xml(["dir/last"]))]
+    with FaultServer(steps) as server:
+        result = copy_command({**s3_environment, "S3AR_ENDPOINT": server.endpoint},
+                              "--dry-run", "-r", "s3://copy-source/dir/",
+                              "s3://copy-destination/backup/")
+    assert result.returncode == 0, result.stderr
+    assert len(result.stdout.splitlines()) == 1001
+    assert result.stdout.splitlines()[-1].endswith(b"/backup/last")
+    assert b"1001 planned" in result.stderr
+
+
+def test_copy_listing_error_continues_next_source(s3_environment):
+    base = "/copy-source?list-type=2&max-keys=1000&encoding-type=url&prefix="
+    steps = [ResponseStep("GET", base + "bad%2F", 403,
+                          b"<Error><Code>AccessDenied</Code></Error>"),
+             ResponseStep("GET", base + "good%2F", 200, listing_xml(["good/x"]))]
+    with FaultServer(steps) as server:
+        result = copy_command({**s3_environment, "S3AR_ENDPOINT": server.endpoint},
+                              "--dry-run", "-r", "s3://copy-source/bad/",
+                              "s3://copy-source/good/", "s3://copy-destination/")
+    assert result.returncode == 2
+    assert b"1 planned, 0 skipped, 1 failed" in result.stderr
+
+
+def test_copy_overlong_mapped_key_continues(s3_environment):
+    prefix = "p" * 1022 + "/"
+    steps = [ResponseStep("GET", "/copy-source?list-type=2&max-keys=1000&encoding-type=url",
+                          200, listing_xml(["long", "x"]))]
+    with FaultServer(steps) as server:
+        result = copy_command({**s3_environment, "S3AR_ENDPOINT": server.endpoint},
+                              "--dry-run", "-r", "s3://copy-source/",
+                              f"s3://copy-destination/{prefix}")
+    assert result.returncode == 2
+    assert b"too long" in result.stderr
+    assert b"1 planned, 0 skipped, 1 failed" in result.stderr
+
+
+@pytest.mark.parametrize("interrupt_name", ["SIGINT", "SIGTERM"])
+def test_copy_interrupted_part_aborts_and_stops(s3_environment, interrupt_name):
+    import signal
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    part_started, aborted, release = (threading.Event() for _ in range(3))
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_arguments):
+            pass
+
+        def respond(self, body=b"", status=200, headers=()):
+            self.send_response(status)
+            if not any(name.lower() == "content-length" for name, _value in headers):
+                self.send_header("Content-Length", str(len(body)))
+            for name, value in headers:
+                self.send_header(name, value)
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(body)
+
+        def do_GET(self):
+            requests.append(("GET", self.path))
+            if "list-type=2" in self.path:
+                self.respond(listing_xml(["dir/first", "dir/second"]))
+            else:
+                self.respond(b"<Tagging><TagSet/></Tagging>")
+
+        def do_HEAD(self):
+            requests.append(("HEAD", self.path))
+            self.respond(headers=(("Content-Length", "3"), ("ETag", '"source"')))
+
+        def do_POST(self):
+            requests.append(("POST", self.path))
+            self.respond(b"<InitiateMultipartUploadResult><UploadId>test-upload"
+                         b"</UploadId></InitiateMultipartUploadResult>")
+
+        def do_PUT(self):
+            requests.append(("PUT", self.path))
+            part_started.set()
+            release.wait(10)
+
+        def do_DELETE(self):
+            requests.append(("DELETE", self.path))
+            self.respond(status=204)
+            aborted.set()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    endpoint = f"http://127.0.0.1:{server.server_port}"
+    process = subprocess.Popen(
+        [str(EXECUTABLE), "-r", "s3://copy-source/dir/", "s3://copy-destination/"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env={**s3_environment, "S3AR_ENDPOINT": endpoint})
+    try:
+        if not part_started.wait(5):
+            assert process.poll() is None, process.communicate(timeout=5)[1]
+            pytest.fail(f"copy did not start a part: {requests!r}")
+        process.send_signal(getattr(signal, interrupt_name))
+        assert aborted.wait(5), "multipart upload was not aborted"
+        stdout, stderr = process.communicate(timeout=5)
+        assert process.returncode == 2
+        assert stdout == b""
+        assert b"interrupted" in stderr
+        assert requests[-1] == ("DELETE", "/copy-destination/first?uploadId=test-upload")
+        assert not any("second" in path for _method, path in requests)
+    finally:
+        release.set()
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+def test_copy_create_bucket(s3_environment, copy_buckets):
+    client, source, destination = copy_buckets
+    client.delete_bucket(Bucket=destination)
+    client.put_object(Bucket=source, Key="key", Body=b"")
+    result = copy_command(s3_environment, "-r", "--create-bucket",
+                          f"s3://{source}/", f"s3://{destination}/")
+    assert result.returncode == 0, result.stderr
+    assert object_keys(client, destination) == {"key"}
+
+
+def test_copy_dry_run_registry_grows_and_detects_collision(s3_environment):
+    base = "/copy-source?list-type=2&max-keys=1000&encoding-type=url&prefix="
+    first = [f"one/{index:03}" for index in range(150)]
+    steps = [ResponseStep("GET", base + "one%2F", 200, listing_xml(first)),
+             ResponseStep("GET", base + "two%2F", 200, listing_xml(["two/149", "two/last"]))]
+    with FaultServer(steps) as server:
+        result = copy_command({**s3_environment, "S3AR_ENDPOINT": server.endpoint},
+                              "--dry-run", "-r", "s3://copy-source/one/",
+                              "s3://copy-source/two/", "s3://copy-destination/")
+    assert result.returncode == 2
+    assert len(result.stdout.splitlines()) == 151
+    assert b"151 planned, 0 skipped, 1 failed" in result.stderr
+
+
+def test_copy_dry_run_missing_exact_source(s3_environment):
+    with FaultServer([ResponseStep("HEAD", "/copy-source/missing", 404)]) as server:
+        result = copy_command({**s3_environment, "S3AR_ENDPOINT": server.endpoint},
+                              "--dry-run", "s3://copy-source/missing",
+                              "s3://copy-destination/key")
+    assert result.returncode == 2
+    assert result.stdout == b""
+
+
+def test_copy_rejects_listing_outside_prefix(s3_environment):
+    steps = [ResponseStep("GET", "/copy-source?list-type=2&max-keys=1000&encoding-type=url&prefix=dir%2F",
+                          200, listing_xml(["x"]))]
+    with FaultServer(steps) as server:
+        result = copy_command({**s3_environment, "S3AR_ENDPOINT": server.endpoint},
+                              "--dry-run", "-r", "s3://copy-source/dir/",
+                              "s3://copy-destination/")
+    assert result.returncode == 2
+    assert b"outside the source prefix" in result.stderr
+    assert result.stdout == b""

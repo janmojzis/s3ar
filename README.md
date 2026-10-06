@@ -56,6 +56,52 @@ Copy one object between buckets without downloading its data:
 ./s3ar-copy s3://photos/original.jpg s3://backup/original.jpg
 ```
 
+Copy a whole bucket or the contents of a prefix recursively:
+
+```sh
+./s3ar-copy -r s3://photos/ s3://backup/
+./s3ar-copy -r s3://photos/2026/ s3://backup/annual/2026/
+```
+
+Recursive sources must be buckets or end in `/`. The source prefix is removed
+and the remaining key is appended to the destination prefix. For example,
+`2026/trip/a.jpg` becomes `annual/2026/trip/a.jpg` in the second command.
+Unlike `cp`, recursive copies always copy the contents of the source prefix;
+its last component is not automatically inserted into the destination.
+
+A destination ending in `/` appends the source object's basename. Use `-t`
+to specify a target prefix for one or more sources, or `-T` to treat the
+destination as an exact object key, including a trailing slash:
+
+```sh
+./s3ar-copy s3://photos/trip/a.jpg s3://backup/incoming/
+./s3ar-copy -t s3://backup/incoming/ s3://photos/a.jpg s3://photos/b.jpg
+./s3ar-copy -T s3://photos/a.jpg s3://backup/incoming/
+./s3ar-copy -T s3://photos//dir/file.txt s3://backup//backup/
+./s3ar-copy --dry-run -r s3://photos/ s3://backup/
+```
+
+The first command creates `incoming/a.jpg`; the third creates the exact key
+`incoming/`. In the fourth, the leading slash is part of each key: `/dir/file.txt`
+is copied to `/backup/`. Keys are literal; slashes and dot components are not
+normalized. Without `-r`, a source ending in `/` is an exact object key.
+`--dry-run` prints source-to-target mappings on standard output and performs no
+writes, including when `--create-bucket` is given. Normal copies use standard
+error for diagnostics and leave standard output empty.
+
+Existing destination objects are overwritten; other destination objects remain.
+Overlapping recursive prefixes in the same bucket are rejected. Multiple sources
+are processed in argument order; target-key collisions fail without replacing
+the earlier copy. Copying onto any exact source operand is also rejected.
+Object errors do not prevent other objects from being copied; listing errors
+stop that source. Completed copies remain after errors or interruption. The
+final summary reports copied (or planned), skipped, and failed operations;
+any failure returns status 2. An empty bucket succeeds, but an unmatched source
+prefix fails. Prefix markers that would map to an empty object key are skipped.
+Only current objects are copied, within the configured S3 endpoint. Listings
+are processed one page at a time. With multiple sources, target keys are kept
+in memory to detect collisions; a single recursive source needs no such registry.
+
 The command uses multipart server-side copy for nonempty objects. Set
 `--multipart-size 64M` for large objects when the default 16M would exceed
 10,000 parts.
@@ -359,7 +405,7 @@ buckets remain visible.
   all existing `user.s3ar.*` attributes are removed.
   Without `--hash`, complete downloaded files receive `user.s3ar.hash=none`.
 - `s3ar-put`: upload a file or standard input.
-- `s3ar-copy`: copy one object between buckets on the same S3 endpoint.
+- `s3ar-copy`: copy objects, prefix contents, or whole buckets on the same S3 endpoint.
 - `s3ar-delete`: remove objects or buckets.
 - `s3ar-list`: list live buckets and objects.
 
