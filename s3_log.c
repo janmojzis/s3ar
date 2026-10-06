@@ -17,7 +17,7 @@ void s3_log_format_uri(FILE *stream, const void *data) {
         for (const unsigned char *p = (const unsigned char *) names[part]; *p;
              ++p) {
             unsigned char c = *p;
-            if (s3_uri_encode_isliteral(c, 1))
+            if (s3_uri_encode_isliteral(c, true))
                 (void) fputc(c, stream);
             else {
                 (void) fputc('%', stream);

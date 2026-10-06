@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-int s3_uri_encode_isliteral(unsigned char c, int keep_slash) {
+bool s3_uri_encode_isliteral(unsigned char c, bool keep_slash) {
     return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
            (c >= '0' && c <= '9') || c == '-' || c == '.' || c == '_' ||
            c == '~' || (keep_slash && c == '/');

@@ -86,7 +86,7 @@ void *s3_memory_grow(void *items, size_t *capacity, size_t item_size,
  * escaped in individual components such as bucket names and query values.
  * With keep_slash!=0, '/' remains a Section 3.3 path separator, as in an
  * object key. '/' itself is not unreserved. */
-int s3_uri_encode_isliteral(unsigned char c, int keep_slash);
+bool s3_uri_encode_isliteral(unsigned char c, bool keep_slash);
 /* Decode a non-NULL string; '+' stays literal. Reject malformed escapes and
  * encoded NUL, and leave *decoded NULL on failure. Caller owns the result. */
 enum s3_result s3_uri_decode_alloc(const char *encoded, char **decoded);
