@@ -141,6 +141,8 @@ static void test_cancelled_put(bool stream, bool during_transfer,
     assert(error.result == result);
     if (!during_transfer) assert(error.callback_errno == EINTR);
     assert(scenario.aborts == 1 && scenario.requests == 3);
+    assert(error.abort_result ==
+           (abort_status == 403 ? S3_RESULT_ACCESS_DENIED : S3_RESULT_OK));
     assert((strstr(error.message, "multipart abort failed") != NULL) ==
            (abort_status == 403));
     if (abort_status == 403)
@@ -152,6 +154,7 @@ static void test_cancelled_put(bool stream, bool during_transfer,
     assert(s3_bucket_head(scenario.client, &error, "bucket") ==
            S3_RESULT_ERROR);
     assert(strcmp(error.message, "interrupted") == 0);
+    assert(error.abort_result == S3_RESULT_OK);
     assert(scenario.requests == 3);
     s3_client_close(scenario.client);
 }

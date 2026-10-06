@@ -648,9 +648,7 @@ static void extract_object(struct extract_context *context,
                                           &properties, read_object_data, &put);
     if (interrupted_signal != 0 && put.read_status == PUT_READ_OK)
         put.read_status = PUT_READ_INTERRUPTED;
-    if (put.read_status != PUT_READ_OK &&
-        strncmp(error.message, "multipart abort failed:",
-                sizeof("multipart abort failed:") - 1) == 0) {
+    if (put.read_status != PUT_READ_OK && error.abort_result != S3_RESULT_OK) {
         log_f4("unable to clean up multipart upload ",
                s3_log_uri(NULL, bucket, key), ": ", s3ar_log_error(&error));
         s3ar_die(2);

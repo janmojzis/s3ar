@@ -23,6 +23,7 @@ static void assert_configuration_error(enum s3_result result,
     assert(error->http_status == 0);
     assert(error->attempts == 0);
     assert(error->callback_errno == 0);
+    assert(error->abort_result == S3_RESULT_OK);
     assert(error->s3_code[0] == '\0');
     assert(error->request_id[0] == '\0');
     assert(error->message[0] != '\0');

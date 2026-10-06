@@ -4,6 +4,8 @@
 
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 enum s3_result __wrap_s3_bucket_ensure(struct s3_client *client,
                                        struct s3_error *error,
@@ -37,6 +39,20 @@ __wrap_s3_object_put(struct s3_client *client, struct s3_error *error,
         size -= amount;
     }
     (void) fputc('\n', stdout);
+    const char *abort_failure = getenv("S3AR_TEST_ABORT_FAILURE");
+    if (abort_failure != NULL) {
+        size_t amount = 0;
+        assert(read(data, buffer, sizeof(buffer), &amount) == S3_READ_ERROR);
+        error->result = S3_RESULT_CALLBACK_ERROR;
+        error->abort_result = strcmp(abort_failure, "yes") == 0
+                                  ? S3_RESULT_ACCESS_DENIED
+                                  : S3_RESULT_OK;
+        (void) snprintf(error->message, sizeof(error->message), "%s",
+                        error->abort_result != S3_RESULT_OK
+                            ? "cleanup refused"
+                            : "multipart abort failed: text only");
+        return error->result;
+    }
     return S3_RESULT_OK;
 }
 

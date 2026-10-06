@@ -472,6 +472,7 @@ void s3_upload_cleanup_failed(struct s3_client *client, struct s3_error *error,
     struct s3_error abort_error = {0};
     enum s3_result abort_result =
         abort_upload(client, &abort_error, bucket, key, encoded_upload_id);
+    error->abort_result = abort_result;
     if (abort_result == S3_RESULT_OK) return;
     char original[sizeof(error->message)];
     (void) snprintf(original, sizeof(original), "%s", error->message);

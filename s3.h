@@ -50,6 +50,9 @@ struct s3_error {
     char request_id[128];
     char message[256];
     char bucket_region[128];
+    /* Multipart cleanup result; OK also means no abort was needed or tried.
+     * A cleanup failure does not replace the primary result above. */
+    enum s3_result abort_result;
 };
 
 /* Maximum user metadata fields accepted by the client. */

@@ -1,5 +1,6 @@
 import hashlib
 import io
+from pathlib import Path
 import subprocess
 import tarfile
 
@@ -122,3 +123,25 @@ def test_hash_rejected_for_listing(executable):
     result = invoke(executable, {}, "-t", "--hash", "-f", "/missing")
     assert result.returncode == 2
     assert "--hash requires -c or -x" in result.stderr
+
+
+@pytest.mark.parametrize("abort_failed", [False, True])
+def test_reader_uses_abort_result_instead_of_diagnostic_text(tmp_path, abort_failed):
+    path = tmp_path / "hash-mismatch.tar"
+    write_archive(path, b"data", "sha512:" + "0" * 128)
+    environment = {
+        "S3AR_ENDPOINT": "http://localhost", "S3AR_URI_STYLE": "path",
+        "S3AR_REGION": "us-east-1", "S3AR_ACCESS_KEY": "unused",
+        "S3AR_SECRET_KEY": "unused",
+        "S3AR_TEST_ABORT_FAILURE": "yes" if abort_failed else "no",
+    }
+    probe = Path(__file__).resolve().parents[1] / "test-transform-restore"
+    result = invoke(probe, environment, "-x", "--hash", "-f", str(path), "s3://")
+    assert result.returncode == 2
+    if abort_failed:
+        assert "unable to clean up multipart upload" in result.stderr
+        assert "cleanup refused" in result.stderr
+        assert "SHA-512 mismatch for" not in result.stderr
+    else:
+        assert "SHA-512 mismatch for" in result.stderr
+        assert "unable to clean up multipart upload" not in result.stderr
