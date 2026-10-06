@@ -577,12 +577,17 @@ def test_copy_invalid_arguments_before_network(arguments, diagnostic):
     assert b"invalid configuration" not in result.stderr
 
 
-def test_copy_protects_other_exact_source(s3_environment, copy_buckets):
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_copy_protects_other_exact_source(s3_environment, copy_buckets, reverse, dry_run):
     client, source, _destination = copy_buckets
     client.put_object(Bucket=source, Key="original/x", Body=b"first")
     client.put_object(Bucket=source, Key="target/x", Body=b"second")
-    result = copy_command(s3_environment, f"s3://{source}/original/x",
-                          f"s3://{source}/target/x", f"s3://{source}/target/")
+    operands = [f"s3://{source}/original/x", f"s3://{source}/target/x"]
+    if reverse:
+        operands.reverse()
+    result = copy_command(s3_environment, *(["--dry-run"] if dry_run else []),
+                          *operands, f"s3://{source}/target/")
     assert result.returncode == 2
     assert b"overwrite another source" in result.stderr
     assert client.get_object(Bucket=source, Key="target/x")["Body"].read() == b"second"
@@ -767,3 +772,62 @@ def test_copy_rejects_listing_outside_prefix(s3_environment):
     assert result.returncode == 2
     assert b"outside the source prefix" in result.stderr
     assert result.stdout == b""
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_copy_duplicate_exact_sources_preserve_diagnostics(s3_environment, dry_run):
+    with FaultServer([]) as server:
+        result = copy_command({**s3_environment, "S3AR_ENDPOINT": server.endpoint},
+                              *(["--dry-run"] if dry_run else []),
+                              "s3://bucket/target/x", "s3://bucket/target/x",
+                              "s3://bucket/target/")
+    assert result.returncode == 2
+    assert result.stderr.count(b"source and destination are identical") == 1
+    assert result.stderr.count(b"destination would overwrite another source") == 1
+    assert b"0 skipped, 2 failed" in result.stderr
+
+
+def test_copy_indexes_many_exact_sources_before_transfer(s3_environment):
+    operands = [f"s3://bucket/target/{index:03}" for index in range(150)]
+    with FaultServer([]) as server:
+        result = copy_command({**s3_environment, "S3AR_ENDPOINT": server.endpoint},
+                              "--dry-run", *operands, "s3://bucket/target/")
+    assert result.returncode == 2
+    assert result.stderr.count(b"source and destination are identical") == 150
+    assert b"0 planned, 0 skipped, 150 failed" in result.stderr
+    assert not result.stdout
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_copy_recursive_source_protects_later_exact_operand(
+    s3_environment, copy_buckets, dry_run
+):
+    client, bucket, _destination = copy_buckets
+    client.put_object(Bucket=bucket, Key="original/x", Body=b"replacement")
+    client.put_object(Bucket=bucket, Key="original/y", Body=b"new object")
+    client.put_object(Bucket=bucket, Key="target/x", Body=b"protected")
+    result = copy_command(s3_environment, *(["--dry-run"] if dry_run else []),
+                          "-r", f"s3://{bucket}/original/",
+                          f"s3://{bucket}/target/x", f"s3://{bucket}/target/")
+    assert result.returncode == 2
+    assert b"destination would overwrite another source" in result.stderr
+    assert b"source and destination are identical" in result.stderr
+    assert client.get_object(Bucket=bucket, Key="target/x")["Body"].read() == b"protected"
+    if dry_run:
+        assert "target/y" not in object_keys(client, bucket)
+        assert len(result.stdout.splitlines()) == 1
+        assert result.stdout.endswith(f" -> s3://{bucket}/target/y\n".encode())
+    else:
+        assert client.get_object(Bucket=bucket, Key="target/y")["Body"].read() == b"new object"
+
+
+def test_copy_source_index_ignores_other_buckets(s3_environment, copy_buckets):
+    client, source, destination = copy_buckets
+    client.put_object(Bucket=source, Key="target/x", Body=b"foreign source")
+    client.put_object(Bucket=destination, Key="target/x", Body=b"old destination")
+    client.put_object(Bucket=destination, Key="other/y", Body=b"local source")
+    result = copy_command(s3_environment, f"s3://{source}/target/x",
+                          f"s3://{destination}/other/y", f"s3://{destination}/target/")
+    assert result.returncode == 0, result.stderr
+    assert client.get_object(Bucket=destination, Key="target/x")["Body"].read() == b"foreign source"
+    assert client.get_object(Bucket=destination, Key="target/y")["Body"].read() == b"local source"

@@ -3,6 +3,13 @@
 
 #include <string.h>
 
+uint64_t s3ar_hash_string(const char *text) {
+    uint64_t hash = UINT64_C(5381);
+    for (const unsigned char *p = (const unsigned char *) text; *p != 0; ++p)
+        hash = (hash * UINT64_C(33)) ^ *p;
+    return hash;
+}
+
 void s3ar_hash_text(struct sha512_ctx *hash, char output[S3AR_HASH_TEXT_SIZE]) {
     unsigned char digest[SHA512_DIGEST_SIZE];
     static const char hex[] = "0123456789abcdef";

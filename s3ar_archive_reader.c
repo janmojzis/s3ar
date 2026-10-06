@@ -92,12 +92,7 @@ static _Noreturn void archive_fatal(struct archive *archive,
 
 static size_t bucket_slot(char *const *names, size_t capacity,
                           const char *name) {
-    /* cdb64 hash: start at 5381, then multiply by 33 and XOR each byte. */
-    uint64_t hash = UINT64_C(5381);
-    for (const unsigned char *p = (const unsigned char *) name; *p != 0; ++p) {
-        hash = (hash * UINT64_C(33)) ^ *p;
-    }
-    size_t slot = (size_t) hash & (capacity - 1);
+    size_t slot = (size_t) s3ar_hash_string(name) & (capacity - 1);
     while (names[slot] != NULL && strcmp(names[slot], name) != 0)
         slot = (slot + 1) & (capacity - 1);
     return slot;

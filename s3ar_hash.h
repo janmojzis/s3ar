@@ -5,6 +5,7 @@
 #include <nettle/sha2.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #define S3AR_HASH_PREFIX "sha512:"
 #define S3AR_HASH_PREFIX_LENGTH (sizeof(S3AR_HASH_PREFIX) - 1)
@@ -13,5 +14,7 @@
 
 void s3ar_hash_text(struct sha512_ctx *hash, char output[S3AR_HASH_TEXT_SIZE]);
 bool s3ar_hash_valid(const void *value, size_t size);
+/* Non-cryptographic cdb64 hash for string-keyed tables. */
+uint64_t s3ar_hash_string(const char *text);
 
 #endif

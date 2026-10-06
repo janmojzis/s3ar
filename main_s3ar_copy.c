@@ -2,6 +2,7 @@
 #include "main.h"
 #include "s3ar_client.h"
 #include "s3ar_config.h"
+#include "s3ar_hash.h"
 #include "s3ar_parse.h"
 #include "s3ar_interrupt.h"
 #include "s3ar_log.h"
@@ -20,6 +21,7 @@ static struct s3ar_config_env config;
 struct copy_source {
     struct s3_uri_buffer uri;
     bool recursive;
+    struct copy_source *next_exact;
 };
 
 struct copied_key {
@@ -29,6 +31,8 @@ struct copied_key {
 
 static struct copy_source *sources;
 static size_t source_count, source_index;
+static struct copy_source **exact_sources;
+static size_t exact_capacity;
 static struct s3_uri_buffer destination;
 static struct copied_key **copied_keys;
 static size_t copied_capacity, copied_count;
@@ -73,6 +77,7 @@ static _Noreturn void die(int status) {
         }
     }
     free(copied_keys);
+    free(exact_sources);
     free(sources);
     s3_client_close(client);
     s3ar_config_free(&config);
@@ -116,11 +121,49 @@ static void validate_operand(const struct s3_uri_buffer *uri) {
     }
 }
 
-static size_t key_hash(const char *key) {
-    size_t hash = 5381;
-    for (const unsigned char *p = (const unsigned char *) key; *p; ++p)
-        hash = hash * 33U + *p;
-    return hash;
+/* Borrow exact operands in the destination bucket; recursive prefixes are
+ * protected separately. Build the index before any source is copied. */
+static void index_exact_sources(void) {
+    size_t count = 0;
+    for (size_t i = 0; i < source_count; ++i)
+        if (!sources[i].recursive &&
+            strcmp(sources[i].uri.bucket, destination.bucket) == 0)
+            ++count;
+    if (count == 0) return;
+    size_t capacity = 64;
+    while (count >= capacity / 2) {
+        if (capacity > SIZE_MAX / 2 ||
+            capacity * 2 > SIZE_MAX / sizeof(*exact_sources)) {
+            log_f1("too many source keys");
+            die(2);
+        }
+        capacity *= 2;
+    }
+    exact_sources = calloc(capacity, sizeof(*exact_sources));
+    if (exact_sources == NULL) {
+        log_f1("out of memory");
+        die(2);
+    }
+    exact_capacity = capacity;
+    /* Reverse insertion preserves first-operand precedence for duplicates. */
+    for (size_t i = source_count; i != 0; --i) {
+        struct copy_source *source = &sources[i - 1];
+        if (source->recursive ||
+            strcmp(source->uri.bucket, destination.bucket) != 0)
+            continue;
+        size_t slot = s3ar_hash_string(source->uri.key) % exact_capacity;
+        source->next_exact = exact_sources[slot];
+        exact_sources[slot] = source;
+    }
+}
+
+static const struct copy_source *find_exact_source(const char *key) {
+    if (exact_capacity == 0) return NULL;
+    size_t slot = s3ar_hash_string(key) % exact_capacity;
+    for (const struct copy_source *source = exact_sources[slot]; source != NULL;
+         source = source->next_exact)
+        if (strcmp(source->uri.key, key) == 0) return source;
+    return NULL;
 }
 
 /* Only multi-source copies need a registry. Listings themselves remain paged;
@@ -143,7 +186,7 @@ static bool claim_key(const char *key) {
             struct copied_key *entry = copied_keys[i];
             while (entry != NULL) {
                 struct copied_key *next = entry->next;
-                size_t slot = key_hash(entry->key) % capacity;
+                size_t slot = s3ar_hash_string(entry->key) % capacity;
                 entry->next = table[slot];
                 table[slot] = entry;
                 entry = next;
@@ -153,7 +196,7 @@ static bool claim_key(const char *key) {
         copied_keys = table;
         copied_capacity = capacity;
     }
-    size_t slot = key_hash(key) % copied_capacity;
+    size_t slot = s3ar_hash_string(key) % copied_capacity;
     for (struct copied_key *entry = copied_keys[slot]; entry != NULL;
          entry = entry->next) {
         if (strcmp(key, entry->key) == 0) {
@@ -217,16 +260,13 @@ static bool copy_key(const char *key) {
         return true;
     }
     /* Protect exact sources too, including operands that have not run yet. */
-    for (size_t i = 0; i < source_count; ++i) {
-        if (!sources[i].recursive &&
-            strcmp(sources[i].uri.bucket, destination.bucket) == 0 &&
-            strcmp(sources[i].uri.key, target) == 0) {
-            log_f1(i == source_index
-                       ? "source and destination are identical"
-                       : "destination would overwrite another source");
-            ++failed;
-            return true;
-        }
+    const struct copy_source *protected = find_exact_source(target);
+    if (protected != NULL) {
+        log_f1(protected == source
+                   ? "source and destination are identical"
+                   : "destination would overwrite another source");
+        ++failed;
+        return true;
     }
     if (!claim_key(target)) {
         ++failed;
@@ -427,6 +467,7 @@ int main_s3ar_copy(int argc, char **argv) {
     s3ar_interrupt_bind(client, &interrupted_signal);
     validate_operand(&destination);
     for (size_t i = 0; i < source_count; ++i) validate_operand(&sources[i].uri);
+    index_exact_sources();
     if (create_bucket && !dry_run) {
         if (s3_bucket_ensure(client, &error, destination.bucket) !=
             S3_RESULT_OK) {
