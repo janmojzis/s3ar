@@ -12,7 +12,9 @@
  * restored to uploaded objects; bucket ACL summaries are informational and
  * are not restored.
  * Legacy SCHILY.xattr.user.NAME metadata remains readable.
- * Unsafe paths, links, and unsupported archive member types are rejected.
+ * Bucket and object identity comes from validated PAX attributes; the archive
+ * pathname is informational. Links and unsupported archive member types are
+ * rejected.
  *
  * SPDX-License-Identifier: MIT-0
  */
