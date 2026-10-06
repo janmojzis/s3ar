@@ -53,7 +53,7 @@ static void usage(FILE *stream) {
         "  -T, --no-target-directory  Treat DEST as an exact object key\n"
         "      --dry-run              Show copies without writing\n"
         "      --create-bucket        Create destination bucket if needed\n"
-        "      --multipart-size SIZE  Part size between 5M and 5G\n"
+        "      --multipart-size SIZE  Threshold and part size (5M-5G)\n"
         "  -v, --verbose              Increase verbosity (up to -vvv)\n"
         "  -h, --help                 Show this help\n"
         "Use s3://BUCKET/KEY for objects; recursive prefixes end in /.\n");

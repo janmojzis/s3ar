@@ -20,8 +20,9 @@ s3ar-copy [OPTIONS] -t DEST SOURCE...
 # DESCRIPTION
 
 **s3ar-copy**
-copies objects on the configured S3 endpoint using server-side multipart copy.
-Object data does not pass through the client. An empty object uses CopyObject.
+copies objects on the configured S3 endpoint using server-side copy.
+Objects up to --multipart-size, inclusive, use CopyObject; larger objects use
+multipart UploadPartCopy. Object data does not pass through the client.
 Existing destination keys are overwritten; other destination objects remain.
 
 Operands use s3://BUCKET/KEY. A bucket root can be written as s3://BUCKET or
@@ -54,18 +55,19 @@ and version history are not copied. Listings are processed one page at a time;
 with multiple sources, destination keys are retained in memory to detect
 collisions.
 
-The source is checked with HEAD. Each copied part uses the source ETag as a
-condition; if the source ETag changes, copying stops. User metadata, content
-type, content encoding, cache control, content disposition, content language,
+The source is checked with HEAD. CopyObject and each copied part use the source
+ETag as a condition; if the source ETag changes, copying stops. User metadata,
+content type, content encoding, cache control, content disposition, content language,
 expiry, and object tags are applied to the destination. ACL and
 server-side encryption settings are determined by the destination bucket.
 
-For nonempty objects, tags are read with GetObjectTagging before starting the
-multipart upload. This requires read access to source tags and, for tagged
+CopyObject copies metadata and tags directly on the server. For multipart
+copies, tags are read with GetObjectTagging before starting the upload.
+This requires read access to source tags and, for tagged
 objects, write access to destination tags (s3:GetObjectTagging and
 s3:PutObjectTagging on AWS S3). If reading tags fails, the copy fails.
-Metadata and tags are read before copying; ETag conditions do not detect
-changes to metadata or tags that leave object data unchanged.
+For multipart copies, metadata and tags are read before copying. ETag conditions
+do not detect changes to metadata or tags that leave object data unchanged.
 
 Keys are literal, not URL-decoded. Slashes and dot components are not normalized.
 For a key beginning with /, use two slashes after the bucket name.
@@ -100,8 +102,11 @@ Create the destination bucket if it does not exist.
 
 **--multipart-size SIZE**
 
-Set the part size. SIZE must be between 5M and 5G, inclusive, with binary
-suffix M or G. The default is 16M. At most 10,000 parts are allowed.
+Set both the multipart threshold and the part size. Objects whose size is at
+most SIZE use a single CopyObject request after HEAD, including empty objects.
+Larger objects use multipart copy with parts of SIZE bytes (the last part may
+be smaller). SIZE must be between 5M and 5G, inclusive, with binary suffix M or
+G. The default is 16M. At most 10,000 parts are allowed.
 
 **-v, --verbose**
 

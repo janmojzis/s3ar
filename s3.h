@@ -311,7 +311,8 @@ s3_object_put_stream(struct s3_client *client, struct s3_error *error,
                      const struct s3_object_properties *properties,
                      s3_read_callback read_callback, void *data);
 
-/* Server-side copy. Nonempty objects use multipart UploadPartCopy. */
+/* Server-side copy. Objects larger than part_size use multipart UploadPartCopy;
+ * objects up to part_size (inclusive) use CopyObject. */
 enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
                               const char *source_bucket, const char *source_key,
                               const char *destination_bucket,

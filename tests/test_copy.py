@@ -8,6 +8,8 @@ from fault_server import FaultServer, ResponseStep
 
 
 EXECUTABLE = Path(__file__).parents[1] / "s3ar-copy"
+DEFAULT_PART_SIZE = 16 * 1024 * 1024
+MULTIPART_OBJECT_SIZE = DEFAULT_PART_SIZE + 1
 
 
 def run_copy(environment, *options, source="s3://copy-source/key",
@@ -23,7 +25,7 @@ def empty_tags_step(path="/copy-source/key"):
                         b"<Tagging><TagSet/></Tagging>")
 
 
-@pytest.mark.parametrize("size", [0, 9, 6 * 1024 * 1024])
+@pytest.mark.parametrize("size", [0, 9, 5 * 1024 * 1024, 5 * 1024 * 1024 + 1])
 def test_copy_object(s3_server, s3_environment, size):
     data = b"x" * size
     _endpoint, client = s3_server
@@ -56,7 +58,7 @@ def test_copy_object(s3_server, s3_environment, size):
     }
 
 
-@pytest.mark.parametrize("size", [0, 3])
+@pytest.mark.parametrize("size", [0, 3, MULTIPART_OBJECT_SIZE])
 def test_copy_encodes_source_bucket(s3_environment, size):
     source = "/copy%252Fsource%20%3F%23/folder/a%20b%25%3F"
     base = "/copy-destination/key"
@@ -67,7 +69,7 @@ def test_copy_encodes_source_bucket(s3_environment, size):
                      headers=(("Content-Length", str(size)),
                               ("ETag", '"source"'))),
     ]
-    if size == 0:
+    if size <= DEFAULT_PART_SIZE:
         steps.append(ResponseStep("PUT", base, 200, b"<CopyObjectResult/>",
                                   expected_headers=copy_headers))
     else:
@@ -78,7 +80,12 @@ def test_copy_encodes_source_bucket(s3_environment, size):
                          b"</UploadId></InitiateMultipartUploadResult>"),
             ResponseStep("PUT", base + "?partNumber=1&uploadId=test-upload",
                          200, b'<CopyPartResult><ETag>"part"</ETag></CopyPartResult>',
-                         expected_headers=copy_headers),
+                         expected_headers=copy_headers + (
+                             ("x-amz-copy-source-range", "bytes=0-16777215"),)),
+            ResponseStep("PUT", base + "?partNumber=2&uploadId=test-upload",
+                         200, b'<CopyPartResult><ETag>"part"</ETag></CopyPartResult>',
+                         expected_headers=copy_headers + (
+                             ("x-amz-copy-source-range", "bytes=16777216-16777216"),)),
             ResponseStep("POST", base + "?uploadId=test-upload", 200,
                          b"<CompleteMultipartUploadResult/>"),
         ])
@@ -108,7 +115,8 @@ def test_copy_rejects_same_identity_before_network(s3_environment):
 def test_copy_tag_read_failure_prevents_upload(s3_environment, status, body):
     steps = [
         ResponseStep("HEAD", "/copy-source/key", 200,
-                     headers=(("Content-Length", "3"), ("ETag", '"source"'))),
+                     headers=(("Content-Length", str(MULTIPART_OBJECT_SIZE)),
+                              ("ETag", '"source"'))),
         ResponseStep("GET", "/copy-source/key?tagging", status, body),
     ]
     with FaultServer(steps) as server:
@@ -126,7 +134,8 @@ def test_copy_passes_encoded_tags_at_initiation(s3_environment, tagged):
                if tagged else ()
     steps = [
         ResponseStep("HEAD", "/copy-source/key", 200,
-                     headers=(("Content-Length", "3"), ("ETag", '"source"'))),
+                     headers=(("Content-Length", str(MULTIPART_OBJECT_SIZE)),
+                              ("ETag", '"source"'))),
         ResponseStep("GET", "/copy-source/key?tagging", 200, tags),
         ResponseStep("POST", "/copy-destination/key?uploads", 200,
                      b"<InitiateMultipartUploadResult><UploadId>test-upload"
@@ -134,6 +143,8 @@ def test_copy_passes_encoded_tags_at_initiation(s3_environment, tagged):
                      expected_headers=expected,
                      absent_headers=() if tagged else ("x-amz-tagging",)),
         ResponseStep("PUT", "/copy-destination/key?partNumber=1&uploadId=test-upload",
+                     200, b'<CopyPartResult><ETag>"part"</ETag></CopyPartResult>'),
+        ResponseStep("PUT", "/copy-destination/key?partNumber=2&uploadId=test-upload",
                      200, b'<CopyPartResult><ETag>"part"</ETag></CopyPartResult>'),
         ResponseStep("POST", "/copy-destination/key?uploadId=test-upload", 200,
                      b"<CompleteMultipartUploadResult/>"),
@@ -184,7 +195,8 @@ def test_copy_aborts_after_invalid_part_response(s3_environment, body, diagnosti
                 b"</UploadId></InitiateMultipartUploadResult>")
     steps = [
         ResponseStep("HEAD", "/copy-source/key", 200,
-                     headers=(("Content-Length", "1"), ("ETag", '"source"'))),
+                     headers=(("Content-Length", str(MULTIPART_OBJECT_SIZE)),
+                              ("ETag", '"source"'))),
         empty_tags_step(),
         ResponseStep("POST", "/copy-destination/key?uploads", 200, initiate),
         ResponseStep("PUT", "/copy-destination/key?partNumber=1&uploadId=test-upload",
@@ -228,24 +240,89 @@ def test_copy_uses_ranges_and_source_etag(s3_environment):
         assert result.returncode == 0, result.stderr.decode()
 
 
-def test_copy_small_object_omits_range(s3_environment):
-    initiate = (b"<InitiateMultipartUploadResult><UploadId>test-upload"
-                b"</UploadId></InitiateMultipartUploadResult>")
+@pytest.mark.parametrize("part_size,options", [
+    (DEFAULT_PART_SIZE, ()),
+    (5 * 1024 * 1024, ("--multipart-size", "5M")),
+    (5 * 1024 * 1024 * 1024, ("--multipart-size", "5G")),
+])
+@pytest.mark.parametrize("size_offset", [-1, 0, 1])
+def test_copy_multipart_threshold(s3_environment, part_size, options, size_offset):
+    size = part_size + size_offset
+    base = "/copy-destination/key"
+    copy_headers = (("x-amz-copy-source", "/copy-source/key"),
+                    ("x-amz-copy-source-if-match", '"source"'))
+    steps = [
+        ResponseStep("HEAD", "/copy-source/key", 200,
+                     headers=(("Content-Length", str(size)), ("ETag", '"source"'))),
+    ]
+    if size <= part_size:
+        steps.append(ResponseStep("PUT", base, 200, b"<CopyObjectResult/>",
+                                  expected_headers=copy_headers,
+                                  absent_headers=("x-amz-copy-source-range",
+                                                  "x-amz-tagging")))
+    else:
+        steps.extend([
+            empty_tags_step(),
+            ResponseStep("POST", base + "?uploads", 200,
+                         b"<InitiateMultipartUploadResult><UploadId>test-upload"
+                         b"</UploadId></InitiateMultipartUploadResult>"),
+            ResponseStep("PUT", base + "?partNumber=1&uploadId=test-upload", 200,
+                         b'<CopyPartResult><ETag>"part1"</ETag></CopyPartResult>',
+                         expected_headers=copy_headers + (
+                             ("x-amz-copy-source-range", f"bytes=0-{part_size - 1}"),)),
+            ResponseStep("PUT", base + "?partNumber=2&uploadId=test-upload", 200,
+                         b'<CopyPartResult><ETag>"part2"</ETag></CopyPartResult>',
+                         expected_headers=copy_headers + (
+                             ("x-amz-copy-source-range", f"bytes={part_size}-{size - 1}"),)),
+            ResponseStep("POST", base + "?uploadId=test-upload", 200,
+                         b"<CompleteMultipartUploadResult/>"),
+        ])
+    with FaultServer(steps) as server:
+        result = run_copy({**s3_environment, "S3AR_ENDPOINT": server.endpoint}, *options)
+        assert result.returncode == 0, result.stderr.decode()
+    assert len(server.requests) == (2 if size <= part_size else 6)
+
+
+@pytest.mark.parametrize("status,body,diagnostic", [
+    (412, b"<Error><Code>PreconditionFailed</Code></Error>", b"source object changed"),
+    (403, b"<Error><Code>AccessDenied</Code></Error>", b"AccessDenied"),
+    (200, b"<Error><Code>AccessDenied</Code></Error>", b"AccessDenied"),
+    (200, b"not XML", b"invalid S3 copy response XML"),
+    (200, b"<CopyPartResult/>", b"invalid S3 copy response XML"),
+])
+def test_copy_small_object_failure(s3_environment, status, body, diagnostic):
     steps = [
         ResponseStep("HEAD", "/copy-source/key", 200,
                      headers=(("Content-Length", "3"), ("ETag", '"source"'))),
-        empty_tags_step(),
-        ResponseStep("POST", "/copy-destination/key?uploads", 200, initiate),
-        ResponseStep("PUT", "/copy-destination/key?partNumber=1&uploadId=test-upload",
-                     200, b'<CopyPartResult><ETag>"part"</ETag></CopyPartResult>',
-                     expected_headers=(("x-amz-copy-source-if-match", '"source"'),),
-                     absent_headers=("x-amz-copy-source-range",)),
-        ResponseStep("POST", "/copy-destination/key?uploadId=test-upload", 200,
-                     b"<CompleteMultipartUploadResult/>"),
+        ResponseStep("PUT", "/copy-destination/key", status, body,
+                     expected_headers=(("x-amz-copy-source-if-match", '"source"'),)),
     ]
     with FaultServer(steps) as server:
         result = run_copy({**s3_environment, "S3AR_ENDPOINT": server.endpoint})
-        assert result.returncode == 0, result.stderr.decode()
+    assert result.returncode == 2
+    assert diagnostic in result.stderr
+    assert len(server.requests) == 2
+
+
+@pytest.mark.parametrize("failure", ["http", "xml", "disconnect"])
+def test_copy_small_object_retry(s3_environment, failure):
+    copy_headers = (("x-amz-copy-source", "/copy-source/key"),
+                    ("x-amz-copy-source-if-match", '"source"'))
+    body = b"<CopyObjectResult/>" if failure == "disconnect" else \
+           b"<Error><Code>SlowDown</Code></Error>"
+    steps = [
+        ResponseStep("HEAD", "/copy-source/key", 200,
+                     headers=(("Content-Length", "3"), ("ETag", '"source"'))),
+        ResponseStep("PUT", "/copy-destination/key", 503 if failure == "http" else 200,
+                     body, expected_headers=copy_headers,
+                     disconnect_after=0 if failure == "disconnect" else None),
+        ResponseStep("PUT", "/copy-destination/key", 200, b"<CopyObjectResult/>",
+                     expected_headers=copy_headers),
+    ]
+    with FaultServer(steps) as server:
+        result = run_copy({**s3_environment, "S3AR_ENDPOINT": server.endpoint})
+    assert result.returncode == 0, result.stderr.decode()
+    assert len(server.requests) == 3
 
 
 @pytest.mark.parametrize("abort_status,abort_body", [
@@ -258,7 +335,8 @@ def test_copy_source_change_aborts(s3_environment, abort_status, abort_body):
                 b"</UploadId></InitiateMultipartUploadResult>")
     steps = [
         ResponseStep("HEAD", "/copy-source/key", 200,
-                     headers=(("Content-Length", "3"), ("ETag", '"source"'))),
+                     headers=(("Content-Length", str(MULTIPART_OBJECT_SIZE)),
+                              ("ETag", '"source"'))),
         empty_tags_step(),
         ResponseStep("POST", "/copy-destination/key?uploads", 200, initiate),
         ResponseStep("PUT", "/copy-destination/key?partNumber=1&uploadId=test-upload",
@@ -295,12 +373,15 @@ def test_copy_multipart_completion_with_encoded_upload_id(s3_environment, outcom
     upload_path = base + "?uploadId=copy%2B%2F%25%3D%26id"
     steps = [
         ResponseStep("HEAD", "/copy-source/key", 200,
-                     headers=close + (("Content-Length", "3"), ("ETag", '"source"'))),
+                     headers=close + (("Content-Length", str(MULTIPART_OBJECT_SIZE)),
+                                      ("ETag", '"source"'))),
         empty_tags_step(),
         ResponseStep("POST", base + "?uploads", 200,
                      b"<InitiateMultipartUploadResult><UploadId>copy+/%=&amp;id"
                      b"</UploadId></InitiateMultipartUploadResult>", close),
         ResponseStep("PUT", base + "?partNumber=1&uploadId=copy%2B%2F%25%3D%26id",
+                     200, b'<CopyPartResult><ETag>"part"</ETag></CopyPartResult>', close),
+        ResponseStep("PUT", base + "?partNumber=2&uploadId=copy%2B%2F%25%3D%26id",
                      200, b'<CopyPartResult><ETag>"part"</ETag></CopyPartResult>', close),
     ]
     if outcome == "uncertain":
@@ -595,7 +676,8 @@ def test_copy_interrupted_part_aborts_and_stops(s3_environment, interrupt_name):
 
         def do_HEAD(self):
             requests.append(("HEAD", self.path))
-            self.respond(headers=(("Content-Length", "3"), ("ETag", '"source"')))
+            self.respond(headers=(("Content-Length", str(MULTIPART_OBJECT_SIZE)),
+                                  ("ETag", '"source"')))
 
         def do_POST(self):
             requests.append(("POST", self.path))

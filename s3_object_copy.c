@@ -112,17 +112,6 @@ enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
                               "source HEAD response lacks ETag");
         goto done;
     }
-    if (properties.size != 0) {
-        uint64_t count =
-            properties.size / part_size + (properties.size % part_size != 0);
-        if (count > 10000) {
-            result = s3_error_set(
-                error, S3_RESULT_CONFIGURATION_ERROR,
-                "object exceeds 10000 parts; increase --multipart-size");
-            goto done;
-        }
-        part_count = (size_t) count;
-    }
     encoded_bucket = s3_uri_encode_alloc(source_bucket, false);
     encoded_key = s3_uri_encode_alloc(source_key, true);
     if (encoded_bucket == NULL || encoded_key == NULL) {
@@ -138,7 +127,9 @@ enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
     copy.source = source;
     copy.etag = properties.etag;
 
-    if (properties.size == 0) {
+    /* part_size is bounded by the 5 GiB CopyObject limit above. COPY is the
+     * default metadata/tagging directive, so the server preserves both. */
+    if (properties.size <= part_size) {
         copy.result_root = "CopyObjectResult";
         result = s3_url_build_object(client, destination_bucket,
                                      destination_key, NULL, &url, error);
@@ -148,6 +139,16 @@ enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
                 S3_UPLOAD_RETRY, NULL, &response, &copy, NULL);
         goto done;
     }
+
+    uint64_t count =
+        properties.size / part_size + (properties.size % part_size != 0);
+    if (count > 10000) {
+        result = s3_error_set(
+            error, S3_RESULT_CONFIGURATION_ERROR,
+            "object exceeds 10000 parts; increase --multipart-size");
+        goto done;
+    }
+    part_count = (size_t) count;
 
     result = s3_url_build_object(client, source_bucket, source_key, "tagging",
                                  &url, error);
@@ -181,7 +182,7 @@ enum s3_result s3_object_copy(struct s3_client *client, struct s3_error *error,
         char range[80];
         (void) snprintf(range, sizeof(range), "bytes=%" PRIu64 "-%" PRIu64,
                         first, last);
-        copy.range = properties.size > 5 * UINT64_C(1024) * 1024 ? range : NULL;
+        copy.range = range;
         result =
             s3_upload_part(client, error, destination_bucket, destination_key,
                            encoded_upload_id, part + 1,
