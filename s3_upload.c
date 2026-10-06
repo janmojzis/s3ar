@@ -58,7 +58,7 @@ add_properties_headers(struct curl_slist **headers,
          !s3_headers_add(headers, "Expires", properties->expires)))
         return s3_error_set(error, S3_RESULT_CONFIGURATION_ERROR,
                             "invalid object properties");
-    if (properties->metadata_count > 128 ||
+    if (properties->metadata_count > S3_METADATA_LIMIT ||
         (properties->metadata_count != 0 && properties->metadata == NULL))
         return s3_error_set(error, S3_RESULT_CONFIGURATION_ERROR,
                             "invalid object metadata");

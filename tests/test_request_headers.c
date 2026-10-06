@@ -3,6 +3,7 @@
 
 #include <assert.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -12,6 +13,7 @@ static bool allocation_failure;
 static bool fail_next_malloc;
 static bool not_modified;
 static bool object_headers;
+static bool valid_upload;
 static struct s3_response *get_response;
 
 void __real_s3_response_reset(struct s3_response *context);
@@ -52,6 +54,10 @@ CURLcode __wrap_curl_easy_getinfo(CURL *curl, CURLINFO info, ...) {
 CURLcode __wrap_curl_easy_perform(CURL *curl) {
     (void) curl;
     ++requests;
+    if (valid_upload) {
+        response->response.status = 200;
+        return CURLE_OK;
+    }
     if (not_modified) {
         char status[] = "HTTP/1.1 304 Not Modified\r\n";
         char end[] = "\r\n";
@@ -172,6 +178,26 @@ int main(void) {
                       "invalid or oversized GET response headers") == 0);
         object_headers = false;
     }
+    struct s3_metadata metadata[129];
+    char names[129][16];
+    for (unsigned i = 0; i < 129; ++i) {
+        (void) snprintf(names[i], sizeof(names[i]), "field%u", i);
+        metadata[i] = (struct s3_metadata) {.name = names[i], .value = "value"};
+    }
+    struct s3_object_properties upload_properties = {.metadata = metadata,
+                                                     .metadata_count = 128};
+    valid_upload = true;
+    requests = 0;
+    assert(s3_object_put(client, &error, "bucket", "key", 0, &upload_properties,
+                         read_empty, NULL) == S3_RESULT_OK);
+    assert(requests == 1);
+    upload_properties.metadata_count = 129;
+    requests = 0;
+    assert(s3_object_put(client, &error, "bucket", "key", 0, &upload_properties,
+                         read_empty, NULL) == S3_RESULT_CONFIGURATION_ERROR);
+    assert(requests == 0);
+    assert(strcmp(error.message, "invalid object metadata") == 0);
+    valid_upload = false;
     not_modified = true;
     requests = 0;
     error.result = S3_RESULT_ERROR;

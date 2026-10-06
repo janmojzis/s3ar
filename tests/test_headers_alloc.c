@@ -133,10 +133,31 @@ static void test_array_growth(void) {
     assert(capacity == 0);
 }
 
+static void test_metadata_limit(void) {
+    struct s3_response response = {0};
+    char header[64];
+    s3_response_reset(&response);
+    for (unsigned i = 0; i < 128; ++i) {
+        int size = snprintf(header, sizeof(header),
+                            "x-amz-meta-field%u: value\r\n", i);
+        assert(size > 0 && (size_t) size < sizeof(header));
+        assert(s3_headers_callback(header, 1, (size_t) size, &response) ==
+               (size_t) size);
+        assert(!response.invalid_headers);
+        assert(response.properties.metadata_count == i + 1);
+    }
+    strcpy(header, "x-amz-meta-over-limit: value\r\n");
+    (void) s3_headers_callback(header, 1, strlen(header), &response);
+    assert(response.invalid_headers);
+    assert(response.properties.metadata_count == 128);
+    s3_response_cleanup(&response);
+}
+
 int main(void) {
     test_array_growth();
     int failed = test_growth_failure(1);
     failed |= test_growth_failure(2);
     failed |= test_property_replacement_failure();
+    test_metadata_limit();
     return failed;
 }

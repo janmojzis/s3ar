@@ -6,7 +6,7 @@
 #include <string.h>
 #include <time.h>
 
-enum { S3_HEADER_LIMIT = 256 * 1024, S3_METADATA_LIMIT = 128 };
+enum { S3_HEADER_LIMIT = 256 * 1024 };
 
 static int compare_metadata(const void *left, const void *right) {
     const struct s3_metadata *a = left;
