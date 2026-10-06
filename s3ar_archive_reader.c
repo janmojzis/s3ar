@@ -159,98 +159,6 @@ static void ensure_bucket(struct extract_context *context, const char *bucket) {
     remember_bucket(&context->ready_buckets, bucket);
 }
 
-static void append_metadata(struct s3_metadata **metadata, size_t *count,
-                            const char *name, const void *value,
-                            size_t value_size) {
-    if (name[0] == '\0' || strpbrk(name, "\r\n") != NULL ||
-        (value_size > 0 && value == NULL) ||
-        (value_size > 0 && memchr(value, '\r', value_size) != NULL) ||
-        (value_size > 0 && memchr(value, '\n', value_size) != NULL) ||
-        (value_size > 0 && memchr(value, '\0', value_size) != NULL) ||
-        value_size == SIZE_MAX || *count == SIZE_MAX / sizeof(**metadata)) {
-        log_f2("invalid object metadata ", name);
-        s3ar_die(2);
-    }
-    struct s3_metadata *items =
-        realloc(*metadata, (*count + 1) * sizeof(**metadata));
-    if (items == NULL) {
-        log_f1("out of memory");
-        s3ar_die(2);
-    }
-    *metadata = items;
-    char *name_copy = strdup(name);
-    char *value_copy = malloc(value_size + 1);
-    if (name_copy == NULL || value_copy == NULL) {
-        free(name_copy);
-        free(value_copy);
-        log_f1("out of memory");
-        s3ar_die(2);
-    }
-    if (value_size > 0) { memcpy(value_copy, value, value_size); }
-    value_copy[value_size] = '\0';
-    items[*count] = (struct s3_metadata) {
-        .name = name_copy,
-        .value = value_copy,
-    };
-    ++*count;
-}
-
-static bool metadata_format(struct archive_entry *entry) {
-    static const char format_name[] = "user.s3ar.format";
-    static const char raw_format_name[] = "SCHILY.xattr.user.s3ar.format";
-    archive_entry_xattr_reset(entry);
-    const char *name;
-    const void *value;
-    size_t value_size;
-    while (archive_entry_xattr_next(entry, &name, &value, &value_size) ==
-           ARCHIVE_OK) {
-        if (name == NULL || (strcmp(name, format_name) != 0 &&
-                             strcmp(name, raw_format_name) != 0)) {
-            continue;
-        }
-        if (value == NULL ||
-            value_size != sizeof(S3AR_XATTR_FORMAT_VERSION) - 1 ||
-            memcmp(value, S3AR_XATTR_FORMAT_VERSION,
-                   sizeof(S3AR_XATTR_FORMAT_VERSION) - 1) != 0) {
-            log_f1("unsupported archive metadata format");
-            s3ar_die(2);
-        }
-        return true;
-    }
-    return false;
-}
-
-/* Validate the format-1 object contract; payload verification is separate. */
-static void read_object_hash(struct archive_entry *entry, char *output) {
-    bool found = false;
-    const char *name;
-    const void *value;
-    size_t size;
-    archive_entry_xattr_reset(entry);
-    while (archive_entry_xattr_next(entry, &name, &value, &size) ==
-           ARCHIVE_OK) {
-        if (name == NULL || (strcmp(name, "user.s3ar.hash") != 0 &&
-                             strcmp(name, "SCHILY.xattr.user.s3ar.hash") != 0))
-            continue;
-        bool valid =
-            value != NULL && size == 4 && memcmp(value, "none", 4) == 0;
-        valid = valid || s3ar_hash_valid(value, size);
-        if (found || !valid) {
-            log_f1("invalid or duplicate object hash in archive");
-            s3ar_die(2);
-        }
-        if (output != NULL) {
-            memcpy(output, value, size);
-            output[size] = '\0';
-        }
-        found = true;
-    }
-    if (!found) {
-        log_f1("missing object hash in format-1 archive");
-        s3ar_die(2);
-    }
-}
-
 static bool identity_safe(unsigned char value) {
     return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z') ||
            (value >= '0' && value <= '9') || value == '-' || value == '.' ||
@@ -310,133 +218,200 @@ static char *decode_identity(const char *header, const void *value,
     return decoded;
 }
 
-static char *read_identity_header(struct archive_entry *entry,
-                                  const char *name) {
-    char *decoded = NULL;
-    archive_entry_xattr_reset(entry);
-    const char *xattr_name;
-    const void *value;
-    size_t value_size;
-    while (archive_entry_xattr_next(entry, &xattr_name, &value, &value_size) ==
-           ARCHIVE_OK) {
-        if (xattr_name == NULL || strcmp(xattr_name, name) != 0) { continue; }
-        if (decoded != NULL) {
-            free(decoded);
-            log_f2("duplicate S3 identity PAX header ", name);
-            s3ar_die(2);
-        }
-        decoded = decode_identity(name, value, value_size);
+/* Views borrow libarchive's values until the next archive member is read. */
+struct attribute_value {
+    const void *data;
+    size_t size;
+    unsigned count;
+};
+
+struct entry_metadata {
+    char *bucket;
+    char *key;
+    bool namespaced;
+    char hash[S3AR_HASH_TEXT_SIZE];
+    struct attribute_value etag;
+    char *etag_text;
+    struct s3_metadata *items;
+    size_t count;
+};
+
+static void remember_attribute(struct attribute_value *attribute,
+                               const void *value, size_t size) {
+    if (attribute->count == 0) {
+        attribute->data = value;
+        attribute->size = size;
     }
-    return decoded;
+    if (attribute->count < 2) ++attribute->count;
 }
 
-static void read_identity(struct archive_entry *entry, bool object,
-                          char **bucket, char **key) {
-    static const char bucket_name[] = "user.s3ar.bucket";
-    static const char key_name[] = "user.s3ar.key";
-    *bucket = NULL;
-    *key = NULL;
-    if (metadata_format(entry) && object) read_object_hash(entry, NULL);
-    *bucket = read_identity_header(entry, bucket_name);
-    *key = read_identity_header(entry, key_name);
-    if (*bucket == NULL || (object ? *key == NULL : *key != NULL) ||
-        strchr(*bucket, '/') != NULL) {
-        free(*bucket);
-        free(*key);
-        *bucket = NULL;
-        *key = NULL;
+static bool attribute_is(const char *name, const char *expected) {
+    if (strncmp(name, "SCHILY.xattr.", sizeof("SCHILY.xattr.") - 1) == 0)
+        name += sizeof("SCHILY.xattr.") - 1;
+    return strcmp(name, expected) == 0;
+}
+
+static const char *metadata_name(const char *name, bool namespaced) {
+    /* Preserve legacy identity exclusions and namespace rules. */
+    if (strcmp(name, "user.s3ar.bucket") == 0 ||
+        strcmp(name, "user.s3ar.key") == 0)
+        return NULL;
+    if (strncmp(name, "SCHILY.xattr.", sizeof("SCHILY.xattr.") - 1) == 0)
+        name += sizeof("SCHILY.xattr.") - 1;
+    const char *prefix = namespaced ? "user.s3ar.metadata." : "user.";
+    size_t length = strlen(prefix);
+    return strncmp(name, prefix, length) == 0 ? name + length : NULL;
+}
+
+static void entry_metadata_free(struct entry_metadata *metadata) {
+    free(metadata->bucket);
+    free(metadata->key);
+    free(metadata->etag_text);
+    if (metadata->items != NULL) {
+        for (size_t i = 0; i < metadata->count; ++i) {
+            free((char *) metadata->items[i].name);
+            free((char *) metadata->items[i].value);
+        }
+        free(metadata->items);
+    }
+    memset(metadata, 0, sizeof(*metadata));
+}
+
+static void read_entry_metadata(struct archive_entry *entry, bool object,
+                                struct entry_metadata *metadata) {
+    struct attribute_value format = {0}, hash = {0};
+    size_t namespaced_count = 0, legacy_count = 0;
+    const char *name;
+    const void *value;
+    size_t size;
+    memset(metadata, 0, sizeof(*metadata));
+    strcpy(metadata->hash, "none");
+    archive_entry_xattr_reset(entry);
+    while (archive_entry_xattr_next(entry, &name, &value, &size) ==
+           ARCHIVE_OK) {
+        if (name == NULL) continue;
+        if (attribute_is(name, "user.s3ar.format"))
+            remember_attribute(&format, value, size);
+        else if (attribute_is(name, "user.s3ar.hash"))
+            remember_attribute(&hash, value, size);
+        else if (attribute_is(name, "user.s3ar.etag"))
+            remember_attribute(&metadata->etag, value, size);
+        if (strcmp(name, "user.s3ar.bucket") == 0 ||
+            strcmp(name, "user.s3ar.key") == 0) {
+            char **target = strcmp(name, "user.s3ar.bucket") == 0
+                                ? &metadata->bucket
+                                : &metadata->key;
+            if (*target != NULL) {
+                log_f2("duplicate S3 identity PAX header ", name);
+                s3ar_die(2);
+            }
+            *target = decode_identity(name, value, size);
+        }
+        /* Saturate counts: irrelevant namespaces cannot force allocation. */
+        if (metadata_name(name, true) != NULL &&
+            namespaced_count <= S3_METADATA_LIMIT)
+            ++namespaced_count;
+        if (metadata_name(name, false) != NULL &&
+            legacy_count <= S3_METADATA_LIMIT)
+            ++legacy_count;
+    }
+    metadata->namespaced = format.count != 0;
+    if (metadata->namespaced &&
+        (format.data == NULL ||
+         format.size != sizeof(S3AR_XATTR_FORMAT_VERSION) - 1 ||
+         memcmp(format.data, S3AR_XATTR_FORMAT_VERSION, format.size) != 0)) {
+        log_f1("unsupported archive metadata format");
+        s3ar_die(2);
+    }
+    if (metadata->namespaced && object) {
+        if (hash.count == 0) {
+            log_f1("missing object hash in format-1 archive");
+            s3ar_die(2);
+        }
+        bool valid = hash.data != NULL && hash.size == 4 &&
+                     memcmp(hash.data, "none", 4) == 0;
+        if (hash.count != 1 ||
+            (!valid && !s3ar_hash_valid(hash.data, hash.size))) {
+            log_f1("invalid or duplicate object hash in archive");
+            s3ar_die(2);
+        }
+        memcpy(metadata->hash, hash.data, hash.size);
+        metadata->hash[hash.size] = '\0';
+    }
+    if (metadata->bucket == NULL ||
+        (object ? metadata->key == NULL : metadata->key != NULL) ||
+        strchr(metadata->bucket, '/') != NULL) {
         log_f1("incomplete or invalid S3 identity PAX headers");
         s3ar_die(2);
     }
+    metadata->count = metadata->namespaced ? namespaced_count : legacy_count;
 }
 
-static char *read_etag(struct archive_entry *entry) {
-    static const char etag_name[] = "user.s3ar.etag";
-    static const char raw_etag_name[] = "SCHILY.xattr.user.s3ar.etag";
-    char *etag = NULL;
-    bool found = false;
-    archive_entry_xattr_reset(entry);
-    const char *name;
+static const char *entry_metadata_etag(struct entry_metadata *metadata) {
+    const struct attribute_value *etag = &metadata->etag;
+    if (etag->count == 0) return NULL;
+    if (etag->count != 1 || etag->size == SIZE_MAX ||
+        (etag->size > 0 &&
+         (etag->data == NULL || memchr(etag->data, '\0', etag->size) != NULL ||
+          memchr(etag->data, '\r', etag->size) != NULL ||
+          memchr(etag->data, '\n', etag->size) != NULL))) {
+        log_f1("invalid object ETag in archive");
+        s3ar_die(2);
+    }
+    if (etag->size == 0) return NULL;
+    char *copy = malloc(etag->size + 1);
+    if (copy == NULL) {
+        log_f1("out of memory");
+        s3ar_die(2);
+    }
+    memcpy(copy, etag->data, etag->size);
+    copy[etag->size] = '\0';
+    metadata->etag_text = copy;
+    return copy;
+}
+
+static void read_entry_user_metadata(struct archive_entry *entry,
+                                     struct entry_metadata *metadata) {
+    if (metadata->count > S3_METADATA_LIMIT) {
+        log_f1("too many object metadata fields in archive");
+        s3ar_die(2);
+    }
+    if (metadata->count == 0) return;
+    metadata->items = calloc(metadata->count, sizeof(*metadata->items));
+    if (metadata->items == NULL) {
+        log_f1("out of memory");
+        s3ar_die(2);
+    }
+    const char *attribute;
     const void *value;
-    size_t value_size;
-    while (archive_entry_xattr_next(entry, &name, &value, &value_size) ==
+    size_t size, index = 0;
+    archive_entry_xattr_reset(entry);
+    while (archive_entry_xattr_next(entry, &attribute, &value, &size) ==
            ARCHIVE_OK) {
-        if (name == NULL || (strcmp(name, etag_name) != 0 &&
-                             strcmp(name, raw_etag_name) != 0)) {
-            continue;
-        }
-        if (found || (value_size > 0 && value == NULL) ||
-            (value_size > 0 && memchr(value, '\0', value_size) != NULL) ||
-            (value_size > 0 && memchr(value, '\r', value_size) != NULL) ||
-            (value_size > 0 && memchr(value, '\n', value_size) != NULL) ||
-            value_size == SIZE_MAX) {
-            free(etag);
-            log_f1("invalid object ETag in archive");
+        if (attribute == NULL) continue;
+        const char *name = metadata_name(attribute, metadata->namespaced);
+        if (name == NULL) continue;
+        if (name[0] == '\0' || strpbrk(name, "\r\n") != NULL ||
+            size == SIZE_MAX ||
+            (size > 0 && (value == NULL || memchr(value, '\r', size) != NULL ||
+                          memchr(value, '\n', size) != NULL ||
+                          memchr(value, '\0', size) != NULL))) {
+            log_f2("invalid object metadata ", name);
             s3ar_die(2);
         }
-        found = true;
-        if (value_size == 0) { continue; }
-        etag = malloc(value_size + 1);
-        if (etag == NULL) {
+        char *name_copy = strdup(name);
+        char *value_copy = malloc(size + 1);
+        if (name_copy == NULL || value_copy == NULL) {
+            free(name_copy);
+            free(value_copy);
             log_f1("out of memory");
             s3ar_die(2);
         }
-        memcpy(etag, value, value_size);
-        etag[value_size] = '\0';
+        if (size > 0) memcpy(value_copy, value, size);
+        value_copy[size] = '\0';
+        metadata->items[index++] =
+            (struct s3_metadata) {.name = name_copy, .value = value_copy};
     }
-    return etag;
-}
-
-static struct s3_metadata *read_metadata(struct archive_entry *entry,
-                                         size_t *count) {
-    static const char metadata_prefix[] = "user.s3ar.metadata.";
-    static const char raw_metadata_prefix[] =
-        "SCHILY.xattr.user.s3ar.metadata.";
-    static const char legacy_prefix[] = "user.";
-    static const char raw_legacy_prefix[] = "SCHILY.xattr.user.";
-    bool namespaced = metadata_format(entry);
-    struct s3_metadata *metadata = NULL;
-    archive_entry_xattr_reset(entry);
-    const char *xattr_name;
-    const void *value;
-    size_t value_size;
-    while (archive_entry_xattr_next(entry, &xattr_name, &value, &value_size) ==
-           ARCHIVE_OK) {
-        const char *name = NULL;
-        if (xattr_name == NULL) { continue; }
-        if (strcmp(xattr_name, "user.s3ar.bucket") == 0 ||
-            strcmp(xattr_name, "user.s3ar.key") == 0) {
-            continue;
-        }
-        if (namespaced && strncmp(xattr_name, metadata_prefix,
-                                  sizeof(metadata_prefix) - 1) == 0) {
-            name = xattr_name + sizeof(metadata_prefix) - 1;
-        }
-        else if (namespaced && strncmp(xattr_name, raw_metadata_prefix,
-                                       sizeof(raw_metadata_prefix) - 1) == 0) {
-            name = xattr_name + sizeof(raw_metadata_prefix) - 1;
-        }
-        else if (!namespaced && strncmp(xattr_name, legacy_prefix,
-                                        sizeof(legacy_prefix) - 1) == 0) {
-            name = xattr_name + sizeof(legacy_prefix) - 1;
-        }
-        else if (!namespaced && strncmp(xattr_name, raw_legacy_prefix,
-                                        sizeof(raw_legacy_prefix) - 1) == 0) {
-            name = xattr_name + sizeof(raw_legacy_prefix) - 1;
-        }
-        if (name != NULL) {
-            append_metadata(&metadata, count, name, value, value_size);
-        }
-    }
-    return metadata;
-}
-
-static void free_metadata(struct s3_metadata *metadata, size_t count) {
-    for (size_t i = 0; i < count; ++i) {
-        free((char *) metadata[i].name);
-        free((char *) metadata[i].value);
-    }
-    free(metadata);
 }
 
 static enum s3_read_result read_object_data(void *callback_data,
@@ -567,55 +542,50 @@ static void transform_identity(struct extract_context *context, char **bucket,
 
 static void extract_bucket(struct extract_context *context,
                            struct archive_entry *entry) {
-    char *header_bucket;
-    char *header_key;
-    read_identity(entry, false, &header_bucket, &header_key);
-    const char *bucket = header_bucket;
+    struct entry_metadata metadata;
+    read_entry_metadata(entry, false, &metadata);
+    const char *bucket = metadata.bucket;
     remember_bucket(&context->archive_buckets, bucket);
-    transform_identity(context, &header_bucket, &header_key);
-    bucket = header_bucket;
+    transform_identity(context, &metadata.bucket, &metadata.key);
+    bucket = metadata.bucket;
     if (!s3ar_selection_set_match(&context->selections, bucket, NULL)) {
-        free(header_bucket);
-        free(header_key);
+        entry_metadata_free(&metadata);
         return;
     }
     if (context->list_only) {
         log_o1(s3_log_uri(NULL, bucket, NULL));
-        free(header_bucket);
-        free(header_key);
+        entry_metadata_free(&metadata);
         return;
     }
     ensure_bucket(context, bucket);
     log_i1(s3_log_uri(NULL, bucket, NULL));
-    free(header_bucket);
-    free(header_key);
+    entry_metadata_free(&metadata);
 }
 
 static void extract_object(struct extract_context *context,
                            struct archive_entry *entry) {
-    char *header_bucket;
-    char *header_key;
-    read_identity(entry, true, &header_bucket, &header_key);
-    const char *bucket = header_bucket;
-    const char *key = header_key;
+    struct entry_metadata metadata;
+    read_entry_metadata(entry, true, &metadata);
+    const char *bucket = metadata.bucket;
+    const char *key = metadata.key;
     if (!bucket_known(&context->archive_buckets, bucket)) {
         log_f3("object precedes bucket archive member", " ",
                s3_log_uri(NULL, bucket, key));
         s3ar_die(2);
     }
-    transform_identity(context, &header_bucket, &header_key);
-    bucket = header_bucket;
-    key = header_key;
+    transform_identity(context, &metadata.bucket, &metadata.key);
+    bucket = metadata.bucket;
+    key = metadata.key;
     if (!s3ar_selection_set_match(&context->selections, bucket, key)) {
         if (archive_read_data_skip(context->archive) != ARCHIVE_OK) {
             archive_fatal(context->archive, "cannot skip archive member");
         }
-        free(header_bucket);
-        free(header_key);
+        entry_metadata_free(&metadata);
         return;
     }
-    char hash_field[1 + S3AR_HASH_TEXT_SIZE] = " none";
-    if (metadata_format(entry)) read_object_hash(entry, hash_field + 1);
+    char hash_field[1 + S3AR_HASH_TEXT_SIZE];
+    hash_field[0] = ' ';
+    strcpy(hash_field + 1, metadata.hash);
     if (context->list_only) {
         la_int64_t archive_size = archive_entry_size(entry);
         if (archive_size < 0) {
@@ -623,7 +593,8 @@ static void extract_object(struct extract_context *context,
                    s3_log_uri(NULL, bucket, key));
             s3ar_die(2);
         }
-        char *etag = context->config->verbose ? read_etag(entry) : NULL;
+        const char *etag =
+            context->config->verbose ? entry_metadata_etag(&metadata) : NULL;
         if (context->config->verbose) {
             log_o8(s3_log_uri(NULL, bucket, key), " ",
                    log_num((long long) archive_size), " ",
@@ -632,11 +603,9 @@ static void extract_object(struct extract_context *context,
         }
         else
             log_o1(s3_log_uri(NULL, bucket, key));
-        free(etag);
         if (archive_read_data_skip(context->archive) != ARCHIVE_OK)
             archive_fatal(context->archive, "cannot skip archive member");
-        free(header_bucket);
-        free(header_key);
+        entry_metadata_free(&metadata);
         return;
     }
 
@@ -646,8 +615,7 @@ static void extract_object(struct extract_context *context,
                s3_log_uri(NULL, bucket, key));
         s3ar_die(2);
     }
-    size_t metadata_count = 0;
-    struct s3_metadata *metadata = read_metadata(entry, &metadata_count);
+    read_entry_user_metadata(entry, &metadata);
     if (context->config->transforms != NULL)
         ensure_bucket(context, bucket);
     else if (!bucket_known(&context->ready_buckets, bucket)) {
@@ -671,14 +639,13 @@ static void extract_object(struct extract_context *context,
         }
     }
     struct s3_object_properties properties = {
-        .metadata = metadata,
-        .metadata_count = metadata_count,
+        .metadata = metadata.items,
+        .metadata_count = metadata.count,
     };
     struct s3_error error = {0};
     enum s3_result result = s3_object_put(context->config->s3, &error, bucket,
                                           key, (uint64_t) archive_size,
                                           &properties, read_object_data, &put);
-    free_metadata(metadata, metadata_count);
     if (interrupted_signal != 0 && put.read_status == PUT_READ_OK)
         put.read_status = PUT_READ_INTERRUPTED;
     if (put.read_status != PUT_READ_OK &&
@@ -707,8 +674,7 @@ static void extract_object(struct extract_context *context,
            context->config->hash
                ? (put.hash_verified ? " verified" : " unverified")
                : "");
-    free(header_bucket);
-    free(header_key);
+    entry_metadata_free(&metadata);
 }
 
 static void extract_entry(struct extract_context *context,

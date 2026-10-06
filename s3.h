@@ -52,6 +52,9 @@ struct s3_error {
     char bucket_region[128];
 };
 
+/* Maximum user metadata fields accepted by the client. */
+enum { S3_METADATA_LIMIT = 128 };
+
 struct s3_metadata {
     const char *name;
     const char *value;
