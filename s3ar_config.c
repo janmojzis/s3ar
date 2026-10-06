@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT-0 */
 #include "s3ar_config.h"
+#include "secure_free.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,14 +14,6 @@ static enum s3_result config_error_set(struct s3_error *error,
         (void) snprintf(error->message, sizeof(error->message), "%s", message);
     }
     return result;
-}
-
-static void secure_free(char *value) {
-    if (value == NULL) return;
-    volatile unsigned char *p = (volatile unsigned char *) value;
-    size_t size = strlen(value);
-    while (size-- != 0) *p++ = 0;
-    free(value);
 }
 
 static enum s3_result copy_env(char **target, const char *name, bool required,

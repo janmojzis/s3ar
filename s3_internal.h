@@ -77,7 +77,6 @@ void s3_error_clear(struct s3_error *error);
 enum s3_result s3_error_set(struct s3_error *error, enum s3_result result,
                             const char *message);
 char *s3_memory_strdup(const char *value);
-void s3_memory_secure_free(char *value);
 /* Double capacity (or use initial_capacity). Failure preserves items/capacity.
  */
 void *s3_memory_grow(void *items, size_t *capacity, size_t item_size,

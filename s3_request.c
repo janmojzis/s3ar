@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT-0 */
 #include "s3_internal.h"
+#include "secure_free.h"
 #include <openssl/evp.h>
 
 #include <stdio.h>
@@ -49,7 +50,7 @@ enum s3_result s3_request_prepare(struct s3_client *client, const char *url,
         (void) snprintf(token, size, "x-amz-security-token: %s",
                         client->session_token);
         next = curl_slist_append(*headers, token);
-        s3_memory_secure_free(token);
+        secure_free(token);
         if (next == NULL)
             return s3_error_set(error, S3_RESULT_ERROR, "out of memory");
         *headers = next;

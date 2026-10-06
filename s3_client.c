@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT-0 */
 #include "s3_internal.h"
+#include "secure_free.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -96,10 +97,10 @@ void s3_client_close(struct s3_client *client) {
     if (client->url != NULL) curl_url_cleanup(client->url);
     free(client->endpoint);
     free(client->region);
-    s3_memory_secure_free(client->access_key);
-    s3_memory_secure_free(client->secret_key);
-    s3_memory_secure_free(client->credentials);
-    s3_memory_secure_free(client->session_token);
+    secure_free(client->access_key);
+    secure_free(client->secret_key);
+    secure_free(client->credentials);
+    secure_free(client->session_token);
     free(client->user_agent);
     free(client);
     curl_global_cleanup();

@@ -14,16 +14,6 @@ char *s3_memory_strdup(const char *value) {
     return copy;
 }
 
-void s3_memory_secure_free(char *value) {
-    volatile unsigned char *p;
-    size_t size;
-    if (value == NULL) return;
-    size = strlen(value);
-    p = (volatile unsigned char *) value;
-    while (size-- != 0) *p++ = 0;
-    free(value);
-}
-
 void *s3_memory_grow(void *items, size_t *capacity, size_t item_size,
                      size_t initial_capacity) {
     if (*capacity > SIZE_MAX / 2) return NULL;
