@@ -3,7 +3,6 @@
 
 import argparse
 import errno
-import json
 import os
 import signal
 import shutil
@@ -25,7 +24,6 @@ from werkzeug.serving import WSGIRequestHandler, make_server
 ACCESS_KEY = "test-access"
 SECRET_KEY = "test-secret"
 STATE_DIRECTORY = ".s3testserver"
-METADATA_FILE = "metadata.json"
 METADATA_DATABASE = "metadata.sqlite3"
 
 
@@ -68,7 +66,6 @@ class FilesystemStore:
     def __init__(self, root):
         self.root = root
         self.state_directory = root / STATE_DIRECTORY
-        self.metadata_path = self.state_directory / METADATA_FILE
         self.lock = threading.RLock()
         self.database = self._open_metadata_database()
         self.uploads = {}
@@ -76,7 +73,6 @@ class FilesystemStore:
     def _open_metadata_database(self):
         self.state_directory.mkdir(mode=0o700, exist_ok=True)
         database_path = self.state_directory / METADATA_DATABASE
-        new_database = not database_path.exists()
         try:
             database = sqlite3.connect(database_path, check_same_thread=False)
             database.execute(
@@ -85,34 +81,10 @@ class FilesystemStore:
                 "name TEXT NOT NULL, value TEXT NOT NULL, "
                 "PRIMARY KEY (bucket, object_key, name))"
             )
-            if new_database:
-                self._import_legacy_metadata(database)
             database.commit()
             return database
         except (OSError, sqlite3.Error) as error:
             raise RuntimeError(f"cannot open {database_path}: {error}") from error
-
-    def _import_legacy_metadata(self, database):
-        try:
-            legacy = json.loads(self.metadata_path.read_text(encoding="utf-8"))
-        except FileNotFoundError:
-            return
-        except (OSError, json.JSONDecodeError) as error:
-            raise RuntimeError(f"cannot read {self.metadata_path}: {error}") from error
-        if not isinstance(legacy, dict):
-            return
-        for identity, metadata in legacy.items():
-            if "/" not in identity or not isinstance(metadata, dict):
-                continue
-            bucket, key = identity.split("/", 1)
-            database.executemany(
-                "INSERT OR REPLACE INTO metadata VALUES (?, ?, ?, ?)",
-                (
-                    (bucket, key, name, value)
-                    for name, value in metadata.items()
-                    if isinstance(name, str) and isinstance(value, str)
-                ),
-            )
 
     def iter_buckets(self):
         for path in sorted(self.root.iterdir()):

@@ -2,7 +2,6 @@
 #define S3AR_H____
 
 #include "s3.h"
-#include "s3ar_format.h"
 #include "s3ar_selection.h"
 
 #include <stdbool.h>

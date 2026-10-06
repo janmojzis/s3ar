@@ -1,5 +1,4 @@
 import io
-import json
 import os
 import subprocess
 from pathlib import Path
@@ -214,21 +213,6 @@ def test_server_rejects_reserved_temporary_filenames(tmp_path, key):
         assert not client.list_objects_v2(Bucket="reserved-key-test").get("Contents")
     finally:
         server.stop()
-
-
-def test_server_imports_legacy_metadata_json(tmp_path):
-    state = tmp_path / ".s3testserver"
-    state.mkdir()
-    (state / "metadata.json").write_text(
-        json.dumps({"legacy-bucket/path/object": {"source": "legacy"}}),
-        encoding="utf-8",
-    )
-
-    store = FilesystemStore(tmp_path)
-
-    assert store.metadata_for("legacy-bucket", "path/object") == {
-        "source": "legacy"
-    }
 
 
 @pytest.mark.parametrize("key", ["literal%2Fkey", "café", "prefix/%252F"])

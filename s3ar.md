@@ -207,7 +207,7 @@ store none and warn; a successful fallback exits with status 0.
 Without this option, creation streams every object and stores none.
 With -x, verify stored SHA-512 values before PUT or multipart completion.
 A mismatch aborts the upload and stops restoration with status 2. Objects
-with none (or legacy objects without a hash) are restored with a warning.
+with none are restored with a warning. A missing hash attribute is rejected.
 Without this option, restoration does not verify object content.
 This option requires -c or -x.
 With -x --hash -v, the stored hash is followed by verified or unverified.
@@ -397,10 +397,10 @@ informational ETag. Slash remains unescaped;
 bytes outside the RFC 3986 unreserved set use uppercase
 **`%HH`**
 encoding. The bucket and key attributes are the authoritative S3 identity.
-The format marker prevents metadata from older archives whose name begins with
-**`s3ar.`**
-from being mistaken for part of the current format. On a filesystem, the
-attribute names are
+Every bucket and object entry must have exactly one format marker with value
+1. Missing, duplicate, or unsupported markers are rejected, including on
+unselected entries. Every object must also carry a valid hash attribute.
+On a filesystem, the attribute names are
 **`user.s3ar.format,`**
 **`user.s3ar.bucket,`**
 and
@@ -502,12 +502,9 @@ unselected buckets are not created.
 On entries marked with
 **`SCHILY.xattr.user.s3ar.format=1,`**
 **`SCHILY.xattr.user.s3ar.metadata.NAME`**
-values are restored as S3 user metadata. On unmarked entries from older s3ar
-releases,
-**`SCHILY.xattr.user.NAME`**
-is accepted instead, including legacy names that begin with the now-reserved
-**`s3ar.`**
-prefix. Unknown format-marker values are rejected.
+values are restored as S3 user metadata. Only this metadata namespace is
+used; unrelated attributes are ignored. Unmarked entries and unknown
+format-marker values are rejected.
 
 Bucket ACL summaries are informational and are not restored. New buckets and
 uploaded objects use private ACLs; existing bucket ACLs are unchanged. With
@@ -550,9 +547,8 @@ BUCKET/KEY SIZE LAST_MODIFIED ETAG HASH
 ```
 
 Size in bytes and modification time in seconds since the Unix epoch come
-from the archive member. Archives created by
-current versions store the ETag in an informational PAX attribute; older
-archives without it show
+from the archive member. The ETag is an optional informational PAX
+attribute; entries without it show
 **`-.`**
 The hash field contains the stored sha512: value, or none when no hash is
 available. Displaying the hash does not verify the object content.

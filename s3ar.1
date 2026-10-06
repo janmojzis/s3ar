@@ -170,8 +170,8 @@ exits with status 0.
 Without this option, creation streams every object and stores none.
 With \-x, verify stored SHA\-512 values before PUT or multipart completion.
 A mismatch aborts the upload and stops restoration with status 2.
-Objects with none (or legacy objects without a hash) are restored with a
-warning.
+Objects with none are restored with a warning.
+A missing hash attribute is rejected.
 Without this option, restoration does not verify object content.
 This option requires \-c or \-x.
 With \-x \-\-hash \-v, the stored hash is followed by verified or unverified.
@@ -322,8 +322,10 @@ informational ETag.
 Slash remains unescaped; bytes outside the RFC 3986 unreserved set use uppercase
 \f[B]\f[CB]%HH\f[B]\f[R] encoding.
 The bucket and key attributes are the authoritative S3 identity.
-The format marker prevents metadata from older archives whose name begins with
-\f[B]\f[CB]s3ar.\f[B]\f[R] from being mistaken for part of the current format.
+Every bucket and object entry must have exactly one format marker with value 1.
+Missing, duplicate, or unsupported markers are rejected, including on unselected
+entries.
+Every object must also carry a valid hash attribute.
 On a filesystem, the attribute names are \f[B]\f[CB]user.s3ar.format,\f[B]\f[R]
 \f[B]\f[CB]user.s3ar.bucket,\f[B]\f[R] and
 \f[B]\f[CB]user.s3ar.bucket\-acl\f[B]\f[R] for bucket directories, plus
@@ -410,11 +412,8 @@ buckets are not created.
 On entries marked with \f[B]\f[CB]SCHILY.xattr.user.s3ar.format=1,\f[B]\f[R]
 \f[B]\f[CB]SCHILY.xattr.user.s3ar.metadata.NAME\f[B]\f[R] values are restored as
 S3 user metadata.
-On unmarked entries from older s3ar releases,
-\f[B]\f[CB]SCHILY.xattr.user.NAME\f[B]\f[R] is accepted instead, including
-legacy names that begin with the now\-reserved \f[B]\f[CB]s3ar.\f[B]\f[R]
-prefix.
-Unknown format\-marker values are rejected.
+Only this metadata namespace is used; unrelated attributes are ignored.
+Unmarked entries and unknown format\-marker values are rejected.
 .PP
 Bucket ACL summaries are informational and are not restored.
 New buckets and uploaded objects use private ACLs; existing bucket ACLs are
@@ -451,9 +450,9 @@ BUCKET/KEY SIZE LAST_MODIFIED ETAG HASH
 .PP
 Size in bytes and modification time in seconds since the Unix epoch come from
 the archive member.
-Archives created by current versions store the ETag in an informational PAX
-attribute; older archives without it show \f[B]\f[CB]\-.\f[B]\f[R] The hash
-field contains the stored sha512: value, or none when no hash is available.
+The ETag is an optional informational PAX attribute; entries without it show
+\f[B]\f[CB]\-.\f[B]\f[R] The hash field contains the stored sha512: value, or
+none when no hash is available.
 Displaying the hash does not verify the object content.
 .SH LISTING LIVE S3 RESOURCES
 Use \f[B]\f[CB]s3ar\-list(1)\f[B]\f[R] to list live buckets and objects.

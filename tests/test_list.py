@@ -166,13 +166,18 @@ def test_archive_listing_quotes_etag_control_bytes(executable, etag):
     with tarfile.open(fileobj=archive, mode="w", format=tarfile.PAX_FORMAT) as out:
         bucket = tarfile.TarInfo("bucket/")
         bucket.type = tarfile.DIRTYPE
-        bucket.pax_headers = {"SCHILY.xattr.user.s3ar.bucket": "bucket"}
+        bucket.pax_headers = {
+            "SCHILY.xattr.user.s3ar.format": "1",
+            "SCHILY.xattr.user.s3ar.bucket": "bucket",
+        }
         out.addfile(bucket)
         entry = tarfile.TarInfo("bucket/key")
         entry.pax_headers = {
+            "SCHILY.xattr.user.s3ar.format": "1",
             "SCHILY.xattr.user.s3ar.bucket": "bucket",
             "SCHILY.xattr.user.s3ar.key": "key",
             "SCHILY.xattr.user.s3ar.etag": etag,
+            "SCHILY.xattr.user.s3ar.hash": "none",
         }
         out.addfile(entry)
     result = subprocess.run([str(executable), "-tv"], input=archive.getvalue(),
@@ -211,7 +216,10 @@ def test_format_one_requires_object_hash(
     with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as archive:
         directory = tarfile.TarInfo("bucket")
         directory.type = tarfile.DIRTYPE
-        directory.pax_headers = {"SCHILY.xattr.user.s3ar.bucket": "bucket"}
+        directory.pax_headers = {
+            "SCHILY.xattr.user.s3ar.format": "1",
+            "SCHILY.xattr.user.s3ar.bucket": "bucket",
+        }
         archive.addfile(directory)
         entry = tarfile.TarInfo("bucket/key")
         entry.pax_headers = {
@@ -241,7 +249,10 @@ def test_format_one_rejects_duplicate_hash(executable, tmp_path):
     with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as archive:
         directory = tarfile.TarInfo("bucket")
         directory.type = tarfile.DIRTYPE
-        directory.pax_headers = {"SCHILY.xattr.user.s3ar.bucket": "bucket"}
+        directory.pax_headers = {
+            "SCHILY.xattr.user.s3ar.format": "1",
+            "SCHILY.xattr.user.s3ar.bucket": "bucket",
+        }
         archive.addfile(directory)
         entry = tarfile.TarInfo("bucket/key")
         entry.pax_headers = {

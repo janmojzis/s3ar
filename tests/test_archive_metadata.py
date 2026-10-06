@@ -17,13 +17,16 @@ PREFIX = "SCHILY.xattr.user."
 
 
 def run_archive(tmp_path, attributes, mode="-x", selection="s3://",
-                bucket_attributes=None):
+                bucket_attributes=None, missing_bucket_format=False):
     path = tmp_path / "metadata.tar"
     with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as archive:
         bucket = tarfile.TarInfo("misleading")
         bucket.type = tarfile.DIRTYPE
-        bucket.pax_headers = {PREFIX + "s3ar.bucket": "metadata-test",
+        bucket.pax_headers = {PREFIX + "s3ar.format": "1",
+                              PREFIX + "s3ar.bucket": "metadata-test",
                               **(bucket_attributes or {})}
+        if missing_bucket_format:
+            del bucket.pax_headers[PREFIX + "s3ar.format"]
         archive.addfile(bucket)
         entry = tarfile.TarInfo("misleading/object")
         entry.size = 4
@@ -40,35 +43,26 @@ def run_archive(tmp_path, attributes, mode="-x", selection="s3://",
 
 
 @pytest.mark.parametrize("format_first", [False, True])
-@pytest.mark.parametrize("namespaced", [False, True])
-def test_metadata_namespace_and_attribute_order(tmp_path, namespaced, format_first):
+def test_metadata_namespace_and_attribute_order(tmp_path, format_first):
     attributes = {
-        PREFIX + "origin": "legacy",
+        PREFIX + "origin": "ignored",
         PREFIX + "s3ar.metadata.origin": "namespaced",
         PREFIX + "s3ar.metadata.empty": "",
     }
-    if namespaced:
-        marker = {PREFIX + "s3ar.format": "1", PREFIX + "s3ar.hash": "none"}
-        attributes = {**marker, **attributes} if format_first else {**attributes, **marker}
+    marker = {PREFIX + "s3ar.format": "1", PREFIX + "s3ar.hash": "none"}
+    attributes = {**marker, **attributes} if format_first else {**attributes, **marker}
     result = run_archive(tmp_path, attributes)
     assert result.returncode == 0, result.stderr
     actual = {line for line in result.stdout.splitlines() if line.startswith("META ")}
-    expected = {"META origin=namespaced", "META empty="} if namespaced else {
-        "META origin=legacy", "META s3ar.metadata.origin=namespaced",
-        "META s3ar.metadata.empty=",
-    }
-    assert actual == expected
+    assert actual == {"META origin=namespaced", "META empty="}
     assert "PUT metadata-test/key size=4\n" in result.stdout
     assert result.stdout.endswith("data\n")
 
 
-@pytest.mark.parametrize("namespaced", [False, True])
 @pytest.mark.parametrize("count", [0, 128, 129])
-def test_restore_metadata_count_limit(tmp_path, namespaced, count):
-    namespace = "s3ar.metadata." if namespaced else ""
-    attributes = {PREFIX + namespace + f"field{i}": "value" for i in range(count)}
-    if namespaced:
-        attributes.update({PREFIX + "s3ar.hash": "none", PREFIX + "s3ar.format": "1"})
+def test_restore_metadata_count_limit(tmp_path, count):
+    attributes = {PREFIX + "s3ar.metadata." + f"field{i}": "value" for i in range(count)}
+    attributes.update({PREFIX + "s3ar.hash": "none", PREFIX + "s3ar.format": "1"})
     result = run_archive(tmp_path, attributes)
     if count > 128:
         assert result.returncode == 2
@@ -207,3 +201,18 @@ def test_single_bucket_format_marker(tmp_path, mode, version):
         assert "PUT metadata-test/key size=4" in result.stdout
     else:
         assert "metadata-test/key" in result.stdout
+
+
+@pytest.mark.parametrize("member", ["bucket", "object"])
+@pytest.mark.parametrize("mode,selection", [
+    ("-t", "s3://"), ("-x", "s3://"), ("-x", "s3://metadata-test/absent"),
+])
+def test_missing_format_rejected(tmp_path, member, mode, selection):
+    attributes = {PREFIX + "s3ar.hash": "none", PREFIX + "origin": "old metadata"}
+    if member == "bucket":
+        attributes[PREFIX + "s3ar.format"] = "1"
+    result = run_archive(tmp_path, attributes, mode, selection,
+                         missing_bucket_format=member == "bucket")
+    assert result.returncode == 2
+    assert "missing archive metadata format" in result.stderr
+    assert "PUT " not in result.stdout

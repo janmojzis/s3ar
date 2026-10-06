@@ -11,7 +11,6 @@
  * SCHILY.xattr.user.s3ar.metadata.NAME stores user metadata. User metadata is
  * restored to uploaded objects; bucket ACL summaries are informational and
  * are not restored.
- * Legacy SCHILY.xattr.user.NAME metadata remains readable.
  * Bucket and object identity comes from validated PAX attributes; the archive
  * pathname is informational. Links and unsupported archive member types are
  * rejected.
@@ -226,7 +225,6 @@ struct attribute_value {
 struct entry_metadata {
     char *bucket;
     char *key;
-    bool namespaced;
     char hash[S3AR_HASH_TEXT_SIZE];
     struct attribute_value etag;
     char *etag_text;
@@ -250,18 +248,14 @@ static bool attribute_is(const char *name, const char *expected) {
     return strcmp(name, expected) == 0;
 }
 
-static const char *metadata_name(const char *name, bool namespaced) {
-    /* Preserve legacy identity exclusions and namespace rules. */
-    if (strcmp(name, S3AR_XATTR_BUCKET) == 0 ||
-        strcmp(name, S3AR_XATTR_KEY) == 0)
-        return NULL;
+static const char *metadata_name(const char *name) {
     if (strncmp(name, S3AR_PAX_XATTR_PREFIX,
                 sizeof(S3AR_PAX_XATTR_PREFIX) - 1) == 0)
         name += sizeof(S3AR_PAX_XATTR_PREFIX) - 1;
-    const char *prefix =
-        namespaced ? S3AR_XATTR_METADATA_PREFIX : S3AR_LEGACY_XATTR_PREFIX;
-    size_t length = strlen(prefix);
-    return strncmp(name, prefix, length) == 0 ? name + length : NULL;
+    size_t length = sizeof(S3AR_XATTR_METADATA_PREFIX) - 1;
+    return strncmp(name, S3AR_XATTR_METADATA_PREFIX, length) == 0
+               ? name + length
+               : NULL;
 }
 
 static void entry_metadata_free(struct entry_metadata *metadata) {
@@ -281,7 +275,7 @@ static void entry_metadata_free(struct entry_metadata *metadata) {
 static void read_entry_metadata(struct archive_entry *entry, bool object,
                                 struct entry_metadata *metadata) {
     struct attribute_value format = {0}, hash = {0};
-    size_t namespaced_count = 0, legacy_count = 0;
+    size_t metadata_count = 0;
     const char *name;
     const void *value;
     size_t size;
@@ -309,26 +303,24 @@ static void read_entry_metadata(struct archive_entry *entry, bool object,
             *target = decode_identity(name, value, size);
         }
         /* Saturate counts: irrelevant namespaces cannot force allocation. */
-        if (metadata_name(name, true) != NULL &&
-            namespaced_count <= S3_METADATA_LIMIT)
-            ++namespaced_count;
-        if (metadata_name(name, false) != NULL &&
-            legacy_count <= S3_METADATA_LIMIT)
-            ++legacy_count;
+        if (metadata_name(name) != NULL && metadata_count <= S3_METADATA_LIMIT)
+            ++metadata_count;
     }
     if (format.count > 1) {
         log_f1("duplicate archive metadata format");
         s3ar_die(2);
     }
-    metadata->namespaced = format.count != 0;
-    if (metadata->namespaced &&
-        (format.data == NULL ||
-         format.size != sizeof(S3AR_XATTR_FORMAT_VERSION) - 1 ||
-         memcmp(format.data, S3AR_XATTR_FORMAT_VERSION, format.size) != 0)) {
+    if (format.count == 0) {
+        log_f1("missing archive metadata format");
+        s3ar_die(2);
+    }
+    if (format.data == NULL ||
+        format.size != sizeof(S3AR_XATTR_FORMAT_VERSION) - 1 ||
+        memcmp(format.data, S3AR_XATTR_FORMAT_VERSION, format.size) != 0) {
         log_f1("unsupported archive metadata format");
         s3ar_die(2);
     }
-    if (metadata->namespaced && object) {
+    if (object) {
         if (hash.count == 0) {
             log_f1("missing object hash in format-1 archive");
             s3ar_die(2);
@@ -349,7 +341,7 @@ static void read_entry_metadata(struct archive_entry *entry, bool object,
         log_f1("incomplete or invalid S3 identity PAX headers");
         s3ar_die(2);
     }
-    metadata->count = metadata->namespaced ? namespaced_count : legacy_count;
+    metadata->count = metadata_count;
 }
 
 static const char *entry_metadata_etag(struct entry_metadata *metadata) {
@@ -394,7 +386,7 @@ static void read_entry_user_metadata(struct archive_entry *entry,
     while (archive_entry_xattr_next(entry, &attribute, &value, &size) ==
            ARCHIVE_OK) {
         if (attribute == NULL) continue;
-        const char *name = metadata_name(attribute, metadata->namespaced);
+        const char *name = metadata_name(attribute);
         if (name == NULL) continue;
         if (name[0] == '\0' || strpbrk(name, "\r\n") != NULL ||
             size == SIZE_MAX ||

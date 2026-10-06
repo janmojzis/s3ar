@@ -9,21 +9,23 @@ import pytest
 from fault_server import FaultServer, ResponseStep
 
 
-def write_archive(path, body, value, legacy=False):
+def write_archive(path, body, value):
     with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as archive:
         directory = tarfile.TarInfo("hash-test")
         directory.type = tarfile.DIRTYPE
-        directory.pax_headers = {"SCHILY.xattr.user.s3ar.bucket": "hash-test"}
+        directory.pax_headers = {
+            "SCHILY.xattr.user.s3ar.format": "1",
+            "SCHILY.xattr.user.s3ar.bucket": "hash-test",
+        }
         archive.addfile(directory)
         entry = tarfile.TarInfo("hash-test/key")
         entry.size = len(body)
         entry.pax_headers = {
+            "SCHILY.xattr.user.s3ar.format": "1",
             "SCHILY.xattr.user.s3ar.bucket": "hash-test",
             "SCHILY.xattr.user.s3ar.key": "key",
         }
-        if not legacy:
-            entry.pax_headers["SCHILY.xattr.user.s3ar.format"] = "1"
-            entry.pax_headers["SCHILY.xattr.user.s3ar.hash"] = value
+        entry.pax_headers["SCHILY.xattr.user.s3ar.hash"] = value
         archive.addfile(entry, io.BytesIO(body))
 
 
@@ -78,10 +80,9 @@ def test_restore_hash_preserves_destination_on_mismatch(
         assert result.stderr.rstrip().endswith(value + (" verified" if enabled else ""))
 
 
-@pytest.mark.parametrize("legacy", [False, True])
-def test_restore_without_digest_warns(executable, s3_server, s3_environment, tmp_path, legacy):
+def test_restore_without_digest_warns(executable, s3_server, s3_environment, tmp_path):
     path = tmp_path / "archive.tar"
-    write_archive(path, b"abc", "none", legacy)
+    write_archive(path, b"abc", "none")
     result = invoke(executable, s3_environment, "-xvf", str(path), "--hash", "s3://")
     assert result.returncode == 0, result.stderr
     assert result.stderr.count("warning: hash unavailable") == 1
