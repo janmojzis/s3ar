@@ -61,36 +61,9 @@ CURLcode __wrap_curl_easy_perform(CURL *curl) {
     struct s3_memory_response *response = scenario.response;
     ++scenario.requests;
     if (scenario.input_test) {
-        const char *body = NULL;
         response->response.status = 200;
-        if (!scenario.input_stream) {
-            assert(scenario.requests == 1);
-            assert(strcmp(url, "http://example.test/bucket/key") == 0);
-        }
-        else if (scenario.requests == 1) {
-            assert(strstr(url, "?uploads") != NULL);
-            body = "<InitiateMultipartUploadResult><UploadId>upload"
-                   "</UploadId></InitiateMultipartUploadResult>";
-        }
-        else if (scenario.input_failure != NULL) {
-            assert(scenario.requests == 2);
-            assert(strstr(url, "?uploadId=upload") != NULL);
-            response->response.status = 204;
-            ++scenario.aborts;
-        }
-        else if (scenario.requests == 2) {
-            assert(strstr(url, "?partNumber=1&uploadId=upload") != NULL);
-            strcpy(response->response.properties.etag, "\"part\"");
-        }
-        else {
-            assert(scenario.requests == 3);
-            assert(strstr(url, "?uploadId=upload") != NULL);
-            body = "<CompleteMultipartUploadResult><ETag>\"object\"</ETag>"
-                   "</CompleteMultipartUploadResult>";
-        }
-        if (body != NULL)
-            assert(s3_response_memory_collect((char *) body, 1, strlen(body),
-                                              response) == strlen(body));
+        assert(scenario.requests == 1);
+        assert(strcmp(url, "http://example.test/bucket/key") == 0);
         curl_free(url);
         return CURLE_OK;
     }
@@ -144,6 +117,12 @@ static enum s3_read_result read_input(void *data, unsigned char *buffer,
         *size = capacity;
         return S3_READ_DATA;
     }
+    if (scenario.input_stream && scenario.reads == 2) {
+        assert(capacity == 1);
+        buffer[0] = 'x';
+        *size = 1;
+        return S3_READ_DATA;
+    }
     scenario.cancelled = true;
     *size = 0;
     errno = EINTR;
@@ -154,6 +133,7 @@ static void test_cancelled_put(bool stream, bool during_transfer,
                                unsigned abort_status) {
     memset(&scenario, 0, sizeof(scenario));
     scenario.during_transfer = during_transfer;
+    scenario.input_stream = stream;
     scenario.abort_status = abort_status;
     struct s3_client_config config;
     struct s3_error error = {0};
@@ -348,11 +328,11 @@ static void test_input_contract(bool stream, enum input_case input) {
     assert(error.result == result);
     if (scenario.input_failure != NULL) {
         assert(strcmp(error.message, scenario.input_failure) == 0);
-        assert(scenario.requests == (stream ? 2u : 0u));
-        assert(scenario.aborts == (stream ? 1u : 0u));
+        assert(scenario.requests == 0);
+        assert(scenario.aborts == 0);
     }
     else {
-        assert(scenario.requests == (stream ? 3u : 1u));
+        assert(scenario.requests == 1);
         assert(scenario.aborts == 0);
     }
     assert(error.callback_errno == (input == INPUT_ERROR                 ? EPIPE

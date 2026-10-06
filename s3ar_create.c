@@ -303,16 +303,16 @@ static bool write_object_header(void *callback_data,
     get->last_modified = (int64_t) mtime;
     memcpy(get->etag, object->etag, sizeof(get->etag));
     get->properties_received = true;
-    if (get->create->config->hash &&
-        object->size < S3_MULTIPART_MAX_PART_SIZE && object->size <= SIZE_MAX) {
+    if (get->create->config->hash && object->size <= S3_MULTIPART_PART_SIZE &&
+        object->size <= SIZE_MAX) {
         if (object->size != 0) get->buffer = malloc((size_t) object->size);
         get->buffered = object->size == 0 || get->buffer != NULL;
     }
     if (get->buffered) { sha512_init(&get->hash); }
     else {
         if (get->create->config->hash) {
-            const char *reason = object->size >= S3_MULTIPART_MAX_PART_SIZE
-                                     ? "object reaches the 5 GiB buffer limit"
+            const char *reason = object->size > S3_MULTIPART_PART_SIZE
+                                     ? "object exceeds the 16 MiB buffer limit"
                                  : object->size > SIZE_MAX
                                      ? "object exceeds addressable buffer size"
                                      : "buffer allocation failed";

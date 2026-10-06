@@ -12,9 +12,13 @@ s3ar\-put [\-v|\-vv|\-vvv] [\-f FILE] [\-\-create\-bucket] [\-\-multipart\-size 
 .SH DESCRIPTION
 \f[B]\f[CB]s3ar\-put\f[B]\f[R] reads data from standard input, or from
 \f[I]\f[CI]FILE\f[I]\f[R] when \f[B]\f[CB]\-f\f[B]\f[R] is specified, and writes
-it to the selected S3 object using multipart upload.
-Only one multipart part is buffered at a time.
-The default part size is 16M.
+it to the selected S3 object.
+Objects up to the selected part size, inclusive, use a single PUT; larger
+objects use multipart upload.
+The default part size and threshold are 16M.
+Only one part plus one byte of lookahead is buffered at a time.
+The command reads this initial data before starting the upload, including when
+reading standard input.
 An upload is limited to 10,000 parts; if the input exceeds that limit for the
 selected part size, the upload fails and its multipart state is aborted.
 Successful uploads are reported on standard error, even without
@@ -41,8 +45,10 @@ Without this option, the destination bucket must already exist.
 .PP
 \f[B]\f[CB]\-\-multipart\-size SIZE\f[B]\f[R]
 .PP
-Set the multipart part size.
+Set the multipart part size and the threshold for a single PUT.
+Objects up to SIZE, inclusive, use a single PUT.
 SIZE must be between 5M and 5G, inclusive.
+The upload buffer uses up to SIZE bytes plus one byte of lookahead.
 Only the binary suffixes M (1024 squared bytes) and G (1024 cubed bytes) are
 accepted.
 .PP

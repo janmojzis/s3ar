@@ -200,8 +200,10 @@ s3ar -xvf archive.tar s3://test --transform='s|^uploads/|test/|'
 
 **`--hash`**
 
-With -c, compute SHA-512 for objects that can be buffered. If buffering is
-unavailable, store none and warn; a successful fallback exits with status 0.
+With -c, compute SHA-512 for objects up to 16 MiB, inclusive, by buffering
+the entire object in memory before writing its archive header. Larger objects
+are streamed with hash none and a warning. If buffer allocation fails, also
+store none and warn; a successful fallback exits with status 0.
 Without this option, creation streams every object and stores none.
 With -x, verify stored SHA-512 values before PUT or multipart completion.
 A mismatch aborts the upload and stops restoration with status 2. Objects

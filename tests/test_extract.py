@@ -71,7 +71,7 @@ def test_extract_retries_multipart_completion(
     executable, s3_environment, tmp_path
 ):
     archive = tmp_path / "retry-complete.tar"
-    archive.write_bytes(archive_bytes({"bucket": {"key": b"x" * (16 * 1024 * 1024)}}))
+    archive.write_bytes(archive_bytes({"bucket": {"key": b"x" * (16 * 1024 * 1024 + 1)}}))
     close = (("Connection", "close"),)
     upload_path = "/bucket/key?uploadId=restore-upload"
     steps = [
@@ -80,6 +80,8 @@ def test_extract_retries_multipart_completion(
                      b"<InitiateMultipartUploadResult><UploadId>restore-upload"
                      b"</UploadId></InitiateMultipartUploadResult>", close),
         ResponseStep("PUT", "/bucket/key?partNumber=1&uploadId=restore-upload",
+                     200, headers=close + (("ETag", '"part"'),)),
+        ResponseStep("PUT", "/bucket/key?partNumber=2&uploadId=restore-upload",
                      200, headers=close + (("ETag", '"part"'),)),
         ResponseStep("POST", upload_path, 503,
                      b"<Error><Code>SlowDown</Code></Error>", close),
@@ -227,7 +229,7 @@ def test_extract_does_not_retry_initiate_multipart_upload(
     bucket = "no-retry-initiate"
     archive = tmp_path / "no-retry-initiate.tar"
     archive.write_bytes(
-        archive_bytes({bucket: {"large-object": b"x" * (16 * 1024 * 1024)}})
+        archive_bytes({bucket: {"large-object": b"x" * (16 * 1024 * 1024 + 1)}})
     )
     try:
         result = run(

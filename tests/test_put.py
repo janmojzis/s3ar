@@ -21,6 +21,7 @@ UPLOAD_ID_XML = (
 COMPLETE_XML = b"<CompleteMultipartUploadResult/>"
 UPLOAD_PATH = "/bucket/key?uploadId=review-upload"
 DISCONNECT = (("Connection", "close"),)
+MULTIPART_DATA = b"x" * (16 * 1024 * 1024) + b"last part"
 
 
 def multipart_steps(completion_steps, abort=False):
@@ -28,6 +29,8 @@ def multipart_steps(completion_steps, abort=False):
         ResponseStep("POST", "/bucket/key?uploads", 200, UPLOAD_ID_XML,
                      DISCONNECT),
         ResponseStep("PUT", "/bucket/key?partNumber=1&uploadId=review-upload",
+                     200, headers=DISCONNECT + (("ETag", '"part"'),)),
+        ResponseStep("PUT", "/bucket/key?partNumber=2&uploadId=review-upload",
                      200, headers=DISCONNECT + (("ETag", '"part"'),)),
         *completion_steps,
     ]
@@ -37,15 +40,18 @@ def multipart_steps(completion_steps, abort=False):
     return steps
 
 
+@pytest.mark.parametrize("multipart_started", [False, True])
 @pytest.mark.parametrize("interrupt_signal", [signal.SIGINT, signal.SIGTERM])
 def test_interrupted_put_waiting_for_stdin_aborts_upload(
-    s3_environment, interrupt_signal
+    s3_environment, interrupt_signal, multipart_started
 ):
     steps = [
         ResponseStep("POST", "/bucket/key?uploads", 200, UPLOAD_ID_XML,
                      DISCONNECT),
+        ResponseStep("PUT", "/bucket/key?partNumber=1&uploadId=review-upload",
+                     200, headers=DISCONNECT + (("ETag", '"part"'),)),
         ResponseStep("DELETE", UPLOAD_PATH, 204, headers=DISCONNECT),
-    ]
+    ] if multipart_started else []
     with FaultServer(steps) as server:
         environment = {**s3_environment, "S3AR_ENDPOINT": server.endpoint}
         process = subprocess.Popen(
@@ -54,10 +60,13 @@ def test_interrupted_put_waiting_for_stdin_aborts_upload(
             stderr=subprocess.PIPE, env=environment,
         )
         try:
-            deadline = time.monotonic() + 5
-            while not server.requests and time.monotonic() < deadline:
-                time.sleep(0.01)
-            assert server.requests
+            if multipart_started:
+                process.stdin.write(b"x" * (16 * 1024 * 1024 + 1))
+                process.stdin.flush()
+                deadline = time.monotonic() + 5
+                while len(server.requests) < 2 and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                assert len(server.requests) == 2
             time.sleep(0.2)
             process.send_signal(interrupt_signal)
             process.wait(timeout=10)
@@ -72,7 +81,9 @@ def test_interrupted_put_waiting_for_stdin_aborts_upload(
 
     assert process.returncode == 2
     assert b"interrupted" in stderr
-    assert [request.method for request in server.requests] == ["POST", "DELETE"]
+    assert [request.method for request in server.requests] == (
+        ["POST", "PUT", "DELETE"] if multipart_started else []
+    )
 
 
 @pytest.mark.parametrize("first_response", [
@@ -88,7 +99,7 @@ def test_put_retries_multipart_completion(s3_environment, first_response):
     ])
     with FaultServer(steps) as server:
         environment = {**s3_environment, "S3AR_ENDPOINT": server.endpoint}
-        result = run_put(EXECUTABLE, environment, "s3://bucket/key", data=b"data")
+        result = run_put(EXECUTABLE, environment, "s3://bucket/key", data=MULTIPART_DATA)
 
     assert result.returncode == 0, result.stderr.decode()
 
@@ -102,7 +113,7 @@ def test_put_reports_uncertain_completion_without_abort(s3_environment):
     ])
     with FaultServer(steps) as server:
         environment = {**s3_environment, "S3AR_ENDPOINT": server.endpoint}
-        result = run_put(EXECUTABLE, environment, "s3://bucket/key", data=b"data")
+        result = run_put(EXECUTABLE, environment, "s3://bucket/key", data=MULTIPART_DATA)
 
     assert result.returncode == 2
     assert b"completion outcome uncertain" in result.stderr
@@ -115,7 +126,7 @@ def test_put_aborts_definitive_completion_failure(s3_environment):
     ], abort=True)
     with FaultServer(steps) as server:
         environment = {**s3_environment, "S3AR_ENDPOINT": server.endpoint}
-        result = run_put(EXECUTABLE, environment, "s3://bucket/key", data=b"data")
+        result = run_put(EXECUTABLE, environment, "s3://bucket/key", data=MULTIPART_DATA)
 
     assert result.returncode == 2
     assert b"AccessDenied" in result.stderr
@@ -132,7 +143,7 @@ def test_put_aborts_when_part_response_lacks_etag(s3_environment):
     with FaultServer(steps) as server:
         result = run_put(
             EXECUTABLE, {**s3_environment, "S3AR_ENDPOINT": server.endpoint},
-            "s3://bucket/key", data=b"data",
+            "s3://bucket/key", data=MULTIPART_DATA,
         )
 
     assert result.returncode == 2
@@ -162,9 +173,7 @@ def run_put(
 
 
 def test_put_trace_reports_content_length_without_carriage_return(s3_environment):
-    steps = multipart_steps([
-        ResponseStep("POST", UPLOAD_PATH, 200, COMPLETE_XML, DISCONNECT),
-    ])
+    steps = [ResponseStep("PUT", "/bucket/key", 200, headers=DISCONNECT)]
     with FaultServer(steps) as server:
         environment = {**s3_environment, "S3AR_ENDPOINT": server.endpoint}
         result = run_put(
@@ -173,7 +182,7 @@ def test_put_trace_reports_content_length_without_carriage_return(s3_environment
         )
 
     assert result.returncode == 0, result.stderr.decode()
-    assert server.requests[1].headers["content-length"] == "4"
+    assert server.requests[0].headers["content-length"] == "4"
     traces = [line for line in result.stderr.splitlines() if b": trace:" in line]
     part_trace = next(line for line in traces if b" PUT " in line)
     assert b"content_length=4" in part_trace.split()
@@ -199,9 +208,7 @@ def test_put_creates_missing_bucket(s3_server, s3_environment, region):
 def test_put_uses_existing_bucket_without_creating(s3_environment):
     steps = [
         ResponseStep("HEAD", "/bucket", 200, headers=DISCONNECT),
-        *multipart_steps([
-            ResponseStep("POST", UPLOAD_PATH, 200, COMPLETE_XML, DISCONNECT),
-        ]),
+        ResponseStep("PUT", "/bucket/key", 200, headers=DISCONNECT),
     ]
     with FaultServer(steps) as server:
         environment = {**s3_environment, "S3AR_ENDPOINT": server.endpoint}
@@ -215,7 +222,7 @@ def test_put_uses_existing_bucket_without_creating(s3_environment):
 
 def test_put_missing_bucket_without_create_option(s3_environment):
     steps = [
-        ResponseStep("POST", "/bucket/key?uploads", 404,
+        ResponseStep("PUT", "/bucket/key", 404,
                      b"<Error><Code>NoSuchBucket</Code></Error>", DISCONNECT),
     ]
     with FaultServer(steps) as server:
@@ -449,7 +456,7 @@ def test_put_does_not_retry_initiate_multipart_upload(s3_environment):
     environment["S3AR_ENDPOINT"] = f"http://127.0.0.1:{server.server_port}"
     try:
         result = run_put(
-            EXECUTABLE, environment, "s3://no-retry-initiate/object", data=b""
+            EXECUTABLE, environment, "s3://no-retry-initiate/object", data=MULTIPART_DATA
         )
     finally:
         server.shutdown()
@@ -537,3 +544,48 @@ def test_put_debug_logs_input_and_destination(tmp_path):
     assert f"(option -f) input-file = '{source}'".encode() in result.stderr
     assert b"(argument) destination = 's3://bucket/key'" in result.stderr
     assert b"invalid configuration" in result.stderr
+
+
+@pytest.mark.parametrize("multipart_size,threshold", [(None, 16 * 1024 * 1024),
+                                                     ("5M", 5 * 1024 * 1024)])
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_put_multipart_threshold(s3_server, s3_environment, multipart_size, threshold, offset):
+    _, client = s3_server
+    client.create_bucket(Bucket="put-threshold")
+    body = b"x" * (threshold + offset)
+    result = run_put(EXECUTABLE, s3_environment, "s3://put-threshold/key",
+                     data=body, multipart_size=multipart_size)
+    assert result.returncode == 0, result.stderr.decode()
+    response = client.get_object(Bucket="put-threshold", Key="key")
+    assert response["Body"].read() == body
+    assert response["ETag"].rstrip('"').endswith("-2") == (offset > 0)
+
+
+@pytest.mark.parametrize("first_response", [
+    ResponseStep("PUT", "/bucket/key", 503,
+                 b"<Error><Code>SlowDown</Code></Error>", DISCONNECT),
+    ResponseStep("PUT", "/bucket/key", 200, b"incomplete response",
+                 DISCONNECT, disconnect_after=0),
+])
+def test_put_retries_small_object(s3_environment, first_response):
+    with FaultServer([first_response, ResponseStep("PUT", "/bucket/key", 200,
+                                                  headers=DISCONNECT)]) as server:
+        result = run_put(EXECUTABLE, {**s3_environment, "S3AR_ENDPOINT": server.endpoint},
+                         "s3://bucket/key", data=b"data")
+    assert result.returncode == 0, result.stderr.decode()
+    assert len(server.requests) == 2
+    assert all(request.headers["content-length"] == "4" for request in server.requests)
+
+
+@pytest.mark.parametrize("size,parts", [(10 * 1024 * 1024, 2),
+                                       (10 * 1024 * 1024 + 1, 3)])
+def test_put_preserves_lookahead_across_parts(s3_server, s3_environment, size, parts):
+    _, client = s3_server
+    client.create_bucket(Bucket="put-lookahead")
+    body = bytes(range(251)) * (size // 251) + bytes(range(size % 251))
+    result = run_put(EXECUTABLE, s3_environment, "s3://put-lookahead/key",
+                     data=body, multipart_size="5M")
+    assert result.returncode == 0, result.stderr.decode()
+    response = client.get_object(Bucket="put-lookahead", Key="key")
+    assert response["Body"].read() == body
+    assert response["ETag"].rstrip('"').endswith(f"-{parts}")

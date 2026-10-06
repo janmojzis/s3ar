@@ -49,7 +49,7 @@ def test_create_hash_is_opt_in(executable, s3_server, s3_environment, tmp_path, 
     assert "warning:" not in result.stderr
 
 
-@pytest.mark.parametrize("size", [0, 3, 16 * 1024 * 1024 + 3])
+@pytest.mark.parametrize("size", [0, 3, 16 * 1024 * 1024, 16 * 1024 * 1024 + 3])
 @pytest.mark.parametrize("matching, enabled", [(True, True), (False, True), (False, False)])
 def test_restore_hash_preserves_destination_on_mismatch(
     executable, s3_server, s3_environment, tmp_path, size, matching, enabled
@@ -63,7 +63,8 @@ def test_restore_hash_preserves_destination_on_mismatch(
     write_archive(path, body, value)
     result = invoke(executable, s3_environment, "-xvf", str(path),
                     *(["--hash"] if enabled else []), "s3://")
-    restored = client.get_object(Bucket="hash-test", Key="key")["Body"].read()
+    response = client.get_object(Bucket="hash-test", Key="key")
+    restored = response["Body"].read()
     if enabled and not matching:
         assert result.returncode == 2
         assert "SHA-512 mismatch for hash-test/key" in result.stderr
@@ -73,6 +74,7 @@ def test_restore_hash_preserves_destination_on_mismatch(
     else:
         assert result.returncode == 0, result.stderr
         assert restored == body
+        assert response["ETag"].rstrip('"').endswith("-2") == (size > 16 * 1024 * 1024)
         assert result.stderr.rstrip().endswith(value + (" verified" if enabled else ""))
 
 
@@ -145,3 +147,21 @@ def test_reader_uses_abort_result_instead_of_diagnostic_text(tmp_path, abort_fai
     else:
         assert "SHA-512 mismatch for" in result.stderr
         assert "unable to clean up multipart upload" not in result.stderr
+
+
+@pytest.mark.parametrize("size", [16 * 1024 * 1024, 16 * 1024 * 1024 + 1])
+def test_create_hash_buffer_limit(executable, s3_server, s3_environment, tmp_path, size):
+    _, client = s3_server
+    client.create_bucket(Bucket="hash-test")
+    body = b"x" * size
+    client.put_object(Bucket="hash-test", Key="key", Body=body)
+    path = tmp_path / "archive.tar"
+    result = invoke(executable, s3_environment, "-cf", str(path), "--hash", "s3://hash-test/key")
+    assert result.returncode == 0, result.stderr
+    buffered = size <= 16 * 1024 * 1024
+    expected = "sha512:" + hashlib.sha512(body).hexdigest() if buffered else "none"
+    with tarfile.open(path) as archive:
+        assert archive.getmember("hash-test/key").pax_headers["SCHILY.xattr.user.s3ar.hash"] == expected
+        assert archive.extractfile("hash-test/key").read() == body
+    assert ("object exceeds the 16 MiB buffer limit" in result.stderr) == (not buffered)
+    assert ("warning:" in result.stderr) == (not buffered)

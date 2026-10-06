@@ -114,7 +114,7 @@ enum s3_result s3_object_put(struct s3_client *client, struct s3_error *error,
         return s3_error_set(error, S3_RESULT_ERROR, "out of memory");
     result = fill_buffer(buffer, part_size, read_callback, data, error);
     if (result != S3_RESULT_OK) goto done;
-    if (size < DEFAULT_PART_SIZE) {
+    if (size <= DEFAULT_PART_SIZE) {
         result = expect_eof(read_callback, data, error);
         if (result != S3_RESULT_OK) goto done;
         result = s3_url_build(client, bucket, key, &url, error);
@@ -179,8 +179,13 @@ s3_object_put_stream(struct s3_client *client, struct s3_error *error,
                      const struct s3_object_properties *properties,
                      s3_read_callback read_callback, void *data) {
     unsigned char *buffer = NULL;
+    unsigned char next_byte;
     char **etags = NULL;
+    char *url = NULL;
+    struct s3_memory_response response = {0};
     size_t etag_count = 0;
+    size_t amount = 0, next_size = 0;
+    bool eof = false, next_eof = false;
     char *encoded_upload_id = NULL;
     enum s3_result result;
     bool completion_uncertain = false;
@@ -193,8 +198,30 @@ s3_object_put_stream(struct s3_client *client, struct s3_error *error,
         return s3_error_set(error, S3_RESULT_CONFIGURATION_ERROR,
                             "invalid PutObject arguments");
     buffer = malloc(part_size);
+    if (buffer == NULL) {
+        result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
+        goto done;
+    }
+    result =
+        read_part(buffer, part_size, read_callback, data, &amount, &eof, error);
+    if (result != S3_RESULT_OK) goto done;
+    /* One byte of lookahead distinguishes an exact-sized object from a stream
+     * that needs multipart, without allocating a second part buffer. */
+    if (!eof) {
+        result = read_part(&next_byte, 1, read_callback, data, &next_size,
+                           &next_eof, error);
+        if (result != S3_RESULT_OK) goto done;
+    }
+    if (eof || next_size == 0) {
+        result = s3_url_build(client, bucket, key, &url, error);
+        if (result == S3_RESULT_OK)
+            result =
+                s3_upload_request(client, error, url, "PUT", buffer, amount,
+                                  properties, S3_UPLOAD_RETRY, NULL, &response);
+        goto done;
+    }
     etags = calloc(10000, sizeof(*etags));
-    if (buffer == NULL || etags == NULL) {
+    if (etags == NULL) {
         result = s3_error_set(error, S3_RESULT_ERROR, "out of memory");
         goto done;
     }
@@ -202,11 +229,18 @@ s3_object_put_stream(struct s3_client *client, struct s3_error *error,
                                 &encoded_upload_id);
     if (result != S3_RESULT_OK) goto done;
     for (;;) {
-        size_t amount = 0;
-        bool eof = false;
-        result = read_part(buffer, part_size, read_callback, data, &amount,
-                           &eof, error);
-        if (result != S3_RESULT_OK) goto done;
+        if (etag_count != 0) {
+            size_t prefix = etag_count == 1 ? next_size : 0;
+            if (prefix != 0) buffer[0] = next_byte;
+            eof = prefix != 0 && next_eof;
+            amount = 0;
+            if (!eof) {
+                result = read_part(buffer + prefix, part_size - prefix,
+                                   read_callback, data, &amount, &eof, error);
+                if (result != S3_RESULT_OK) goto done;
+            }
+            amount += prefix;
+        }
         if (amount == 0 && eof && etag_count != 0) break;
         if (etag_count == 10000) {
             result = s3_error_set(error, S3_RESULT_CONFIGURATION_ERROR,
@@ -230,6 +264,8 @@ done:
     for (size_t i = 0; i < etag_count; ++i) free(etags[i]);
     free(etags);
     free(buffer);
+    free(url);
+    s3_response_memory_cleanup(&response);
     free(encoded_upload_id);
     return result;
 }

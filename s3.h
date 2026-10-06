@@ -297,14 +297,18 @@ s3_object_get_conditional(struct s3_client *client, struct s3_error *error,
                           const char *bucket, const char *key,
                           const char *if_none_match);
 
-/* PUT for a known length. Objects exceeding 10,000 parts of 5 GiB are
- * rejected before allocating the part buffer or invoking read_callback. */
+/* PUT for a known length. Objects up to S3_MULTIPART_PART_SIZE (inclusive)
+ * use PutObject; larger objects use multipart. Objects exceeding 10,000 parts
+ * of 5 GiB are rejected before allocating the buffer or invoking read_callback.
+ */
 enum s3_result s3_object_put(struct s3_client *client, struct s3_error *error,
                              const char *bucket, const char *key, uint64_t size,
                              const struct s3_object_properties *properties,
                              s3_read_callback read_callback, void *data);
 
-/* Multipart PUT for inputs whose length is not known in advance. */
+/* PUT for inputs whose length is not known in advance. Objects up to part_size
+ * (inclusive) use PutObject; larger objects use multipart. Buffers one part
+ * plus one byte of lookahead before initiating an upload. */
 enum s3_result
 s3_object_put_stream(struct s3_client *client, struct s3_error *error,
                      const char *bucket, const char *key, size_t part_size,

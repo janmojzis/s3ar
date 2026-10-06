@@ -22,7 +22,7 @@ static void usage(FILE *stream) {
                       "[--create-bucket] [--multipart-size SIZE] "
                       "s3://BUCKET/KEY\n"
                       "Read FILE, or standard input, and upload it using S3 "
-                      "multipart upload.\n");
+                      "PUT or multipart upload.\n");
 }
 
 static const char *fn = NULL;

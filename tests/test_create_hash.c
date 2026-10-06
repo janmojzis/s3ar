@@ -128,8 +128,10 @@ int main(void) {
     for (size_t i = 0; i < sizeof(binary); ++i) binary[i] = (unsigned char) i;
     roundtrip(binary, sizeof(binary), true, true, "none");
     roundtrip(binary, sizeof(binary), true, false, "none");
-    boundary(S3_MULTIPART_MAX_PART_SIZE - 1,
-             SIZE_MAX >= S3_MULTIPART_MAX_PART_SIZE - 1);
+    boundary(S3_MULTIPART_PART_SIZE - 1, true);
+    boundary(S3_MULTIPART_PART_SIZE, true);
+    boundary(S3_MULTIPART_PART_SIZE + 1, false);
+    boundary(S3_MULTIPART_MAX_PART_SIZE - 1, false);
     boundary(S3_MULTIPART_MAX_PART_SIZE, false);
     boundary(S3_MULTIPART_MAX_PART_SIZE + 1, false);
     return 0;
