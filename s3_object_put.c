@@ -8,23 +8,35 @@
 
 enum { DEFAULT_PART_SIZE = S3_MULTIPART_PART_SIZE };
 
+static enum s3_result read_checked(unsigned char *buffer, size_t capacity,
+                                   s3_read_callback callback, void *data,
+                                   size_t *amount,
+                                   enum s3_read_result *read_result,
+                                   struct s3_error *error) {
+    *amount = 0;
+    *read_result = callback(data, buffer, capacity, amount);
+    if (*amount > capacity || (*read_result == S3_READ_DATA && *amount == 0))
+        return s3_error_set(error, S3_RESULT_CALLBACK_ERROR,
+                            "input callback returned invalid data");
+    if (*read_result == S3_READ_ERROR) {
+        error->callback_errno = errno != 0 ? errno : EIO;
+        return s3_error_set(error, S3_RESULT_CALLBACK_ERROR,
+                            "input callback failed");
+    }
+    return S3_RESULT_OK;
+}
+
 static enum s3_result fill_buffer(unsigned char *buffer, size_t wanted,
                                   s3_read_callback callback, void *data,
                                   struct s3_error *error) {
     size_t offset = 0;
     while (offset < wanted) {
-        size_t amount = 0;
-        enum s3_read_result read_result =
-            callback(data, buffer + offset, wanted - offset, &amount);
-        if (amount > wanted - offset ||
-            (read_result == S3_READ_DATA && amount == 0))
-            return s3_error_set(error, S3_RESULT_CALLBACK_ERROR,
-                                "input callback returned invalid data");
-        if (read_result == S3_READ_ERROR) {
-            error->callback_errno = errno != 0 ? errno : EIO;
-            return s3_error_set(error, S3_RESULT_CALLBACK_ERROR,
-                                "input callback failed");
-        }
+        size_t amount;
+        enum s3_read_result read_result;
+        enum s3_result result =
+            read_checked(buffer + offset, wanted - offset, callback, data,
+                         &amount, &read_result, error);
+        if (result != S3_RESULT_OK) return result;
         if (read_result == S3_READ_EOF)
             return s3_error_set(error, S3_RESULT_CALLBACK_ERROR,
                                 "input ended before declared object size");
@@ -56,18 +68,12 @@ static enum s3_result read_part(unsigned char *buffer, size_t capacity,
     size_t offset = 0;
     *eof = false;
     while (offset < capacity) {
-        size_t amount = 0;
-        enum s3_read_result read_result =
-            callback(data, buffer + offset, capacity - offset, &amount);
-        if (amount > capacity - offset ||
-            (read_result == S3_READ_DATA && amount == 0))
-            return s3_error_set(error, S3_RESULT_CALLBACK_ERROR,
-                                "input callback returned invalid data");
-        if (read_result == S3_READ_ERROR) {
-            error->callback_errno = errno != 0 ? errno : EIO;
-            return s3_error_set(error, S3_RESULT_CALLBACK_ERROR,
-                                "input callback failed");
-        }
+        size_t amount;
+        enum s3_read_result read_result;
+        enum s3_result result =
+            read_checked(buffer + offset, capacity - offset, callback, data,
+                         &amount, &read_result, error);
+        if (result != S3_RESULT_OK) return result;
         offset += amount;
         if (read_result == S3_READ_EOF) {
             *eof = true;

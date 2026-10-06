@@ -17,6 +17,9 @@ static struct {
     unsigned reads;
     unsigned requests;
     unsigned aborts;
+    bool input_test;
+    bool input_stream;
+    const char *input_failure;
 } scenario;
 
 static bool testing_size_limit;
@@ -57,6 +60,40 @@ CURLcode __wrap_curl_easy_perform(CURL *curl) {
     assert(url != NULL);
     struct s3_memory_response *response = scenario.response;
     ++scenario.requests;
+    if (scenario.input_test) {
+        const char *body = NULL;
+        response->response.status = 200;
+        if (!scenario.input_stream) {
+            assert(scenario.requests == 1);
+            assert(strcmp(url, "http://example.test/bucket/key") == 0);
+        }
+        else if (scenario.requests == 1) {
+            assert(strstr(url, "?uploads") != NULL);
+            body = "<InitiateMultipartUploadResult><UploadId>upload"
+                   "</UploadId></InitiateMultipartUploadResult>";
+        }
+        else if (scenario.input_failure != NULL) {
+            assert(scenario.requests == 2);
+            assert(strstr(url, "?uploadId=upload") != NULL);
+            response->response.status = 204;
+            ++scenario.aborts;
+        }
+        else if (scenario.requests == 2) {
+            assert(strstr(url, "?partNumber=1&uploadId=upload") != NULL);
+            strcpy(response->response.properties.etag, "\"part\"");
+        }
+        else {
+            assert(scenario.requests == 3);
+            assert(strstr(url, "?uploadId=upload") != NULL);
+            body = "<CompleteMultipartUploadResult><ETag>\"object\"</ETag>"
+                   "</CompleteMultipartUploadResult>";
+        }
+        if (body != NULL)
+            assert(s3_response_memory_collect((char *) body, 1, strlen(body),
+                                              response) == strlen(body));
+        curl_free(url);
+        return CURLE_OK;
+    }
     if (scenario.requests == 1) {
         assert(strcmp(url, "http://example.test/bucket/key?uploads") == 0);
         const char *body = "<InitiateMultipartUploadResult><UploadId>upload"
@@ -238,9 +275,100 @@ static void test_put_part_size_rounding(void) {
     testing_size_limit = false;
 }
 
+enum input_case {
+    INPUT_SHORT_READS,
+    INPUT_EARLY_EOF,
+    INPUT_EOF_WITH_DATA,
+    INPUT_EMPTY_DATA,
+    INPUT_OVER_CAPACITY,
+    INPUT_ERROR,
+    INPUT_ERROR_WITHOUT_ERRNO,
+    INPUT_EXTRA_DATA,
+};
+
+static enum s3_read_result read_test_input(void *data, unsigned char *buffer,
+                                           size_t capacity, size_t *size) {
+    enum input_case input = *(enum input_case *) data;
+    ++scenario.reads;
+    *size = 0;
+    switch (input) {
+        case INPUT_EARLY_EOF:
+            return S3_READ_EOF;
+        case INPUT_EOF_WITH_DATA:
+            buffer[0] = 'x';
+            *size = 1;
+            return S3_READ_EOF;
+        case INPUT_EMPTY_DATA:
+            return S3_READ_DATA;
+        case INPUT_OVER_CAPACITY:
+            *size = capacity + 1;
+            return S3_READ_DATA;
+        case INPUT_ERROR:
+        case INPUT_ERROR_WITHOUT_ERRNO:
+            errno = input == INPUT_ERROR ? EPIPE : 0;
+            return S3_READ_ERROR;
+        default:
+            if (scenario.reads > (input == INPUT_EXTRA_DATA ? 5u : 4u))
+                return S3_READ_EOF;
+            buffer[0] = 'x';
+            *size = 1;
+            return S3_READ_DATA;
+    }
+}
+
+static void test_input_contract(bool stream, enum input_case input) {
+    memset(&scenario, 0, sizeof(scenario));
+    scenario.input_test = true;
+    scenario.input_stream = stream;
+    if (!stream && (input == INPUT_EARLY_EOF || input == INPUT_EOF_WITH_DATA))
+        scenario.input_failure = "input ended before declared object size";
+    else if (!stream && input == INPUT_EXTRA_DATA)
+        scenario.input_failure = "input exceeds declared object size";
+    else if (input == INPUT_EMPTY_DATA || input == INPUT_OVER_CAPACITY)
+        scenario.input_failure = "input callback returned invalid data";
+    else if (input == INPUT_ERROR || input == INPUT_ERROR_WITHOUT_ERRNO)
+        scenario.input_failure = "input callback failed";
+    struct s3_client_config config;
+    struct s3_error error = {0};
+    s3_config_init(&config);
+    config.endpoint = "http://example.test";
+    config.region = "us-east-1";
+    config.access_key = "test";
+    config.secret_key = "test";
+    config.max_attempts = 1;
+    assert(s3_client_open(&scenario.client, &error, &config) == S3_RESULT_OK);
+    enum s3_result result =
+        stream ? s3_object_put_stream(scenario.client, &error, "bucket", "key",
+                                      S3_MULTIPART_PART_SIZE, NULL,
+                                      read_test_input, &input)
+               : s3_object_put(scenario.client, &error, "bucket", "key", 4,
+                               NULL, read_test_input, &input);
+    assert(result == (scenario.input_failure != NULL ? S3_RESULT_CALLBACK_ERROR
+                                                     : S3_RESULT_OK));
+    assert(error.result == result);
+    if (scenario.input_failure != NULL) {
+        assert(strcmp(error.message, scenario.input_failure) == 0);
+        assert(scenario.requests == (stream ? 2u : 0u));
+        assert(scenario.aborts == (stream ? 1u : 0u));
+    }
+    else {
+        assert(scenario.requests == (stream ? 3u : 1u));
+        assert(scenario.aborts == 0);
+    }
+    assert(error.callback_errno == (input == INPUT_ERROR                 ? EPIPE
+                                    : input == INPUT_ERROR_WITHOUT_ERRNO ? EIO
+                                                                         : 0));
+    assert(error.abort_result == S3_RESULT_OK);
+    s3_client_close(scenario.client);
+}
+
 int main(void) {
     test_put_size_limit();
     test_put_part_size_rounding();
+    for (unsigned stream = 0; stream < 2; ++stream)
+        for (enum input_case input = INPUT_SHORT_READS;
+             input <= INPUT_EXTRA_DATA; ++input)
+            test_input_contract(stream != 0, input);
     const unsigned abort_statuses[] = {204, 404, 403};
     for (unsigned stream = 0; stream < 2; ++stream)
         for (unsigned transfer = 0; transfer < 2; ++transfer)
