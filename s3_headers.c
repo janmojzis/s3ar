@@ -6,7 +6,7 @@
 #include <string.h>
 #include <time.h>
 
-enum { S3_HEADER_LIMIT = 256 * 1024 };
+enum { S3_HEADERS_LIMIT = 256 * 1024 };
 
 static int compare_metadata(const void *left, const void *right) {
     const struct s3_metadata *a = left;
@@ -156,7 +156,7 @@ size_t s3_headers_callback(char *buffer, size_t size, size_t count,
     char *colon, *first, *last;
     if (size != 0 && count > SIZE_MAX / size) return 0;
     bytes = size * count;
-    if (bytes > S3_HEADER_LIMIT - response->header_bytes) {
+    if (bytes > S3_HEADERS_LIMIT - response->header_bytes) {
         response->invalid_headers = true;
         return 0;
     }
