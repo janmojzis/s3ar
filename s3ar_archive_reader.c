@@ -315,6 +315,10 @@ static void read_entry_metadata(struct archive_entry *entry, bool object,
             legacy_count <= S3_METADATA_LIMIT)
             ++legacy_count;
     }
+    if (format.count > 1) {
+        log_f1("duplicate archive metadata format");
+        s3ar_die(2);
+    }
     metadata->namespaced = format.count != 0;
     if (metadata->namespaced &&
         (format.data == NULL ||

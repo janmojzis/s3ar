@@ -16,12 +16,14 @@ ENVIRONMENT = {
 PREFIX = "SCHILY.xattr.user."
 
 
-def run_archive(tmp_path, attributes, mode="-x", selection="s3://"):
+def run_archive(tmp_path, attributes, mode="-x", selection="s3://",
+                bucket_attributes=None):
     path = tmp_path / "metadata.tar"
     with tarfile.open(path, "w", format=tarfile.PAX_FORMAT) as archive:
         bucket = tarfile.TarInfo("misleading")
         bucket.type = tarfile.DIRTYPE
-        bucket.pax_headers = {PREFIX + "s3ar.bucket": "metadata-test"}
+        bucket.pax_headers = {PREFIX + "s3ar.bucket": "metadata-test",
+                              **(bucket_attributes or {})}
         archive.addfile(bucket)
         entry = tarfile.TarInfo("misleading/object")
         entry.size = 4
@@ -162,3 +164,46 @@ def test_valid_etag_and_hash_in_verbose_listing(tmp_path):
     result = run_archive(tmp_path, attributes, "-tv")
     assert result.returncode == 0, result.stderr
     assert f'metadata-test/key 4 0 "etag" {digest}\n' in result.stdout
+
+
+@pytest.mark.parametrize("member", ["bucket", "object"])
+@pytest.mark.parametrize("values", [("1", "1"), ("1", "2"), ("2", "1")])
+@pytest.mark.parametrize("libarchive_first", [False, True])
+@pytest.mark.parametrize("mode,selection", [
+    ("-t", "s3://"), ("-x", "s3://"), ("-x", "s3://metadata-test/absent"),
+])
+def test_duplicate_format_markers_rejected(
+    tmp_path, member, values, libarchive_first, mode, selection
+):
+    schily, libarchive = values
+    markers = {
+        PREFIX + "s3ar.format": schily,
+        "LIBARCHIVE.xattr.user.s3ar.format":
+            base64.b64encode(libarchive.encode()).decode(),
+    }
+    if libarchive_first:
+        markers = dict(reversed(list(markers.items())))
+    attributes = {PREFIX + "s3ar.hash": "none"}
+    attributes.update(markers if member == "object" else {PREFIX + "s3ar.format": "1"})
+    result = run_archive(tmp_path, attributes, mode, selection,
+                         bucket_attributes=markers if member == "bucket" else None)
+    assert result.returncode == 2
+    assert "duplicate archive metadata format" in result.stderr
+    assert "PUT " not in result.stdout
+    assert "metadata-test/key" not in result.stdout
+
+
+@pytest.mark.parametrize("mode", ["-t", "-x"])
+@pytest.mark.parametrize("version", ["1", "2"])
+def test_single_bucket_format_marker(tmp_path, mode, version):
+    attributes = {PREFIX + "s3ar.format": "1", PREFIX + "s3ar.hash": "none"}
+    result = run_archive(tmp_path, attributes, mode,
+                         bucket_attributes={PREFIX + "s3ar.format": version})
+    assert result.returncode == (0 if version == "1" else 2), result.stderr
+    if version == "2":
+        assert "unsupported archive metadata format" in result.stderr
+        assert "PUT " not in result.stdout
+    elif mode == "-x":
+        assert "PUT metadata-test/key size=4" in result.stdout
+    else:
+        assert "metadata-test/key" in result.stdout
