@@ -25,32 +25,31 @@ TOOL_OBJECTS = main_s3ar_put.o main_s3ar_get.o main_s3ar_delete.o main_s3ar_list
 	s3ar_io.o
 PROGRAM_OBJECTS = main.o $(S3AR_OBJECTS) $(TOOL_OBJECTS) sig.o
 LINKS = s3ar-put s3ar-get s3ar-delete s3ar-list s3ar-copy
-TEST_LIST_REENTRANCY_OBJECTS = tests/test_list_reentrancy.o
-TEST_REQUEST_HEADERS_OBJECTS = tests/test_request_headers.o
-TEST_ERROR_OBJECTS = tests/test_error.o
-TEST_GET_RETRY_OBJECTS = tests/get_retry_probe.o
-TEST_HEADERS_ALLOC_OBJECTS = tests/test_headers_alloc.o
-TEST_URI_ENCODE_OBJECTS = tests/test_uri_encode.o
-TEST_LOG_SIGNAL_OBJECTS = tests/test_log_signal.o
-TEST_LOG_ESCAPE_OBJECTS = tests/test_log_escape.o
-TEST_DELETE_BATCH_OBJECTS = tests/test_delete_batch.o
-TEST_SIGNAL_IO_OBJECTS = tests/test_signal_io.o
-TEST_PUT_CANCEL_OBJECTS = tests/test_put_cancel.o
-TEST_SELECTION_OBJECTS = tests/test_selection.o
-TEST_TRANSFORM_OBJECTS = tests/test_transform.o
-TEST_TRANSFORM_RESTORE_OBJECTS = tests/transform_restore_probe.o
-TEST_OBJECTS = tests/test_create_hash.o $(TEST_LIST_REENTRANCY_OBJECTS) $(TEST_REQUEST_HEADERS_OBJECTS) $(TEST_ERROR_OBJECTS) $(TEST_GET_RETRY_OBJECTS) \
-	$(TEST_HEADERS_ALLOC_OBJECTS) $(TEST_URI_ENCODE_OBJECTS) \
-	$(TEST_LOG_SIGNAL_OBJECTS) $(TEST_LOG_ESCAPE_OBJECTS) $(TEST_DELETE_BATCH_OBJECTS) $(TEST_SIGNAL_IO_OBJECTS) \
-	$(TEST_PUT_CANCEL_OBJECTS) $(TEST_SELECTION_OBJECTS) $(TEST_TRANSFORM_OBJECTS) $(TEST_TRANSFORM_RESTORE_OBJECTS)
+# Tests run directly; probes are driven by the Python tests.
+C_TESTS = test-list-reentrancy test-request-headers test-error test-headers-alloc \
+	test-uri-encode test-log-signal test-log-escape test-delete-batch \
+	test-signal-io test-put-cancel test-selection test-transform test-create-hash
+C_TEST_PROBES = test-get-retry test-transform-restore
+C_TEST_PROGRAMS = $(C_TESTS) $(C_TEST_PROBES)
+test-list-reentrancy_OBJECTS = tests/test_list_reentrancy.o
+test-request-headers_OBJECTS = tests/test_request_headers.o
+test-error_OBJECTS = tests/test_error.o
+test-get-retry_OBJECTS = tests/get_retry_probe.o
+test-headers-alloc_OBJECTS = tests/test_headers_alloc.o
+test-uri-encode_OBJECTS = tests/test_uri_encode.o
+test-log-signal_OBJECTS = tests/test_log_signal.o
+test-log-escape_OBJECTS = tests/test_log_escape.o
+test-delete-batch_OBJECTS = tests/test_delete_batch.o
+test-signal-io_OBJECTS = tests/test_signal_io.o
+test-put-cancel_OBJECTS = tests/test_put_cancel.o
+test-selection_OBJECTS = tests/test_selection.o
+test-transform_OBJECTS = tests/test_transform.o
+test-transform-restore_OBJECTS = tests/transform_restore_probe.o
+test-create-hash_OBJECTS = tests/test_create_hash.o
+TEST_OBJECTS = $(foreach target,$(C_TEST_PROGRAMS),$($(target)_OBJECTS))
 OBJECTS = $(PROGRAM_OBJECTS) $(S3_OBJECTS) log.o $(TEST_OBJECTS)
 DEPENDENCIES = $(OBJECTS:.o=.d)
-C_SOURCES = tests/test_create_hash.c $(S3_SOURCES) $(S3AR_SOURCES) main.c main_s3ar_put.c main_s3ar_get.c \
-	s3ar_io.c log.c sig.c main_s3ar_delete.c main_s3ar_list.c main_s3ar_copy.c \
-	tests/test_list_reentrancy.c tests/test_request_headers.c tests/test_error.c tests/get_retry_probe.c tests/test_headers_alloc.c \
-	tests/test_uri_encode.c tests/test_log_signal.c tests/test_log_escape.c tests/test_delete_batch.c \
-	tests/test_signal_io.c tests/test_put_cancel.c tests/test_selection.c tests/test_transform.c \
-	tests/transform_restore_probe.c
+C_SOURCES = $(sort $(OBJECTS:.o=.c))
 PUBLIC_HEADERS = s3.h s3_log.h log.h
 
 .PHONY: all clean format-check install test install-libs
@@ -71,62 +70,62 @@ s3ar: $(PROGRAM_OBJECTS) libs3.a liblog.a
 $(LINKS): s3ar
 	ln -sfn s3ar $@
 
-test-list-reentrancy: $(TEST_LIST_REENTRANCY_OBJECTS) libs3.a liblog.a
+test-list-reentrancy: $(test-list-reentrancy_OBJECTS) libs3.a liblog.a
 	$(CC) $(LDFLAGS) -Wl,--wrap=s3_response_memory_reset \
 		-Wl,--wrap=curl_easy_perform -Wl,--wrap=curl_easy_getinfo \
 		-o $@ $^ $(S3_LIBS)
 
-test-request-headers: $(TEST_REQUEST_HEADERS_OBJECTS) libs3.a liblog.a
+test-request-headers: $(test-request-headers_OBJECTS) libs3.a liblog.a
 	$(CC) $(LDFLAGS) -Wl,--wrap=s3_response_memory_reset \
 		-Wl,--wrap=s3_response_reset \
 		-Wl,--wrap=curl_easy_perform -Wl,--wrap=curl_easy_getinfo \
 		-Wl,--wrap=malloc -o $@ $^ $(S3_LIBS)
 
-test-error: $(TEST_ERROR_OBJECTS) libs3.a liblog.a s3ar_config.o s3ar_parse.o s3ar_log.o
-	$(CC) $(LDFLAGS) -o $@ $(TEST_ERROR_OBJECTS) s3ar_config.o s3ar_parse.o s3ar_log.o libs3.a liblog.a $(S3_LIBS)
+test-error: $(test-error_OBJECTS) libs3.a liblog.a s3ar_config.o s3ar_parse.o s3ar_log.o
+	$(CC) $(LDFLAGS) -o $@ $(test-error_OBJECTS) s3ar_config.o s3ar_parse.o s3ar_log.o libs3.a liblog.a $(S3_LIBS)
 
-test-get-retry: $(TEST_GET_RETRY_OBJECTS) libs3.a liblog.a s3ar_config.o s3ar_log.o
-	$(CC) $(LDFLAGS) -o $@ $(TEST_GET_RETRY_OBJECTS) s3ar_config.o s3ar_log.o libs3.a liblog.a \
+test-get-retry: $(test-get-retry_OBJECTS) libs3.a liblog.a s3ar_config.o s3ar_log.o
+	$(CC) $(LDFLAGS) -o $@ $(test-get-retry_OBJECTS) s3ar_config.o s3ar_log.o libs3.a liblog.a \
 		$(S3_LIBS)
 
-test-headers-alloc: $(TEST_HEADERS_ALLOC_OBJECTS) s3_headers.o s3_response.o s3_parse.o s3_object_properties.o s3_memory.o s3_error.o s3_xml.o
+test-headers-alloc: $(test-headers-alloc_OBJECTS) s3_headers.o s3_response.o s3_parse.o s3_object_properties.o s3_memory.o s3_error.o s3_xml.o
 	$(CC) $(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=realloc -o $@ \
-		$(TEST_HEADERS_ALLOC_OBJECTS) s3_headers.o s3_response.o s3_parse.o s3_object_properties.o s3_memory.o s3_error.o s3_xml.o $(S3_LIBS)
+		$(test-headers-alloc_OBJECTS) s3_headers.o s3_response.o s3_parse.o s3_object_properties.o s3_memory.o s3_error.o s3_xml.o $(S3_LIBS)
 
-test-uri-encode: $(TEST_URI_ENCODE_OBJECTS) s3_uri_encode.o s3_uri_decode.o s3_query.o
-	$(CC) $(LDFLAGS) -o $@ $(TEST_URI_ENCODE_OBJECTS) s3_uri_encode.o s3_uri_decode.o s3_query.o
+test-uri-encode: $(test-uri-encode_OBJECTS) s3_uri_encode.o s3_uri_decode.o s3_query.o
+	$(CC) $(LDFLAGS) -o $@ $(test-uri-encode_OBJECTS) s3_uri_encode.o s3_uri_decode.o s3_query.o
 
-test-log-signal: $(TEST_LOG_SIGNAL_OBJECTS) liblog.a sig.o
-	$(CC) $(LDFLAGS) -o $@ $(TEST_LOG_SIGNAL_OBJECTS) liblog.a sig.o
+test-log-signal: $(test-log-signal_OBJECTS) liblog.a sig.o
+	$(CC) $(LDFLAGS) -o $@ $(test-log-signal_OBJECTS) liblog.a sig.o
 
-test-log-escape: $(TEST_LOG_ESCAPE_OBJECTS) liblog.a
-	$(CC) $(LDFLAGS) -o $@ $(TEST_LOG_ESCAPE_OBJECTS) liblog.a
+test-log-escape: $(test-log-escape_OBJECTS) liblog.a
+	$(CC) $(LDFLAGS) -o $@ $(test-log-escape_OBJECTS) liblog.a
 
-test-selection: $(TEST_SELECTION_OBJECTS) s3ar_selection.o s3ar_log.o libs3.a liblog.a
+test-selection: $(test-selection_OBJECTS) s3ar_selection.o s3ar_log.o libs3.a liblog.a
 	$(CC) $(LDFLAGS) -o $@ $^ $(S3_LIBS)
 
-test-transform: $(TEST_TRANSFORM_OBJECTS) s3ar_transform.o liblog.a
-	$(CC) $(LDFLAGS) -o $@ $(TEST_TRANSFORM_OBJECTS) s3ar_transform.o liblog.a
+test-transform: $(test-transform_OBJECTS) s3ar_transform.o liblog.a
+	$(CC) $(LDFLAGS) -o $@ $(test-transform_OBJECTS) s3ar_transform.o liblog.a
 
-test-create-hash: tests/test_create_hash.o $(filter-out main.o s3ar_create.o,$(PROGRAM_OBJECTS)) libs3.a liblog.a
+test-create-hash: $(test-create-hash_OBJECTS) $(filter-out main.o s3ar_create.o,$(PROGRAM_OBJECTS)) libs3.a liblog.a
 	$(CC) $(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=s3_object_get -o $@ $^ $(ARCHIVE_LIBS) $(HASH_LIBS) $(S3_LIBS)
 
-test-transform-restore: $(TEST_TRANSFORM_RESTORE_OBJECTS) $(filter-out main.o,$(PROGRAM_OBJECTS)) libs3.a liblog.a
+test-transform-restore: $(test-transform-restore_OBJECTS) $(filter-out main.o,$(PROGRAM_OBJECTS)) libs3.a liblog.a
 	$(CC) $(LDFLAGS) -Wl,--wrap=s3_bucket_ensure -Wl,--wrap=s3_object_put -o $@ \
-		$(TEST_TRANSFORM_RESTORE_OBJECTS) $(filter-out main.o,$(PROGRAM_OBJECTS)) libs3.a liblog.a \
+		$(test-transform-restore_OBJECTS) $(filter-out main.o,$(PROGRAM_OBJECTS)) libs3.a liblog.a \
 		$(ARCHIVE_LIBS) $(HASH_LIBS) $(S3_LIBS)
 
-test-delete-batch: $(TEST_DELETE_BATCH_OBJECTS) $(filter-out s3_object_delete.o,$(S3_OBJECTS)) log.o
-	$(CC) $(LDFLAGS) -Wl,--wrap=s3_request_bucket -Wl,--wrap=s3_request_url -o $@ $(TEST_DELETE_BATCH_OBJECTS) $(filter-out s3_object_delete.o,$(S3_OBJECTS)) log.o $(S3_LIBS)
+test-delete-batch: $(test-delete-batch_OBJECTS) $(filter-out s3_object_delete.o,$(S3_OBJECTS)) log.o
+	$(CC) $(LDFLAGS) -Wl,--wrap=s3_request_bucket -Wl,--wrap=s3_request_url -o $@ $(test-delete-batch_OBJECTS) $(filter-out s3_object_delete.o,$(S3_OBJECTS)) log.o $(S3_LIBS)
 
-test-signal-io: $(TEST_SIGNAL_IO_OBJECTS) s3ar_io.o sig.o
-	$(CC) $(LDFLAGS) -o $@ $(TEST_SIGNAL_IO_OBJECTS) s3ar_io.o sig.o
+test-signal-io: $(test-signal-io_OBJECTS) s3ar_io.o sig.o
+	$(CC) $(LDFLAGS) -o $@ $(test-signal-io_OBJECTS) s3ar_io.o sig.o
 
-test-put-cancel: $(TEST_PUT_CANCEL_OBJECTS) libs3.a liblog.a
+test-put-cancel: $(test-put-cancel_OBJECTS) libs3.a liblog.a
 	$(CC) $(LDFLAGS) -Wl,--wrap=s3_response_memory_reset \
 		-Wl,--wrap=curl_easy_perform -Wl,--wrap=curl_easy_getinfo \
 		-Wl,--wrap=malloc -o $@ \
-		$(TEST_PUT_CANCEL_OBJECTS) libs3.a liblog.a $(S3_LIBS)
+		$(test-put-cancel_OBJECTS) libs3.a liblog.a $(S3_LIBS)
 
 %.o: %.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -c -o $@ $<
@@ -134,20 +133,8 @@ test-put-cancel: $(TEST_PUT_CANCEL_OBJECTS) libs3.a liblog.a
 TEST_PROGRAMS ?= all
 
 test: CFLAGS += -Werror
-test: test-create-hash test-list-reentrancy test-request-headers $(TEST_PROGRAMS) test-error test-get-retry test-headers-alloc test-uri-encode test-log-signal test-log-escape test-delete-batch test-signal-io test-put-cancel test-selection test-transform test-transform-restore
-	./test-list-reentrancy
-	./test-request-headers
-	./test-error
-	./test-headers-alloc
-	./test-uri-encode
-	./test-log-signal
-	./test-log-escape
-	./test-delete-batch
-	./test-signal-io
-	./test-put-cancel
-	./test-selection
-	./test-transform
-	./test-create-hash
+test: $(C_TEST_PROGRAMS) $(TEST_PROGRAMS)
+	@set -e; for program in $(C_TESTS); do ./$$program; done
 	pytest -q
 
 format-check:
@@ -171,7 +158,7 @@ install: all install-libs
 		$(DESTDIR)$(PREFIX)/share/man/man1/
 
 clean:
-	rm -f -- test-create-hash test-list-reentrancy test-request-headers s3ar $(LINKS) libs3.a liblog.a test-error test-get-retry test-headers-alloc test-uri-encode test-log-signal test-log-escape test-delete-batch test-signal-io test-put-cancel test-selection test-transform test-transform-restore $(OBJECTS) \
+	rm -f -- $(C_TEST_PROGRAMS) s3ar $(LINKS) libs3.a liblog.a $(OBJECTS) \
 		$(DEPENDENCIES)
 	rm -rf -- __pycache__ tests/__pycache__ .pytest_cache
 
