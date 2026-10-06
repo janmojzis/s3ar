@@ -57,7 +57,6 @@ struct get_context {
     bool properties_received;
     int64_t last_modified;
     char etag[256];
-    bool header_written;
 };
 
 static struct get_context *active_get;
@@ -323,7 +322,6 @@ static bool write_object_header(void *callback_data,
         add_object_hash(entry, "none");
         if (archive_write_header(get->create->archive, entry) != ARCHIVE_OK)
             archive_fatal(get->create->archive, "cannot write object header");
-        get->header_written = true;
     }
     return true;
 }
@@ -392,7 +390,6 @@ static bool write_object(struct create_context *context, const char *bucket,
         add_object_hash(get.entry, get.hash_text);
         if (archive_write_header(context->archive, get.entry) != ARCHIVE_OK)
             archive_fatal(context->archive, "cannot write object header");
-        get.header_written = true;
         for (size_t offset = 0; offset < (size_t) get.expected;) {
             check_interrupted();
             size_t size = (size_t) get.expected - offset;

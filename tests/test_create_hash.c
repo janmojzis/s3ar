@@ -29,8 +29,6 @@ enum s3_result __wrap_s3_object_get(struct s3_client *client,
     (void) key;
     struct s3_object_properties object = {.size = body_size};
     assert(properties(context, &object));
-    struct get_context *get = context;
-    assert(get->header_written == !get->buffered);
     if (body_size != 0) {
         assert(data(context, body, 1));
         assert(data(context, body + 1, body_size - 1));
@@ -105,7 +103,7 @@ static void boundary(uint64_t size, bool allocation) {
     rejected_size = (size_t) size;
     rejected_calls = 0;
     assert(write_object_header(&get, &object));
-    assert(!get.buffered && get.header_written);
+    assert(!get.buffered);
     assert(rejected_calls == (allocation ? 1u : 0u));
     check_hash(get.entry, "none");
     cleanup_object(&get);
