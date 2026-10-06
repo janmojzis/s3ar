@@ -2,11 +2,10 @@
 #define S3AR_H____
 
 #include "s3.h"
+#include "s3ar_format.h"
 #include "s3ar_selection.h"
 
 #include <stdbool.h>
-
-#define S3AR_XATTR_FORMAT_VERSION "1"
 
 enum s3ar_command {
     S3AR_COMMAND_NONE,

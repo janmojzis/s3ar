@@ -21,6 +21,7 @@
 #include "s3ar_log.h"
 #include "s3.h"
 #include "s3ar.h"
+#include "s3ar_format.h"
 #include "s3ar_hash.h"
 #include "s3ar_interrupt.h"
 #include "sig.h"
@@ -193,11 +194,11 @@ static bool write_bucket_acl(void *callback_data,
     archive_entry_set_size(entry, 0);
     archive_entry_set_mtime(entry, 0, 0);
     const char *acl = bucket->acl != NULL ? bucket->acl : "unavailable";
-    archive_entry_xattr_add_entry(entry, "user.s3ar.format",
+    archive_entry_xattr_add_entry(entry, S3AR_XATTR_FORMAT,
                                   S3AR_XATTR_FORMAT_VERSION,
                                   sizeof(S3AR_XATTR_FORMAT_VERSION) - 1);
-    add_encoded_name(entry, "user.s3ar.bucket", bucket->name);
-    archive_entry_xattr_add_entry(entry, "user.s3ar.bucket-acl", acl,
+    add_encoded_name(entry, S3AR_XATTR_BUCKET, bucket->name);
+    archive_entry_xattr_add_entry(entry, S3AR_XATTR_BUCKET_ACL, acl,
                                   strlen(acl));
     if (archive_write_header(context->archive, entry) != ARCHIVE_OK) {
         archive_entry_free(entry);
@@ -231,7 +232,7 @@ static void write_bucket(struct create_context *context, const char *bucket) {
 
 static void add_object_hash(struct archive_entry *entry, const char *hash) {
     int count = archive_entry_xattr_count(entry);
-    archive_entry_xattr_add_entry(entry, "user.s3ar.hash", hash, strlen(hash));
+    archive_entry_xattr_add_entry(entry, S3AR_XATTR_HASH, hash, strlen(hash));
     if (archive_entry_xattr_count(entry) != count + 1) {
         log_f1("cannot allocate object hash attribute");
         s3ar_die(2);
@@ -263,13 +264,13 @@ static bool write_object_header(void *callback_data,
     time_t mtime = object->last_modified >= 0 ? (time_t) object->last_modified
                                               : (time_t) 0;
     archive_entry_set_mtime(entry, mtime, 0);
-    archive_entry_xattr_add_entry(entry, "user.s3ar.format",
+    archive_entry_xattr_add_entry(entry, S3AR_XATTR_FORMAT,
                                   S3AR_XATTR_FORMAT_VERSION,
                                   sizeof(S3AR_XATTR_FORMAT_VERSION) - 1);
-    add_encoded_name(entry, "user.s3ar.bucket", get->bucket);
-    add_encoded_name(entry, "user.s3ar.key", get->key);
+    add_encoded_name(entry, S3AR_XATTR_BUCKET, get->bucket);
+    add_encoded_name(entry, S3AR_XATTR_KEY, get->key);
     if (object->etag[0] != '\0') {
-        archive_entry_xattr_add_entry(entry, "user.s3ar.etag", object->etag,
+        archive_entry_xattr_add_entry(entry, S3AR_XATTR_ETAG, object->etag,
                                       strlen(object->etag));
     }
     for (size_t i = 0; i < object->metadata_count; ++i) {
@@ -278,21 +279,22 @@ static bool write_object_header(void *callback_data,
         if (name == NULL) { continue; }
         if (value == NULL) { value = ""; }
         size_t name_length = strlen(name);
-        if (name_length > SIZE_MAX - sizeof("user.s3ar.metadata.")) {
+        if (name_length > SIZE_MAX - sizeof(S3AR_XATTR_METADATA_PREFIX)) {
             archive_entry_free(entry);
             free(path);
             log_f1("out of memory");
             s3ar_die(2);
         }
-        char *xattr = malloc(sizeof("user.s3ar.metadata.") + name_length);
+        char *xattr = malloc(sizeof(S3AR_XATTR_METADATA_PREFIX) + name_length);
         if (xattr == NULL) {
             archive_entry_free(entry);
             free(path);
             log_f1("out of memory");
             s3ar_die(2);
         }
-        memcpy(xattr, "user.s3ar.metadata.", sizeof("user.s3ar.metadata.") - 1);
-        memcpy(xattr + sizeof("user.s3ar.metadata.") - 1, name,
+        memcpy(xattr, S3AR_XATTR_METADATA_PREFIX,
+               sizeof(S3AR_XATTR_METADATA_PREFIX) - 1);
+        memcpy(xattr + sizeof(S3AR_XATTR_METADATA_PREFIX) - 1, name,
                name_length + 1);
         archive_entry_xattr_add_entry(entry, xattr, value, strlen(value));
         free(xattr);

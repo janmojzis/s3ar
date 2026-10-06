@@ -7,6 +7,7 @@
 #include "main.h"
 #include "s3ar_client.h"
 #include "s3ar_config.h"
+#include "s3ar_format.h"
 #include "s3ar_hash.h"
 #include "s3ar_interrupt.h"
 #include "s3ar_xattr.h"
@@ -157,7 +158,7 @@ static bool verify_cached_hash(int source_fd) {
     struct sha512_ctx hash;
     struct stat before, after;
     ssize_t size =
-        s3ar_xattr_get(source_fd, "user.s3ar.hash", expected, sizeof(expected));
+        s3ar_xattr_get(source_fd, S3AR_XATTR_HASH, expected, sizeof(expected));
     if (size < 0 || !s3ar_hash_valid(expected, (size_t) size)) {
         log_w1(
             "xattr cache: SHA-512 unavailable or invalid; downloading again");
@@ -187,7 +188,7 @@ static bool verify_cached_hash(int source_fd) {
             "xattr cache: SHA-512 mismatch or file changed; downloading again");
         return false;
     }
-    s3ar_xattr_debug("user.s3ar.hash", expected, S3AR_HASH_TEXT_LENGTH,
+    s3ar_xattr_debug(S3AR_XATTR_HASH, expected, S3AR_HASH_TEXT_LENGTH,
                      "verified");
     return true;
 read_error:
@@ -226,31 +227,31 @@ static void load_cached_etag(void) {
         log_w1("xattr cache: output file is not regular");
         goto close_source;
     }
-    format_match = read_xattr_exact(source_fd, "user.s3ar.format",
+    format_match = read_xattr_exact(source_fd, S3AR_XATTR_FORMAT,
                                     S3AR_XATTR_FORMAT_VERSION);
     bucket_match =
-        read_xattr_exact(source_fd, "user.s3ar.bucket", encoded_bucket);
-    key_match = read_xattr_exact(source_fd, "user.s3ar.key", encoded_key);
+        read_xattr_exact(source_fd, S3AR_XATTR_BUCKET, encoded_bucket);
+    key_match = read_xattr_exact(source_fd, S3AR_XATTR_KEY, encoded_key);
     if (!format_match || !bucket_match || !key_match) goto close_source;
-    size = s3ar_xattr_get(source_fd, "user.s3ar.etag", cached_etag,
+    size = s3ar_xattr_get(source_fd, S3AR_XATTR_ETAG, cached_etag,
                           sizeof(cached_etag) - 1);
     if (size < 0) {
         if (errno == ENODATA)
-            s3ar_xattr_debug("user.s3ar.etag", NULL, 0, "missing");
+            s3ar_xattr_debug(S3AR_XATTR_ETAG, NULL, 0, "missing");
         else if (errno == ERANGE)
-            log_w1("xattr user.s3ar.etag: too long");
+            log_w1("xattr " S3AR_XATTR_ETAG ": too long");
         else
-            log_w2("xattr user.s3ar.etag: read failed: ", log_errno());
+            log_w2("xattr " S3AR_XATTR_ETAG ": read failed: ", log_errno());
         cached_etag[0] = '\0';
         goto close_source;
     }
     if (!etag_isvalid(cached_etag, (size_t) size)) {
-        log_w1("xattr user.s3ar.etag: invalid");
+        log_w1("xattr " S3AR_XATTR_ETAG ": invalid");
         cached_etag[0] = '\0';
         goto close_source;
     }
     cached_etag[size] = '\0';
-    s3ar_xattr_debug("user.s3ar.etag", cached_etag, (size_t) size, "valid");
+    s3ar_xattr_debug(S3AR_XATTR_ETAG, cached_etag, (size_t) size, "valid");
     if (hash_enabled && !verify_cached_hash(source_fd)) cached_etag[0] = '\0';
 close_source:
     if (close(source_fd) != 0)
@@ -285,19 +286,18 @@ static bool output_accepts_xattrs(void) {
 }
 
 static void save_xattrs(void) {
-    (void) s3ar_xattr_set(fd, "user.s3ar.hash", downloaded_hash,
+    (void) s3ar_xattr_set(fd, S3AR_XATTR_HASH, downloaded_hash,
                           strlen(downloaded_hash));
     if (!etag_isvalid(downloaded_etag, strlen(downloaded_etag))) {
         log_w1("response ETag missing or invalid; skipping identity xattrs");
         return;
     }
-    (void) s3ar_xattr_set(fd, "user.s3ar.format", S3AR_XATTR_FORMAT_VERSION,
+    (void) s3ar_xattr_set(fd, S3AR_XATTR_FORMAT, S3AR_XATTR_FORMAT_VERSION,
                           sizeof(S3AR_XATTR_FORMAT_VERSION) - 1);
-    (void) s3ar_xattr_set(fd, "user.s3ar.bucket", encoded_bucket,
+    (void) s3ar_xattr_set(fd, S3AR_XATTR_BUCKET, encoded_bucket,
                           strlen(encoded_bucket));
-    (void) s3ar_xattr_set(fd, "user.s3ar.key", encoded_key,
-                          strlen(encoded_key));
-    (void) s3ar_xattr_set(fd, "user.s3ar.etag", downloaded_etag,
+    (void) s3ar_xattr_set(fd, S3AR_XATTR_KEY, encoded_key, strlen(encoded_key));
+    (void) s3ar_xattr_set(fd, S3AR_XATTR_ETAG, downloaded_etag,
                           strlen(downloaded_etag));
 }
 

@@ -23,6 +23,7 @@
 #include "s3ar_log.h"
 #include "s3.h"
 #include "s3ar_archive_reader.h"
+#include "s3ar_format.h"
 #include "s3ar_hash.h"
 #include "s3ar_interrupt.h"
 #include "s3ar_transform.h"
@@ -243,19 +244,22 @@ static void remember_attribute(struct attribute_value *attribute,
 }
 
 static bool attribute_is(const char *name, const char *expected) {
-    if (strncmp(name, "SCHILY.xattr.", sizeof("SCHILY.xattr.") - 1) == 0)
-        name += sizeof("SCHILY.xattr.") - 1;
+    if (strncmp(name, S3AR_PAX_XATTR_PREFIX,
+                sizeof(S3AR_PAX_XATTR_PREFIX) - 1) == 0)
+        name += sizeof(S3AR_PAX_XATTR_PREFIX) - 1;
     return strcmp(name, expected) == 0;
 }
 
 static const char *metadata_name(const char *name, bool namespaced) {
     /* Preserve legacy identity exclusions and namespace rules. */
-    if (strcmp(name, "user.s3ar.bucket") == 0 ||
-        strcmp(name, "user.s3ar.key") == 0)
+    if (strcmp(name, S3AR_XATTR_BUCKET) == 0 ||
+        strcmp(name, S3AR_XATTR_KEY) == 0)
         return NULL;
-    if (strncmp(name, "SCHILY.xattr.", sizeof("SCHILY.xattr.") - 1) == 0)
-        name += sizeof("SCHILY.xattr.") - 1;
-    const char *prefix = namespaced ? "user.s3ar.metadata." : "user.";
+    if (strncmp(name, S3AR_PAX_XATTR_PREFIX,
+                sizeof(S3AR_PAX_XATTR_PREFIX) - 1) == 0)
+        name += sizeof(S3AR_PAX_XATTR_PREFIX) - 1;
+    const char *prefix =
+        namespaced ? S3AR_XATTR_METADATA_PREFIX : S3AR_LEGACY_XATTR_PREFIX;
     size_t length = strlen(prefix);
     return strncmp(name, prefix, length) == 0 ? name + length : NULL;
 }
@@ -287,15 +291,15 @@ static void read_entry_metadata(struct archive_entry *entry, bool object,
     while (archive_entry_xattr_next(entry, &name, &value, &size) ==
            ARCHIVE_OK) {
         if (name == NULL) continue;
-        if (attribute_is(name, "user.s3ar.format"))
+        if (attribute_is(name, S3AR_XATTR_FORMAT))
             remember_attribute(&format, value, size);
-        else if (attribute_is(name, "user.s3ar.hash"))
+        else if (attribute_is(name, S3AR_XATTR_HASH))
             remember_attribute(&hash, value, size);
-        else if (attribute_is(name, "user.s3ar.etag"))
+        else if (attribute_is(name, S3AR_XATTR_ETAG))
             remember_attribute(&metadata->etag, value, size);
-        if (strcmp(name, "user.s3ar.bucket") == 0 ||
-            strcmp(name, "user.s3ar.key") == 0) {
-            char **target = strcmp(name, "user.s3ar.bucket") == 0
+        if (strcmp(name, S3AR_XATTR_BUCKET) == 0 ||
+            strcmp(name, S3AR_XATTR_KEY) == 0) {
+            char **target = strcmp(name, S3AR_XATTR_BUCKET) == 0
                                 ? &metadata->bucket
                                 : &metadata->key;
             if (*target != NULL) {

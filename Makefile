@@ -144,7 +144,7 @@ test: $(C_TEST_PROGRAMS) $(TEST_PROGRAMS)
 format-check:
 	clang-format --dry-run --Werror $(C_SOURCES) $(PUBLIC_HEADERS) \
 		s3_internal.h s3_xml.h s3_upload.h s3ar.h s3ar_io.h s3ar_config.h s3ar_parse.h s3ar_client.h \
-		s3ar_log.h s3ar_hash.h s3ar_xattr.h s3ar_interrupt.h s3ar_transform.h s3ar_selection.h s3ar_archive_reader.h fsyncfile.h main.h sig.h secure_free.h
+		s3ar_log.h s3ar_hash.h s3ar_format.h s3ar_xattr.h s3ar_interrupt.h s3ar_transform.h s3ar_selection.h s3ar_archive_reader.h fsyncfile.h main.h sig.h secure_free.h
 
 # Kept separate from all/install so building from Git needs no Pandoc.
 man:

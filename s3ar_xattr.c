@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: MIT-0 */
 #include "s3ar_xattr.h"
+#include "s3ar_format.h"
 #include "log.h"
 
 #include <errno.h>
@@ -75,7 +76,8 @@ int s3ar_xattr_reset(int output_fd, const volatile sig_atomic_t *interrupted) {
         return saved_errno == ENOTSUP ? 0 : -1;
     }
     for (char *name = names; name < names + size; name += strlen(name) + 1) {
-        if (strncmp(name, "user.s3ar.", sizeof("user.s3ar.") - 1) != 0)
+        if (strncmp(name, S3AR_XATTR_PREFIX, sizeof(S3AR_XATTR_PREFIX) - 1) !=
+            0)
             continue;
         if (fremovexattr(output_fd, name) != 0 && errno != ENODATA) {
             int saved_errno = errno;
