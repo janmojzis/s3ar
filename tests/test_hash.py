@@ -150,19 +150,50 @@ def test_reader_uses_abort_result_instead_of_diagnostic_text(tmp_path, abort_fai
         assert "unable to clean up multipart upload" not in result.stderr
 
 
-@pytest.mark.parametrize("size", [16 * 1024 * 1024, 16 * 1024 * 1024 + 1])
-def test_create_hash_buffer_limit(executable, s3_server, s3_environment, tmp_path, size):
+@pytest.mark.parametrize("limit", [None, "5M", "32M"])
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_create_hash_buffer_limit(executable, s3_server, s3_environment, tmp_path, limit, offset):
     _, client = s3_server
     client.create_bucket(Bucket="hash-test")
+    limit_bytes = (int(limit[:-1]) if limit else 16) * 1024 * 1024
+    size = limit_bytes + offset
     body = b"x" * size
     client.put_object(Bucket="hash-test", Key="key", Body=body)
     path = tmp_path / "archive.tar"
-    result = invoke(executable, s3_environment, "-cf", str(path), "--hash", "s3://hash-test/key")
+    result = invoke(executable, s3_environment, "-cf", str(path), "--hash",
+                    *(["--multipart-size", limit] if limit else []), "s3://hash-test/key")
     assert result.returncode == 0, result.stderr
-    buffered = size <= 16 * 1024 * 1024
+    buffered = size <= limit_bytes
     expected = "sha512:" + hashlib.sha512(body).hexdigest() if buffered else "none"
     with tarfile.open(path) as archive:
         assert archive.getmember("hash-test/key").pax_headers["SCHILY.xattr.user.s3ar.hash"] == expected
         assert archive.extractfile("hash-test/key").read() == body
-    assert ("object exceeds the 16 MiB buffer limit" in result.stderr) == (not buffered)
+    assert ("object exceeds the --multipart-size buffer limit" in result.stderr) == (not buffered)
     assert ("warning:" in result.stderr) == (not buffered)
+
+
+@pytest.mark.parametrize("limit", ["5M", "32M"])
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+@pytest.mark.parametrize("matching", [True, False])
+def test_restore_configurable_multipart_limit(
+    executable, s3_server, s3_environment, tmp_path, limit, offset, matching
+):
+    _, client = s3_server
+    client.create_bucket(Bucket="hash-test")
+    client.put_object(Bucket="hash-test", Key="key", Body=b"original")
+    body = b"x" * (int(limit[:-1]) * 1024 * 1024 + offset)
+    value = "sha512:" + (hashlib.sha512(body).hexdigest() if matching else "0" * 128)
+    path = tmp_path / "archive.tar"
+    write_archive(path, body, value)
+    result = invoke(executable, s3_environment, "-xf", str(path), "--hash",
+                    "--multipart-size", limit, "s3://")
+    response = client.get_object(Bucket="hash-test", Key="key")
+    if matching:
+        assert result.returncode == 0, result.stderr
+        assert response["Body"].read() == body
+        assert response["ETag"].rstrip('"').endswith("-2") == (offset > 0)
+    else:
+        assert result.returncode == 2
+        assert "SHA-512 mismatch" in result.stderr
+        assert response["Body"].read() == b"original"
+        assert not client.list_multipart_uploads(Bucket="hash-test").get("Uploads")

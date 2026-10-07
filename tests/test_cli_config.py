@@ -42,3 +42,18 @@ def test_cli_initialization_errors(executable, tmp_path, tool, options, failure)
     assert len(result.stderr.splitlines()) == 1
     assert target.read_bytes() == b"original data"
     assert list(tmp_path.iterdir()) == [target]
+
+
+@pytest.mark.parametrize("options,message", [
+    (["-c", "--multipart-size"], "option requires an argument --multipart-size"),
+    (["-c", "--multipart-size", "4M"], "--multipart-size must be between 5M and 5G"),
+    (["-x", "--multipart-size", "6G"], "--multipart-size must be between 5M and 5G"),
+    (["-c", "--multipart-size", "5M", "--multipart-size", "16M"],
+     "multipart size specified twice"),
+    (["-t", "--multipart-size", "5M"], "--multipart-size requires -c or -x"),
+])
+def test_archive_multipart_size_invalid(executable, options, message):
+    result = subprocess.run([str(executable), *options], env={},
+                            capture_output=True, text=True, timeout=5)
+    assert result.returncode == 2
+    assert message in result.stderr

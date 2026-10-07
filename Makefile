@@ -116,7 +116,7 @@ test-create-hash: $(test-create-hash_OBJECTS) $(filter-out main.o s3ar_create.o,
 	$(CC) $(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=s3_object_get -o $@ $^ $(ARCHIVE_LIBS) $(HASH_LIBS) $(S3_LIBS)
 
 test-transform-restore: $(test-transform-restore_OBJECTS) $(filter-out main.o,$(PROGRAM_OBJECTS)) libs3.a liblog.a
-	$(CC) $(LDFLAGS) -Wl,--wrap=s3_bucket_ensure -Wl,--wrap=s3_object_put -o $@ \
+	$(CC) $(LDFLAGS) -Wl,--wrap=s3_bucket_ensure -Wl,--wrap=s3_object_put_with_part_size -o $@ \
 		$(test-transform-restore_OBJECTS) $(filter-out main.o,$(PROGRAM_OBJECTS)) libs3.a liblog.a \
 		$(ARCHIVE_LIBS) $(HASH_LIBS) $(S3_LIBS)
 

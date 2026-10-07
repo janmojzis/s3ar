@@ -16,11 +16,12 @@ enum s3_result __wrap_s3_bucket_ensure(struct s3_client *client,
     return S3_RESULT_OK;
 }
 
-enum s3_result
-__wrap_s3_object_put(struct s3_client *client, struct s3_error *error,
-                     const char *bucket, const char *key, uint64_t size,
-                     const struct s3_object_properties *properties,
-                     s3_read_callback read, void *data) {
+enum s3_result __wrap_s3_object_put_with_part_size(
+    struct s3_client *client, struct s3_error *error, const char *bucket,
+    const char *key, uint64_t size, size_t part_size,
+    const struct s3_object_properties *properties, s3_read_callback read,
+    void *data) {
+    assert(part_size >= 5 * 1024 * 1024);
     assert(s3_url_validate_object_name(client, bucket, key, error) ==
            S3_RESULT_OK);
     (void) printf("PUT %s/%s size=%llu\n", bucket, key,

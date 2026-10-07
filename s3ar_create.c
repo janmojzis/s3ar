@@ -305,7 +305,8 @@ static bool write_object_header(void *callback_data,
     get->last_modified = (int64_t) mtime;
     memcpy(get->etag, object->etag, sizeof(get->etag));
     get->properties_received = true;
-    if (get->create->config->hash && object->size <= S3_MULTIPART_PART_SIZE &&
+    if (get->create->config->hash &&
+        object->size <= get->create->config->multipart_size &&
         object->size <= SIZE_MAX) {
         if (object->size != 0) get->buffer = malloc((size_t) object->size);
         get->buffered = object->size == 0 || get->buffer != NULL;
@@ -313,11 +314,12 @@ static bool write_object_header(void *callback_data,
     if (get->buffered) { sha512_init(&get->hash); }
     else {
         if (get->create->config->hash) {
-            const char *reason = object->size > S3_MULTIPART_PART_SIZE
-                                     ? "object exceeds the 16 MiB buffer limit"
-                                 : object->size > SIZE_MAX
-                                     ? "object exceeds addressable buffer size"
-                                     : "buffer allocation failed";
+            const char *reason =
+                object->size > get->create->config->multipart_size
+                    ? "object exceeds the --multipart-size buffer limit"
+                : object->size > SIZE_MAX
+                    ? "object exceeds addressable buffer size"
+                    : "buffer allocation failed";
             log_w4("cannot compute SHA-512 for ",
                    s3_log_uri(NULL, get->bucket, get->key), ": ", reason);
         }

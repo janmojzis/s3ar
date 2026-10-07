@@ -62,7 +62,8 @@ static void roundtrip(const unsigned char *data, size_t size, bool fail,
            ARCHIVE_OK);
     assert(archive_write_open_memory(writer, output, sizeof(output), &used) ==
            ARCHIVE_OK);
-    struct s3ar_config config = {.hash = hashing};
+    struct s3ar_config config = {.hash = hashing,
+                                 .multipart_size = S3_MULTIPART_PART_SIZE};
     struct create_context context = {.config = &config, .archive = writer};
     body = data;
     body_size = size;
@@ -88,14 +89,14 @@ static void roundtrip(const unsigned char *data, size_t size, bool fail,
     archive_read_free(reader);
 }
 
-static void boundary(uint64_t size, bool allocation) {
+static void boundary(uint64_t size, size_t limit, bool allocation) {
     unsigned char output[16384];
     size_t used;
     struct archive *writer = archive_write_new();
     archive_write_set_format_pax_restricted(writer);
     assert(archive_write_open_memory(writer, output, sizeof(output), &used) ==
            ARCHIVE_OK);
-    struct s3ar_config config = {.hash = true};
+    struct s3ar_config config = {.hash = true, .multipart_size = limit};
     struct create_context context = {.config = &config, .archive = writer};
     struct get_context get = {
         .create = &context, .bucket = "bucket", .key = "key"};
@@ -128,11 +129,15 @@ int main(void) {
     for (size_t i = 0; i < sizeof(binary); ++i) binary[i] = (unsigned char) i;
     roundtrip(binary, sizeof(binary), true, true, "none");
     roundtrip(binary, sizeof(binary), true, false, "none");
-    boundary(S3_MULTIPART_PART_SIZE - 1, true);
-    boundary(S3_MULTIPART_PART_SIZE, true);
-    boundary(S3_MULTIPART_PART_SIZE + 1, false);
-    boundary(S3_MULTIPART_MAX_PART_SIZE - 1, false);
-    boundary(S3_MULTIPART_MAX_PART_SIZE, false);
-    boundary(S3_MULTIPART_MAX_PART_SIZE + 1, false);
+    boundary(S3_MULTIPART_PART_SIZE - 1, S3_MULTIPART_PART_SIZE, true);
+    boundary(S3_MULTIPART_PART_SIZE, S3_MULTIPART_PART_SIZE, true);
+    boundary(S3_MULTIPART_PART_SIZE + 1, S3_MULTIPART_PART_SIZE, false);
+    boundary(S3_MULTIPART_MAX_PART_SIZE - 1, S3_MULTIPART_PART_SIZE, false);
+    boundary(S3_MULTIPART_MAX_PART_SIZE, S3_MULTIPART_PART_SIZE, false);
+    boundary(S3_MULTIPART_MAX_PART_SIZE + 1, S3_MULTIPART_PART_SIZE, false);
+    boundary(5 * 1024 * 1024 - 1, 5 * 1024 * 1024, true);
+    boundary(5 * 1024 * 1024, 5 * 1024 * 1024, true);
+    boundary(5 * 1024 * 1024 + 1, 5 * 1024 * 1024, false);
+    boundary(17 * 1024 * 1024, 32 * 1024 * 1024, true);
     return 0;
 }

@@ -640,9 +640,9 @@ static void extract_object(struct extract_context *context,
         .metadata_count = metadata.count,
     };
     struct s3_error error = {0};
-    enum s3_result result = s3_object_put(context->config->s3, &error, bucket,
-                                          key, (uint64_t) archive_size,
-                                          &properties, read_object_data, &put);
+    enum s3_result result = s3_object_put_with_part_size(
+        context->config->s3, &error, bucket, key, (uint64_t) archive_size,
+        context->config->multipart_size, &properties, read_object_data, &put);
     if (interrupted_signal != 0 && put.read_status == PUT_READ_OK)
         put.read_status = PUT_READ_INTERRUPTED;
     if (put.read_status != PUT_READ_OK && error.abort_result != S3_RESULT_OK) {

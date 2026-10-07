@@ -6,7 +6,7 @@
 
 #include <stdlib.h>
 
-static struct s3ar_config config;
+static struct s3ar_config config = {.multipart_size = S3_MULTIPART_PART_SIZE};
 static struct s3ar_config_env s3_config;
 
 struct s3ar_config *s3ar_config_get(void) { return &config; }

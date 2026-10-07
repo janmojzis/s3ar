@@ -13,8 +13,8 @@ s3ar - create tar archives from S3 and extract them back to S3
 # SYNOPSIS
 
 ```text
-s3ar (-c|--create) [-v|--verbose] [--hash] [--zstd] [-f TARFILE] S3...
-s3ar (-x|--extract|--get) [-v|--verbose] [--hash] [--zstd] [--transform EXPR] [-f TARFILE] S3...
+s3ar (-c|--create) [-v|--verbose] [--hash] [--multipart-size SIZE] [--zstd] [-f TARFILE] S3...
+s3ar (-x|--extract|--get) [-v|--verbose] [--hash] [--multipart-size SIZE] [--zstd] [--transform EXPR] [-f TARFILE] S3...
 s3ar (-t|--list) [-v|--verbose] [--zstd] [--transform EXPR] [-f TARFILE] [S3...]
 s3ar (-h|--help)
 ```
@@ -200,7 +200,8 @@ s3ar -xvf archive.tar s3://test --transform='s|^uploads/|test/|'
 
 **`--hash`**
 
-With -c, compute SHA-512 for objects up to 16 MiB, inclusive, by buffering
+With -c, compute SHA-512 for objects up to --multipart-size, inclusive
+(default 16 MiB), by buffering
 the entire object in memory before writing its archive header. Larger objects
 are streamed with hash none and a warning. If buffer allocation fails, also
 store none and warn; a successful fallback exits with status 0.
@@ -211,6 +212,19 @@ with none are restored with a warning. A missing hash attribute is rejected.
 Without this option, restoration does not verify object content.
 This option requires -c or -x.
 With -x --hash -v, the stored hash is followed by verified or unverified.
+
+**`--multipart-size SIZE`**
+
+Set the hash buffer limit for -c --hash and the upload threshold and part size
+for -x. The default is 16M. Use an integer with an uppercase M or G suffix
+(MiB or GiB), between 5M and 5G inclusive.
+With -c --hash, objects above this limit are streamed with hash none and a
+warning; buffering uses at most SIZE bytes per object. Without --hash,
+creation streams objects without buffering them in full.
+With -x, objects up to SIZE inclusive use a simple PUT; larger objects use
+multipart uploads with SIZE-byte parts and a possibly smaller final part.
+Uploads buffer at most SIZE bytes per object. Objects exceeding 10,000 parts
+are rejected; increase SIZE to restore them. This option requires -c or -x.
 
 **`-v, --verbose`**
 

@@ -306,6 +306,17 @@ enum s3_result s3_object_put(struct s3_client *client, struct s3_error *error,
                              const struct s3_object_properties *properties,
                              s3_read_callback read_callback, void *data);
 
+/* Known-length PUT with a configurable threshold and buffer size. Objects up
+ * to part_size (inclusive) use PutObject; larger objects use multipart with
+ * at most 10,000 parts. A zero part_size selects the automatic sizing used by
+ * s3_object_put(); otherwise it must be between 5 MiB and 5 GiB. */
+enum s3_result
+s3_object_put_with_part_size(struct s3_client *client, struct s3_error *error,
+                             const char *bucket, const char *key, uint64_t size,
+                             size_t part_size,
+                             const struct s3_object_properties *properties,
+                             s3_read_callback read_callback, void *data);
+
 /* PUT for inputs whose length is not known in advance. Objects up to part_size
  * (inclusive) use PutObject; larger objects use multipart. Buffers one part
  * plus one byte of lookahead before initiating an upload. */

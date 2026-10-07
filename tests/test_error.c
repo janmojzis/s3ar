@@ -65,6 +65,8 @@ static void test_public_api_clears_error(void) {
     CHECK(s3_object_head(NULL, &error, &properties, NULL, NULL));
     CHECK(s3_object_get(NULL, &error, NULL, NULL, NULL, NULL, NULL));
     CHECK(s3_object_put(NULL, &error, NULL, NULL, 0, NULL, NULL, NULL));
+    CHECK(s3_object_put_with_part_size(
+        NULL, &error, NULL, NULL, 0, S3_MULTIPART_PART_SIZE, NULL, NULL, NULL));
     CHECK(s3_object_put_stream(NULL, &error, NULL, NULL, S3_MULTIPART_PART_SIZE,
                                NULL, NULL, NULL));
 
@@ -511,6 +513,40 @@ static void test_bucket_list_sets_unreachable_state_error(void) {
     s3_client_close(client);
 }
 
+static enum s3_read_result unexpected_upload_read(void *data,
+                                                  unsigned char *buffer,
+                                                  size_t capacity,
+                                                  size_t *size) {
+    (void) data;
+    (void) buffer;
+    (void) capacity;
+    (void) size;
+    assert(!"oversized upload must be rejected before reading");
+    return S3_READ_ERROR;
+}
+
+static void test_configured_upload_part_limit(void) {
+    struct s3_client_config config;
+    struct s3_client *client = NULL;
+    struct s3_error error;
+    s3_config_init(&config);
+    config.endpoint = "http://127.0.0.1:1";
+    config.region = "us-east-1";
+    config.access_key = "test-access";
+    config.secret_key = "test-secret";
+    assert(s3_client_open(&client, &error, &config) == S3_RESULT_OK);
+    size_t part_size = 5 * 1024 * 1024;
+    uint64_t size = (uint64_t) part_size * 10000 + 1;
+    poison(&error);
+    assert_configuration_error(
+        s3_object_put_with_part_size(client, &error, "bucket", "key", size,
+                                     part_size, NULL, unexpected_upload_read,
+                                     NULL),
+        &error);
+    assert(strstr(error.message, "increase --multipart-size") != NULL);
+    s3_client_close(client);
+}
+
 static bool cancel_request(void *data) { return *(bool *) data; }
 
 static void test_client_cancellation_before_request(void) {
@@ -666,6 +702,7 @@ int main(void) {
     test_xml_child_text();
     test_multipart_size_parser();
     test_public_api_clears_error();
+    test_configured_upload_part_limit();
     test_uri_variants();
     test_multiple_clients();
     test_error_set_preserves_response_details();

@@ -88,17 +88,35 @@ enum s3_result s3_object_put(struct s3_client *client, struct s3_error *error,
                              const char *bucket, const char *key, uint64_t size,
                              const struct s3_object_properties *properties,
                              s3_read_callback read_callback, void *data) {
+    return s3_object_put_with_part_size(client, error, bucket, key, size, 0,
+                                        properties, read_callback, data);
+}
+
+enum s3_result
+s3_object_put_with_part_size(struct s3_client *client, struct s3_error *error,
+                             const char *bucket, const char *key, uint64_t size,
+                             size_t part_size,
+                             const struct s3_object_properties *properties,
+                             s3_read_callback read_callback, void *data) {
     unsigned char *buffer = NULL;
-    size_t part_size = DEFAULT_PART_SIZE;
+    bool automatic_part_size = part_size == 0;
+    if (automatic_part_size) part_size = DEFAULT_PART_SIZE;
+    size_t threshold = part_size;
     enum s3_result result;
     char *url = NULL;
     struct s3_memory_response response = {0};
     s3_error_clear(error);
-    if (client == NULL || error == NULL || read_callback == NULL)
+    if (client == NULL || error == NULL || read_callback == NULL ||
+        part_size < S3_UPLOAD_MIN_PART_SIZE ||
+        (uint64_t) part_size > S3_MULTIPART_MAX_PART_SIZE)
         return s3_error_set(error, S3_RESULT_CONFIGURATION_ERROR,
                             "invalid PutObject arguments");
     uint64_t required_part_size = size / 10000 + (size % 10000 != 0);
     if (required_part_size > part_size) {
+        if (!automatic_part_size)
+            return s3_error_set(
+                error, S3_RESULT_CONFIGURATION_ERROR,
+                "object exceeds 10000 parts; increase --multipart-size");
         const uint64_t unit = 1024 * 1024;
         uint64_t units =
             required_part_size / unit + (required_part_size % unit != 0);
@@ -114,7 +132,7 @@ enum s3_result s3_object_put(struct s3_client *client, struct s3_error *error,
         return s3_error_set(error, S3_RESULT_ERROR, "out of memory");
     result = fill_buffer(buffer, part_size, read_callback, data, error);
     if (result != S3_RESULT_OK) goto done;
-    if (size <= DEFAULT_PART_SIZE) {
+    if (size <= threshold) {
         result = expect_eof(read_callback, data, error);
         if (result != S3_RESULT_OK) goto done;
         result = s3_url_build(client, bucket, key, &url, error);

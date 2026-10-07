@@ -16,6 +16,7 @@
 #include "s3_log.h"
 #include "s3.h"
 #include "s3ar.h"
+#include "s3ar_parse.h"
 #include "s3ar_archive_reader.h"
 #include "main.h"
 #include "s3ar_transform.h"
@@ -30,9 +31,10 @@
 static void usage(void) {
     log_usage(stderr,
               "Usage: s3ar (-c | --create) [-v | --verbose] "
-              "[--hash] [--zstd] [-f TARFILE] S3...\n"
+              "[--hash] [--multipart-size SIZE] [--zstd] [-f TARFILE] S3...\n"
               "       s3ar (-x | --extract) [-v | --verbose] "
-              "[--hash] [--zstd] [--transform EXPR] [-f TARFILE] S3...\n"
+              "[--hash] [--multipart-size SIZE] [--zstd] [--transform EXPR] "
+              "[-f TARFILE] S3...\n"
               "       s3ar (-t | --list) [-v | --verbose] "
               "[--zstd] [--transform EXPR] [-f TARFILE] [S3...]\n"
               "\n"
@@ -43,6 +45,8 @@ static void usage(void) {
               "  -f, --file TARFILE  read or write TARFILE\n"
               "      --zstd  use zstd archive compression\n"
               "      --hash  compute SHA-512 during -c or verify it during -x\n"
+              "      --multipart-size SIZE  hash buffer limit and upload part "
+              "size (5M-5G; default 16M)\n"
               "      --transform EXPR  rename BUCKET/KEY during -x or -t\n"
               "                        "
               "s<delimiter>REGEX<delimiter>REPLACEMENT<delimiter>[gi]\n"
@@ -56,7 +60,12 @@ static void usage(void) {
               "  s3://BUCKET/NAME[/]   object and objects below NAME/\n");
 }
 
-enum long_option { OPTION_ZSTD = 256, OPTION_TRANSFORM, OPTION_HASH };
+enum long_option {
+    OPTION_ZSTD = 256,
+    OPTION_TRANSFORM,
+    OPTION_HASH,
+    OPTION_MULTIPART_SIZE
+};
 
 static const struct option long_options[] = {
     {"create", no_argument, NULL, 'c'},
@@ -66,6 +75,7 @@ static const struct option long_options[] = {
     {"file", required_argument, NULL, 'f'},
     {"zstd", no_argument, NULL, OPTION_ZSTD},
     {"hash", no_argument, NULL, OPTION_HASH},
+    {"multipart-size", required_argument, NULL, OPTION_MULTIPART_SIZE},
     {"transform", required_argument, NULL, OPTION_TRANSFORM},
     {"verbose", no_argument, NULL, 'v'},
     {"help", no_argument, NULL, 'h'},
@@ -86,12 +96,15 @@ static void debug_options(const struct s3ar_config *config, int verbosity,
     log_d3("(option -f) archive-file = '",
            config->archive_path != NULL ? config->archive_path : "-", "'");
     log_d3("(option --zstd) zstd = '", config->zstd ? "true" : "false", "'");
+    log_d3("(option --multipart-size) multipart-size = '",
+           log_bytes((long long) config->multipart_size), "'");
     s3ar_transform_log(config->transforms);
 }
 
 int main_s3ar(int argc, char **argv) {
     struct s3ar_config *config = s3ar_config_get();
     int verbosity = 0;
+    bool multipart_size_seen = false;
     log_set_name("s3ar");
     sig_ignore(SIGPIPE);
 
@@ -144,6 +157,17 @@ int main_s3ar(int argc, char **argv) {
         /* --zstd */
         else if (option == OPTION_ZSTD) { config->zstd = true; }
         else if (option == OPTION_HASH) { config->hash = true; }
+        else if (option == OPTION_MULTIPART_SIZE) {
+            if (multipart_size_seen) {
+                log_f1("multipart size specified twice");
+                s3ar_die(2);
+            }
+            multipart_size_seen = true;
+            if (!s3ar_parse_multipart_size(optarg, &config->multipart_size)) {
+                log_f1("--multipart-size must be between 5M and 5G");
+                s3ar_die(2);
+            }
+        }
 
         else if (option == OPTION_TRANSFORM) {
             char error[256];
@@ -170,6 +194,10 @@ int main_s3ar(int argc, char **argv) {
 
         /* missing option argument */
         else if (option == ':') {
+            if (optopt == OPTION_MULTIPART_SIZE) {
+                log_f1("option requires an argument --multipart-size");
+                s3ar_die(2);
+            }
             if (optopt == OPTION_TRANSFORM) {
                 log_f1("option requires an argument --transform");
                 s3ar_die(2);
@@ -190,6 +218,10 @@ int main_s3ar(int argc, char **argv) {
 
     if (config->command == S3AR_COMMAND_NONE) {
         log_f1("specify -c, -x or -t");
+        s3ar_die(2);
+    }
+    if (multipart_size_seen && config->command == S3AR_COMMAND_LIST_ARCHIVE) {
+        log_f1("--multipart-size requires -c or -x");
         s3ar_die(2);
     }
     if (config->hash && config->command == S3AR_COMMAND_LIST_ARCHIVE) {

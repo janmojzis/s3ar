@@ -20,6 +20,7 @@ struct s3ar_config {
     bool verbose;
     bool zstd;
     bool hash;
+    size_t multipart_size;
     int operand_count;
     char **operands;
     const char *archive_path;
