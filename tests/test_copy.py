@@ -1,4 +1,5 @@
 import subprocess
+from ctypes import c_size_t
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -243,10 +244,21 @@ def test_copy_uses_ranges_and_source_etag(s3_environment):
 @pytest.mark.parametrize("part_size,options", [
     (DEFAULT_PART_SIZE, ()),
     (5 * 1024 * 1024, ("--multipart-size", "5M")),
+    (3 * 1024 * 1024 * 1024, ("--multipart-size", "3G")),
     (5 * 1024 * 1024 * 1024, ("--multipart-size", "5G")),
 ])
 @pytest.mark.parametrize("size_offset", [-1, 0, 1])
 def test_copy_multipart_threshold(s3_environment, part_size, options, size_offset):
+    # The CLI stores part sizes in size_t, so 5G is rejected on i386.
+    if part_size > c_size_t(-1).value:
+        with FaultServer([]) as server:
+            result = run_copy(
+                {**s3_environment, "S3AR_ENDPOINT": server.endpoint}, *options)
+            assert result.returncode == 2, result.stderr.decode()
+            assert b"--multipart-size must be between 5M and 5G" in result.stderr
+        assert not server.requests
+        return
+
     size = part_size + size_offset
     base = "/copy-destination/key"
     copy_headers = (("x-amz-copy-source", "/copy-source/key"),
